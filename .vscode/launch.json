@@ -7,7 +7,8 @@
       "request": "launch",
       "runtimeExecutable": "${execPath}",
       "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "${workspaceFolder}/test/workspace"
       ],
       "outFiles": [
         "${workspaceFolder}/src/**/*.js"
@@ -21,7 +22,7 @@
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
         "--extensionTestsPath=${workspaceFolder}/test/vscode-e2e.js",
-        "${workspaceFolder}"
+        "${workspaceFolder}/test/workspace"
       ],
       "outFiles": [
         "${workspaceFolder}/src/**/*.js"

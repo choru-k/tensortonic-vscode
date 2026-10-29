@@ -2,7 +2,7 @@
 
 ## Completed
 
-- `npm test`: 37 tests passed, 0 failed. Includes client request contracts, metadata and path validation, preservation of existing solutions, unsaved editor/test input, inert problem rendering, browser origin/capability checks, request/result/error lifecycle, concurrent startup, and the connector's cookie-preserving fetch behavior.
+- `npm test`: 38 tests passed, 0 failed. Client request contracts, metadata and path validation, preservation of existing solutions, unsaved editor/test input, inert problem rendering, browser origin/capability checks, request/result/error lifecycle, concurrent startup, cookie-preserving fetch behavior, and connection-timeout guidance are covered.
 - VSIX built offline with Python standard library; VS Code CLI installed it successfully into a separate workspace-local extensions/profile directory.
 - TensorTonic GitHub sign-in succeeded through the website's normal Continue with GitHub flow.
 - Authenticated Python study-plan detail and its public test-case schema were observed.
@@ -10,6 +10,15 @@
 - Authenticated study-plan Run: previously solved Softmax, HTTP 200, `status: passed`, 3/3 public cases.
 - Authenticated study-plan Submit: same previously solved Softmax, HTTP 200, `status: passed`, 43/43 cases.
 - No newly unsolved problem was marked solved during validation.
+- User-launched VS Code 1.144 on the actual Mac discovered and activated the development extension and created its temporary browser connection script.
+- A second actual launch through Run Without Debugging also activated the extension. Its report ended in the pairing timeout with no Run or Submit performed.
+- The controlled TensorTonic browser tab was signed in. Its `local-network-access` permission state was `prompt`; browser-to-editor pairing was not established.
+
+## Launch and connection fixes
+
+- Code deliberately removes a requested folder from a development-host launch if that exact folder is already open in another Code window. Both launch configurations now use the distinct tracked `test/workspace` folder.
+- E2E writes a running report before waiting, persists each phase, and shows Korean connection instructions and waiting progress.
+- Browser polling has a 30-second timeout with local-network permission and same-computer guidance. No Run or Submit is retried.
 
 ## Agent context checks
 
@@ -19,8 +28,9 @@
 
 ## Not completed on this host
 
-- Actual browser-to-extension loopback connection: this execution sandbox denies opening local listening ports.
-- Final extension-host UI activation test: macOS Launch Services returned `kLSNoLaunchPermissionErr` / `User doesn't have permission to launch the app (managed networks)`. Native app control also failed to return usable state. No successful extension-host test result was produced.
+- Actual browser-to-extension loopback connection and full Run/Submit/Agent sequence remain incomplete. The live run timed out waiting for browser pairing. A browser permission state of `prompt` was observed, and the automation cannot operate the containing app's permission UI.
+- In a debug launch, Code logged `TypeError: Missing dataLength in event` from Node's inspector network instrumentation before the renderer terminated the host. These observations do not establish that this error caused the termination. Run Without Debugging avoids attaching that debugger for the diagnostic retry.
+- Earlier agent-side CLI launches failed with macOS Launch Services `kLSNoLaunchPermissionErr`; actual UI activation was subsequently reached in the user-launched Code app.
 - Installation into the user's default VS Code profile: OS workspace restrictions denied writes to its logs and extension directory. The separate-profile install check succeeded.
 
 The live API checks and mocked extension/transport tests are separate checks. They do not constitute a completed end-to-end test of the installed extension. The first real local installation must verify Connect browser, problem opening, Run and Submit together.

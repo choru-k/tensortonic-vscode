@@ -9,7 +9,7 @@ TensorTonic의 공식 확장이 아닙니다. 현재 Python 무료 문제와 Pyt
 VS Code 1.95 이상이 필요합니다. Extensions 화면의 `…` → **Install from VSIX…**에서 설치 파일을 선택하거나 다음 명령을 사용합니다.
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.2.0.vsix
+code --install-extension releases/tensortonic-vscode-0.2.1.vsix
 ```
 
 풀이를 저장할 로컬 폴더를 VS Code에서 열고 TensorTonic 아이콘을 클릭합니다.
@@ -20,6 +20,8 @@ code --install-extension releases/tensortonic-vscode-0.2.0.vsix
 2. VS Code 명령 팔레트에서 **TensorTonic: Connect browser**를 실행합니다.
 3. 열린 JavaScript 문서의 연결 코드를 TensorTonic 탭의 개발자 도구 → Console에 붙여넣어 실행합니다. macOS의 Chrome 계열 브라우저는 `⌘⌥J`로 Console을 엽니다.
 4. 브라우저에서 로컬 네트워크 연결 여부를 물으면 연결 목적을 확인한 뒤 허용합니다. 브라우저 탭을 열어 두면 VS Code 문제 목록이 표시됩니다.
+
+연결이 진행되지 않으면 브라우저의 이 사이트에 대한 로컬 네트워크 권한을 확인하세요. 이 권한은 TensorTonic 탭이 같은 컴퓨터에서 실행 중인 VS Code의 임시 로컬 서버에 접속하는 데 필요합니다. 연결 요청은 30초 안에 응답이 없으면 안내와 함께 중단되므로 권한을 확인한 뒤 새 연결 코드를 실행합니다. 원격 브라우저·별도 VM 브라우저는 내 Mac의 `127.0.0.1`에 연결할 수 없습니다.
 
 로그인 쿠키는 브라우저 밖으로 내보내지 않습니다. 확장은 임시로 열린 로컬 연결을 통해 허용된 TensorTonic 문제 API만 요청합니다. 연결 코드는 다른 사람에게 공유하거나 저장소에 커밋하지 마세요. **Disconnect browser**로 연결을 종료할 수 있습니다. 탭 새로고침 또는 VS Code 재시작 후에는 다시 연결합니다.
 
@@ -55,9 +57,9 @@ code --install-extension releases/tensortonic-vscode-0.2.0.vsix
 
 ## 이번 버전의 검증 범위
 
-자동 테스트 37개와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
+자동 테스트와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
 
-현재 제작 환경에서는 로컬 서버 포트 열기와 기본 VS Code 설치 폴더 쓰기가 제한되어, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 완료하지 못했습니다. 위의 브라우저 연결 절차를 실행한 뒤 Check connection 명령으로 먼저 확인해 주세요. 문제 설명에는 Code의 Markdown 미리보기를 사용하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
+실제 Mac의 VS Code 1.144에서 확장 활성화와 연결 코드 생성까지 확인했습니다. 브라우저 로컬 네트워크 권한이 미승인인 상태에서 연결 대기 시간이 만료됐으므로, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 아직 완료하지 못했습니다. 문제 설명에는 Code의 Markdown 미리보기를 사용하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
 
 ## 개발과 패키징
 
@@ -68,16 +70,18 @@ node --test test/*.test.js
 python3 scripts/package.py
 ```
 
-VS Code에서 이 소스 폴더를 열고 F5를 누르면 Extension Development Host에서 실행합니다. 원격 SSH·컨테이너·VS Code for the Web 환경은 지원하지 않습니다. 확장과 브라우저는 같은 컴퓨터에서 실행해야 합니다.
+VS Code에서 이 소스 폴더를 열고 **Run TensorTonic extension** 설정을 실행하면 Extension Development Host에서 실행합니다. 개발 호스트에는 별도의 `test/workspace` 폴더를 엽니다. 부모 창에 열린 소스 폴더를 그대로 전달하면 Code가 중복 폴더를 제거해 빈 창이 열릴 수 있기 때문입니다. 원격 SSH·컨테이너·VS Code for the Web 환경은 지원하지 않습니다. 확장과 브라우저는 같은 컴퓨터에서 실행해야 합니다.
 
 ## 실제 계정 E2E 실행
 
-이 제작 환경의 macOS는 Code 실행을 `kLSNoLaunchPermissionErr`로 거부하고, 앱 화면 제어도 응답하지 않아 최종 실행을 완료하지 못했습니다. 아래 설정은 실제 Code와 로그인 계정을 사용하며 모의 서버를 사용하지 않습니다.
+아래 설정은 실제 Code와 로그인 계정을 사용하며 모의 서버를 사용하지 않습니다.
 
 1. 이 저장소 폴더를 본인의 VS Code에서 엽니다.
-2. Run and Debug에서 **TensorTonic: live account E2E**를 선택하고 F5를 누릅니다.
-3. 개발 호스트에 열린 임시 연결 코드를 로그인된 TensorTonic 브라우저 콘솔에서 실행합니다.
-4. 보고서는 `dist/e2e-report.json`에 저장됩니다. 이미 풀었던 Softmax 문제만 재제출하며, 미해결 상태이면 테스트를 중단합니다.
+2. Run and Debug에서 **TensorTonic: live account E2E**를 선택하고 **Run → Run Without Debugging**으로 실행합니다. 디버거를 붙인 실행에서는 설치된 Code의 Node 네트워크 계측 오류가 관찰됐습니다. 이 오류와 테스트 창 종료 사이의 인과관계는 확인되지 않았습니다.
+3. 개발 호스트의 연결 안내를 읽고 임시 연결 코드를 로그인된 TensorTonic 브라우저 콘솔에서 실행합니다. 로컬 네트워크 연결 권한이 필요하며 확장과 같은 컴퓨터의 브라우저를 사용합니다.
+4. 보고서는 **실행한 저장소**의 `dist/e2e-report.json`에 진행 중에도 저장됩니다. 이미 풀었던 Softmax 문제만 재제출하며, 미해결 상태이면 테스트를 중단합니다.
+
+테스트가 끝나거나 연결 대기 시간이 만료되면 개발 호스트 창이 종료될 수 있습니다. 직접 문제를 풀거나 Agent와 계속 대화하려면 **Run TensorTonic extension** 설정을 사용하세요.
 
 이 검증은 문제 열기·편집·Run·Submit·Agent 문맥 도구·채팅 첨부까지 검사합니다. Agent의 실제 답변 이해 여부는 채팅 화면에서 별도로 확인해야 하며, 자동 보고서에 완료된 것으로 기록하지 않습니다.
 

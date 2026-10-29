@@ -145,3 +145,23 @@ test('browser connector rejects arbitrary upstream destinations even from a malf
   assert.equal(upstreamCalls, 0);
   assert.match(results[0].error, /Unsupported/);
 });
+
+test('browser connection timeout gives local-network guidance and never sends grading code', async () => {
+  const messages = []; const requests = [];
+  const sandbox = {
+    location: { origin }, window: {}, URL, AbortController, AbortSignal,
+    console: { info() {}, warn() {}, error(...args) { messages.push(args.join(' ')); } },
+    async fetch(url, options) {
+      requests.push(url);
+      assert.ok(options.signal);
+      const error = new Error('Local connection timed out'); error.name = 'TimeoutError'; throw error;
+    },
+  };
+  const source = fs.readFileSync(require.resolve('../src/browser-connector'), 'utf8');
+  await vm.runInNewContext(`(${source})(${JSON.stringify({ base: 'http://127.0.0.1:43210', token })})`, sandbox);
+  assert.equal(requests.length, 1);
+  assert.ok(requests[0].startsWith('http://127.0.0.1:43210/poll'));
+  assert.match(messages.join('\n'), /local-network access/);
+  assert.match(messages.join('\n'), /same computer/);
+  assert.equal(sandbox.window.__tensorTonicVSCode, undefined);
+});

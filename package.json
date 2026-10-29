@@ -2,7 +2,7 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "Browse, solve, run, and submit TensorTonic Python problems from VS Code through your signed-in browser.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
