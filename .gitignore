@@ -1,0 +1,14 @@
+node_modules/
+*.vsix
+!releases/*.vsix
+dist/
+.DS_Store
+tensortonic/
+*.log
+.env
+.env.*
+sessions/
+research/
+install-check/
+pairing*.js
+connection*.js

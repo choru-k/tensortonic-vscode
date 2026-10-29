@@ -1,2 +1,67 @@
-# tensortonic-vscode
-Unofficial VS Code extension for browsing, solving, running and submitting TensorTonic Python problems.
+# TensorTonic for VS Code — Unofficial
+
+VS Code에서 TensorTonic 문제를 보고, Python 풀이를 작성하고, Run / Submit으로 채점합니다. 기본 학습 계획은 `pytorch-basics`입니다.
+
+TensorTonic의 공식 확장이 아닙니다. 현재 Python 무료 문제와 Python 학습 계획 문제를 지원합니다. SQL, CUDA, Triton 및 별도의 프로젝트·면접 문제는 지원하지 않습니다.
+
+## 설치
+
+VS Code 1.95 이상이 필요합니다. Extensions 화면의 `…` → **Install from VSIX…**에서 설치 파일을 선택하거나 다음 명령을 사용합니다.
+
+```sh
+code --install-extension tensortonic-vscode-0.1.0.vsix
+```
+
+풀이를 저장할 로컬 폴더를 VS Code에서 열고 TensorTonic 아이콘을 클릭합니다.
+
+## 브라우저 연결
+
+1. 브라우저에서 [TensorTonic](https://www.tensortonic.com/)에 평소처럼 로그인합니다. GitHub 로그인도 사이트에서 진행합니다.
+2. VS Code 명령 팔레트에서 **TensorTonic: Connect browser**를 실행합니다.
+3. 열린 JavaScript 문서의 연결 코드를 TensorTonic 탭의 개발자 도구 → Console에 붙여넣어 실행합니다. macOS의 Chrome 계열 브라우저는 `⌘⌥J`로 Console을 엽니다.
+4. 브라우저에서 로컬 네트워크 연결 여부를 물으면 연결 목적을 확인한 뒤 허용합니다. 브라우저 탭을 열어 두면 VS Code 문제 목록이 표시됩니다.
+
+로그인 쿠키는 브라우저 밖으로 내보내지 않습니다. 확장은 임시로 열린 로컬 연결을 통해 허용된 TensorTonic 문제 API만 요청합니다. 연결 코드는 다른 사람에게 공유하거나 저장소에 커밋하지 마세요. **Disconnect browser**로 연결을 종료할 수 있습니다. 탭 새로고침 또는 VS Code 재시작 후에는 다시 연결합니다.
+
+## 문제 풀기
+
+- 사이드바에서 문제를 선택하면 문제 설명과 풀이 파일이 나란히 열립니다.
+- 풀이 파일 위의 **Run**, **Submit**, **Description**, **Test cases** 버튼을 사용합니다.
+- **Run**은 옆의 `.tests.json` 파일에 있는 테스트 케이스로 실행합니다. 이 파일은 JSON 배열 형식을 유지하면서 편집합니다.
+- **Submit**은 현재 편집 중인 코드를 TensorTonic에 보내 사이트의 채점 결과를 표시합니다. 실행·제출은 TensorTonic 서버에서 처리됩니다.
+- 기존 풀이 파일과 테스트 파일은 다시 문제를 열어도 덮어쓰지 않습니다.
+- **Choose study plan**에 문제 URL의 `studyPlan` 값을 입력하면 학습 계획을 바꿉니다. 빈 값은 무료 문제 목록입니다.
+
+풀이 파일 첫 줄의 `# tensortonic: {...}` 메타데이터는 문제와 파일을 연결하므로 유지하세요. 저장 위치는 기본적으로 현재 워크스페이스의 `tensortonic/<학습계획>/`입니다.
+
+## 설정과 확인
+
+| 설정 | 기본값 | 의미 |
+| --- | --- | --- |
+| `tensortonic.studyPlan` | `pytorch-basics` | 학습 계획 slug. 빈 값은 무료 문제 |
+| `tensortonic.solutionDirectory` | `tensortonic` | 워크스페이스 안의 상대 저장 폴더 |
+
+**TensorTonic: Check connection and problem access** 명령은 연결, 문제 목록, 문제 설명과 시작 코드의 접근을 확인합니다. 실행 결과는 Output → TensorTonic에서 확인합니다.
+
+이 확장은 TensorTonic 웹 클라이언트에서 확인한 API를 사용합니다. 공식 API 보장이 없어 사이트 변경 시 연동 수정이 필요할 수 있습니다. 유료 문제에는 기존 TensorTonic 구독 권한이 그대로 적용됩니다. 연결할 때는 현재 로그인된 계정이 맞는지 확인하세요.
+
+## 이번 버전의 검증 범위
+
+자동 테스트 24개와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
+
+현재 제작 환경에서는 로컬 서버 포트 열기와 기본 VS Code 설치 폴더 쓰기가 제한되어, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 완료하지 못했습니다. 위의 브라우저 연결 절차를 실행한 뒤 Check connection 명령으로 먼저 확인해 주세요. 문제 설명은 Markdown/수식 원문을 읽을 수 있는 텍스트로 표시하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
+
+## 개발과 패키징
+
+외부 npm 패키지가 필요하지 않습니다. Node.js와 Python 3가 설치되어 있어야 합니다.
+
+```sh
+node --test test/*.test.js
+python3 scripts/package.py
+```
+
+VS Code에서 이 소스 폴더를 열고 F5를 누르면 Extension Development Host에서 실행합니다. 원격 SSH·컨테이너·VS Code for the Web 환경은 지원하지 않습니다. 확장과 브라우저는 같은 컴퓨터에서 실행해야 합니다.
+
+## 참고
+
+문제 탐색, 설명 패널, Run / Submit CodeLens의 사용 흐름은 [LeetCode OpenSource VS Code 확장](https://github.com/LeetCode-OpenSource/vscode-leetcode)에서 영감을 받았습니다. 해당 확장의 LeetCode 전용 CLI 및 인증 코드는 포함하지 않았습니다. 이 구현의 소스 코드는 MIT 라이선스입니다. TensorTonic 이름과 서비스는 해당 소유자의 자산입니다.

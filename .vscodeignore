@@ -1,0 +1,9 @@
+.git/**
+.vscode/**
+test/**
+scripts/**
+node_modules/**
+dist/**
+*.vsix
+tensortonic/**
+*.log

@@ -1,0 +1,59 @@
+{
+  "name": "tensortonic-vscode",
+  "displayName": "TensorTonic for VS Code (Unofficial)",
+  "description": "Browse, solve, run, and submit TensorTonic Python problems from VS Code through your signed-in browser.",
+  "version": "0.1.0",
+  "publisher": "choru-local",
+  "license": "MIT",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Education", "Other"],
+  "keywords": ["tensortonic", "pytorch", "machine-learning", "practice"],
+  "main": "./src/extension.js",
+  "extensionKind": ["ui"],
+  "activationEvents": ["onView:tensortonicProblems"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "TensorTonic writes solution files and sends code to its execution service." },
+    "virtualWorkspaces": { "supported": false, "description": "The browser connection requires a local VS Code extension host." }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "python3 scripts/package.py"
+  },
+  "contributes": {
+    "viewsContainers": { "activitybar": [{ "id": "tensortonic", "title": "TensorTonic", "icon": "media/tensortonic.svg" }] },
+    "views": { "tensortonic": [{ "id": "tensortonicProblems", "name": "Problems" }] },
+    "commands": [
+      { "command": "tensortonic.connect", "title": "Connect browser", "category": "TensorTonic", "icon": "$(plug)" },
+      { "command": "tensortonic.disconnect", "title": "Disconnect browser", "category": "TensorTonic", "icon": "$(debug-disconnect)" },
+      { "command": "tensortonic.openProblem", "title": "Open problem", "category": "TensorTonic" },
+      { "command": "tensortonic.search", "title": "Search problems", "category": "TensorTonic", "icon": "$(search)" },
+      { "command": "tensortonic.refresh", "title": "Refresh problems", "category": "TensorTonic", "icon": "$(refresh)" },
+      { "command": "tensortonic.run", "title": "Run test cases", "category": "TensorTonic", "icon": "$(play)" },
+      { "command": "tensortonic.submit", "title": "Submit solution", "category": "TensorTonic", "icon": "$(cloud-upload)" },
+      { "command": "tensortonic.description", "title": "Show problem description", "category": "TensorTonic" },
+      { "command": "tensortonic.openTests", "title": "Edit test cases", "category": "TensorTonic" },
+      { "command": "tensortonic.openInBrowser", "title": "Open original problem in browser", "category": "TensorTonic" },
+      { "command": "tensortonic.chooseStudyPlan", "title": "Choose study plan", "category": "TensorTonic", "icon": "$(list-selection)" },
+      { "command": "tensortonic.smokeTest", "title": "Check connection and problem access", "category": "TensorTonic" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "tensortonic.connect", "when": "view == tensortonicProblems && !tensortonic.connected", "group": "navigation@1" },
+        { "command": "tensortonic.search", "when": "view == tensortonicProblems && tensortonic.connected", "group": "navigation@2" },
+        { "command": "tensortonic.chooseStudyPlan", "when": "view == tensortonicProblems", "group": "navigation@3" },
+        { "command": "tensortonic.refresh", "when": "view == tensortonicProblems && tensortonic.connected", "group": "navigation@4" },
+        { "command": "tensortonic.disconnect", "when": "view == tensortonicProblems && tensortonic.connected", "group": "connection@1" }
+      ],
+      "view/item/context": [
+        { "command": "tensortonic.openInBrowser", "when": "view == tensortonicProblems && viewItem == tensortonicProblem", "group": "navigation" }
+      ]
+    },
+    "configuration": {
+      "title": "TensorTonic",
+      "properties": {
+        "tensortonic.studyPlan": { "type": "string", "default": "pytorch-basics", "description": "TensorTonic studyPlan slug. Leave empty to browse free problems.", "scope": "window" },
+        "tensortonic.solutionDirectory": { "type": "string", "default": "tensortonic", "description": "Relative folder inside the workspace for solution code and editable test cases.", "scope": "window" }
+      }
+    }
+  }
+}
