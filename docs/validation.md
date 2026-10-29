@@ -17,7 +17,7 @@
 ## Launch and connection fixes
 
 - Code deliberately removes a requested folder from a development-host launch if that exact folder is already open in another Code window. Both launch configurations now use the distinct tracked `test/workspace` folder.
-- E2E writes a running report before waiting, persists each phase, and shows Korean connection instructions and waiting progress.
+- E2E writes a running report before waiting, persists each phase, and shows connection instructions and waiting progress.
 - Browser polling has a 30-second timeout with local-network permission and same-computer guidance. No Run or Submit is retried.
 
 ## Agent context checks

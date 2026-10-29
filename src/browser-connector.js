@@ -10,6 +10,14 @@ async function connectTensorTonic(config) {
   if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(base) || !/^[a-f0-9]{64}$/.test(config.token)) {
     throw new Error('Invalid local connection configuration.');
   }
+  let reportedState;
+  const reportState = state => {
+    if (reportedState === state) return;
+    reportedState = state;
+    if (typeof config.onState === 'function') {
+      try { config.onState(state); } catch (_) { /* UI callbacks cannot change transport behavior. */ }
+    }
+  };
   const slug = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
   const allowed = (p, method) => {
     if (typeof p !== 'string' || !p.startsWith('/api/') || /[\\#%]/.test(p)) return false;
@@ -22,8 +30,9 @@ async function connectTensorTonic(config) {
     }
     return method === 'POST' && !u.search && new RegExp(`^/api/(?:study-plans/${slug}/problems/${slug}/(?:run|submit)|problems/${slug}/(?:run-cases|submit))$`).test(u.pathname);
   };
-  console.info('TensorTonic VS Code: connecting to your local editor. Keep this tab open. To disconnect: window.__tensorTonicVSCode.abort()');
-  console.info('TensorTonic VS Code: if your browser asks for local-network access, allow it so this tab can reach VS Code on this computer.');
+  console.info('TensorTonic VS Code: connecting to your local editor. Keep this tab open. Disconnect through the companion or VS Code.');
+  reportState('connecting');
+  console.info('TensorTonic VS Code: review any local-network access prompt and follow your browser or organization policy.');
   try {
     while (!controller.signal.aborted) {
       const queue = await fetch(base + '/poll' + key, {
@@ -32,6 +41,7 @@ async function connectTensorTonic(config) {
       if (!queue.ok) throw new Error('Local editor rejected this connection (' + queue.status + ').');
       const command = await queue.json();
       if (command.stop) break;
+      reportState('connected');
       if (command.heartbeat) continue;
       let result;
       try {
@@ -52,11 +62,14 @@ async function connectTensorTonic(config) {
     }
   } catch (error) {
     if (!controller.signal.aborted) {
-      console.error('TensorTonic VS Code disconnected:', error.message);
-      console.error('TensorTonic VS Code: check local-network access for this site, keep VS Code and this browser on the same computer, then run a fresh connection code.');
+      // Browser network exceptions can include the full loopback request URL,
+      // which contains the in-memory capability. Never print those exceptions.
+      console.error('TensorTonic VS Code disconnected.');
+      console.error('TensorTonic VS Code: check local-network access for this site, keep VS Code and this browser on the same computer, then request a fresh pairing code.');
     }
   } finally {
     if (window.__tensorTonicVSCode === controller) delete window.__tensorTonicVSCode;
     console.info('TensorTonic VS Code: disconnected.');
+    reportState('disconnected');
   }
 }

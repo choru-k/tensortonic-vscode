@@ -14,5 +14,7 @@ exports.run = async function run() {
   assert.equal(result.connected, false);
   const commands = await vscode.commands.getCommands(true);
   for (const command of api.commands) assert.ok(commands.includes(command), `Registered command ${command}`);
-  fs.writeFileSync(path.resolve(__dirname, '../dist/vscode-smoke-result.json'), JSON.stringify({ success: true, ...result }, null, 2));
+  const reportPath = path.resolve(__dirname, '../dist/vscode-smoke-result.json');
+  fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+  fs.writeFileSync(reportPath, JSON.stringify({ success: true, vscode: vscode.version, ...result }, null, 2));
 };

@@ -12,7 +12,6 @@ exports.run = async function run() {
   const evidence = path.join(root, 'dist');
   await fs.mkdir(evidence, { recursive: true });
   const reportPath = path.join(evidence, 'e2e-report.json');
-  const connectionPath = path.join(evidence, 'e2e-connection.js');
   const instructionsPath = path.join(evidence, 'e2e-instructions.md');
   const report = {
     startedAt: new Date().toISOString(), success: false, phase: 'starting', steps: [],
@@ -31,7 +30,7 @@ exports.run = async function run() {
   const output = vscode.window.createOutputChannel('TensorTonic live E2E');
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 1000);
   status.name = 'TensorTonic live E2E';
-  status.tooltip = '실행 단계와 오류는 Output의 TensorTonic live E2E 및 dist/e2e-report.json에서 확인할 수 있습니다.';
+  status.tooltip = 'See Output → TensorTonic live E2E and dist/e2e-report.json for progress and errors.';
   status.show();
   const phase = async (name, message, completedStep) => {
     report.phase = name;
@@ -55,56 +54,55 @@ exports.run = async function run() {
     // VS Code removes a launch folder if it is already open in the parent.
     // Both launch configurations therefore open the distinct test/workspace.
     assert.ok(report.workspaceFolders.length,
-      'E2E 테스트 폴더가 열리지 않았습니다. 업데이트된 launch.json으로 실행해 test/workspace 폴더를 열어 주세요.');
-    await phase('activating', '확장 프로그램 활성화 중');
+      'The E2E test folder is not open. Use the updated launch.json to open test/workspace.');
+    await phase('activating', 'Activating the extension');
     const extension = vscode.extensions.getExtension('choru-local.tensortonic-vscode');
     assert.ok(extension, 'Extension must be installed/discovered');
     api = await extension.activate();
-    await phase('starting-connection', '임시 브라우저 연결 준비 중', 'Activated real VS Code extension');
-    await api.bridge.start();
-    await fs.writeFile(connectionPath, '// Temporary local pairing key. Do not commit or share.\n' + api.bridge.connectionCode(), { mode: 0o600 });
+    await phase('starting-connection', 'Preparing a temporary browser connection', 'Activated real VS Code extension');
     const deadline = Date.now() + 10 * 60 * 1000;
     const instructions = [
-      '# TensorTonic 실제 계정 테스트 — 브라우저 연결 대기',
+      '# TensorTonic live-account test — waiting for browser connection',
       '',
-      '확장 프로그램이 실행되었습니다. 왼쪽 JavaScript는 로그인된 브라우저와 VS Code를 연결하는 임시 코드입니다.',
+      'The extension is running. TensorTonic Browser Companion must already be installed in a permitted browser. Stop this test if you do not have permission to install it.',
       '',
-      '1. **이 Mac의 브라우저**에서 [TensorTonic](https://www.tensortonic.com/)을 열고 평소처럼 로그인하세요.',
-      '2. TensorTonic 탭의 개발자 도구에서 **Console**을 여세요.',
-      '3. 왼쪽 **e2e-connection.js**의 전체 내용을 복사해 해당 Console에서 실행하세요. 이 파일을 공유하거나 Git에 추가하지 마세요.',
-      '4. 브라우저에 **로컬 네트워크 접근** 확인창이 나타나면 사용자가 허용해야 합니다. 이 임시 연결이 같은 Mac의 VS Code에 접근하기 위해 필요합니다.',
-      '5. TensorTonic 탭을 열어 두세요. 연결되면 문제 열기 → Run → Submit → Agent 첨부 검증이 자동으로 이어집니다.',
+      '1. Open [TensorTonic](https://www.tensortonic.com/) in a browser **on the same computer as VS Code** and sign in normally.',
+      '2. In the VS Code **Connect browser companion** prompt, select **Copy pairing code**.',
+      '3. Open the companion popup on the TensorTonic tab, paste the pairing code, and select **Connect this tab**. The code expires after two minutes and can be used only once. No console is needed.',
+      '4. If the browser asks for **local-network access**, the user must review and permit it. This temporary connection is needed to reach VS Code on the same computer. Do not bypass an organization policy that blocks it.',
+      '5. Keep the TensorTonic tab open. After pairing, the test automatically opens the problem, runs and submits code, and checks Agent attachments.',
       '',
-      '**연결 대기 시간은 10분입니다.** 아래 상태 표시줄과 알림에 남은 시간이 표시됩니다. 알림의 취소 버튼으로 중단할 수 있습니다.',
+      '**The connection wait is limited to 10 minutes.** The status bar and notification show the time remaining. Use Cancel in the notification to stop.',
       '',
-      '이 테스트는 현재 계정에서 이미 푼 **Softmax from Scratch**만 한 번 재제출합니다. 테스트 중 편집한 코드는 종료 시 원래 내용으로 복원합니다.',
+      'This test submits **Softmax from Scratch** once more only if it is already solved by the current account. Editor changes made during the test are restored when it ends.',
       '',
-      'Agent에는 문제·풀이·테스트 파일을 첨부한 작성 창을 엽니다. 실제 AI 답변은 자동으로 요청하거나 검증했다고 표시하지 않습니다.',
+      'The test opens an Agent draft with the problem, solution, and test files attached. It does not automatically request an AI response or mark one as verified.',
       '',
-      '진행 상황과 오류: **Output → TensorTonic live E2E**, 또는 [e2e-report.json](./e2e-report.json).',
+      'Progress and errors: **Output → TensorTonic live E2E**, or [e2e-report.json](./e2e-report.json).',
       '',
     ].join('\n');
     await fs.writeFile(instructionsPath, instructions);
     const instructionsUri = vscode.Uri.file(instructionsPath);
-    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(connectionPath)), { viewColumn: vscode.ViewColumn.One, preview: false });
+    await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(instructionsUri), { viewColumn: vscode.ViewColumn.One, preview: false });
     if ((await vscode.commands.getCommands(true)).includes('markdown.showPreviewToSide')) {
       await vscode.commands.executeCommand('markdown.showPreviewToSide', instructionsUri);
     } else {
       await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(instructionsUri), { viewColumn: vscode.ViewColumn.Beside, preview: false });
     }
     report.pairingDeadline = new Date(deadline).toISOString();
-    await phase('waiting-for-browser', '브라우저 연결 대기 (10:00)', 'Started loopback connection and displayed Korean pairing instructions');
+    await phase('waiting-for-browser', 'Waiting for browser connection (10:00)', 'Displayed no-console browser companion pairing instructions');
+    void vscode.commands.executeCommand('tensortonic.connect');
     await vscode.window.withProgress({
       location: vscode.ProgressLocation.Notification,
-      title: 'TensorTonic E2E: 브라우저 Console에서 임시 연결 코드를 실행해 주세요.',
+      title: 'TensorTonic E2E: enter the pairing code in the browser companion.',
       cancellable: true,
     }, async (progress, cancellation) => {
       let lastSaved = 0;
       while (!api.bridge.connected && Date.now() < deadline) {
-        if (cancellation.isCancellationRequested) throw new Error('사용자가 브라우저 연결 대기를 취소했습니다. Run/Submit은 실행하지 않았습니다.');
+        if (cancellation.isCancellationRequested) throw new Error('The user canceled the browser connection wait. No Run or Submit was performed.');
         const seconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
         const remaining = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
-        const message = `브라우저 연결 대기 — 남은 시간 ${remaining}`;
+        const message = `Waiting for browser connection — ${remaining} remaining`;
         status.text = `$(sync~spin) TensorTonic E2E: ${message}`;
         progress.report({ message });
         if (Date.now() - lastSaved >= 5000) {
@@ -116,19 +114,19 @@ exports.run = async function run() {
       }
     });
     assert.equal(api.bridge.connected, true,
-      '10분 안에 브라우저가 연결되지 않았습니다. TensorTonic 탭의 Console 오류와 로컬 네트워크 접근 확인창을 확인한 뒤 테스트를 다시 실행해 주세요.');
+      'The browser did not connect within 10 minutes. Check the browser companion error and local-network permission prompt before running the test again.');
     delete report.pairingSecondsRemaining;
-    await phase('checking-account', '로그인 계정과 문제 접근 확인 중', 'Paired actual browser and extension loopback connection');
+    await phase('checking-account', 'Checking the signed-in account and problem access', 'Paired actual browser and extension loopback connection');
     const access = await api.smokeTest({ ref: { slug: 'pytorch-softmax-from-scratch', planId: 'pytorch-basics' } });
     assert.ok(access.problemCount > 0); assert.equal(access.problem.hasStarterCode, true);
     const catalogue = await api.client.listProblems('pytorch-basics');
     assert.equal(catalogue.some(problem => problem.slug === 'pytorch-softmax-from-scratch' && problem.solved), true,
       'This live test only re-submits an exercise already solved by the signed-in account');
     report.access = access;
-    await phase('opening-problem', 'Softmax 문제와 편집기 열기');
+    await phase('opening-problem', 'Opening the Softmax problem and editor');
     opened = await api.openProblem({ slug: 'pytorch-softmax-from-scratch', planId: 'pytorch-basics', technology: 'pytorch' });
     assert.ok(opened && opened.contextUri);
-    await phase('preparing-editor', '저장 전 편집기 코드 검증 준비 중', 'Opened real problem, statement preview, solution and editable public tests');
+    await phase('preparing-editor', 'Preparing to verify unsaved editor code', 'Opened real problem, statement preview, solution and editable public tests');
     const solution = await vscode.workspace.openTextDocument(opened.uri);
     const cases = await vscode.workspace.openTextDocument(opened.testsUri);
     originalCode = solution.getText(); originalCases = cases.getText();
@@ -136,27 +134,27 @@ exports.run = async function run() {
     const testCode = metadata + '\n\nimport torch\n\ndef softmax(logits: torch.Tensor) -> torch.Tensor:\n    m = logits.max(dim=1, keepdim=True).values\n    e = torch.exp(logits - m)\n    return e / e.sum(dim=1, keepdim=True)\n';
     await replace(solution, testCode);
     await replace(cases, JSON.stringify(opened.problem.testCases, null, 2));
-    await phase('running-public-tests', '실제 Run 결과 확인 중');
+    await phase('running-public-tests', 'Checking the live Run result');
     const runResult = await vscode.commands.executeCommand('tensortonic.run', opened.uri);
     assert.equal(runResult && runResult.status, 'passed', 'Actual Run must pass');
     assert.equal(runResult.passed, runResult.total);
     report.run = { status: runResult.status, passed: runResult.passed, total: runResult.total };
-    await phase('submitting', '이미 푼 Softmax 재제출 결과 확인 중', 'Run command submitted current unsaved editor code and displayed passing results');
+    await phase('submitting', 'Checking resubmission of the already-solved Softmax problem', 'Run command submitted current unsaved editor code and displayed passing results');
     const submitResult = await vscode.commands.executeCommand('tensortonic.submit', opened.uri);
     assert.equal(submitResult && submitResult.status, 'passed', 'Actual Submit must pass');
     assert.equal(submitResult.passed, submitResult.total);
     report.submit = { status: submitResult.status, passed: submitResult.passed, total: submitResult.total };
-    await phase('checking-agent-tool', 'Agent 문제 읽기 도구 확인 중', 'Submit command received passing server grading and displayed results');
+    await phase('checking-agent-tool', 'Checking the Agent problem-context tool', 'Submit command received passing server grading and displayed results');
     const toolResult = await vscode.lm.invokeTool('tensortonic_current_problem', { input: {}, toolInvocationToken: undefined });
     const toolText = toolResult.content.filter(part => typeof part.value === 'string').map(part => part.value).join('\n');
     assert.ok(toolText.includes(testCode));
     assert.ok(toolText.includes('Softmax'));
-    await phase('opening-agent-composer', 'Agent 작성 창과 파일 첨부 확인 중', 'Real VS Code language-model tool returned selected problem and unsaved code');
+    await phase('opening-agent-composer', 'Checking the Agent composer and file attachments', 'Real VS Code language-model tool returned selected problem and unsaved code');
     const discussion = await api.discussWithAgent(opened.uri);
     assert.equal(discussion.attachedFiles.length, 3);
     report.agentComposerOpened = true;
     checksPassed = true;
-    await phase('restoring-editor', '원래 편집기 내용 복원 중', 'Opened built-in Agent composer with actual problem, solution and tests attached');
+    await phase('restoring-editor', 'Restoring the original editor contents', 'Opened built-in Agent composer with actual problem, solution and tests attached');
   } catch (error) {
     failure = error;
     report.error = error && error.message || String(error);
@@ -171,10 +169,6 @@ exports.run = async function run() {
       await cleanup(async () => replace(await vscode.workspace.openTextDocument(opened.uri), originalCode));
       await cleanup(async () => replace(await vscode.workspace.openTextDocument(opened.testsUri), originalCases));
     }
-    await cleanup(async () => {
-      try { await fs.unlink(connectionPath); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    });
     if (api) await cleanup(() => api.bridge.stop());
     if (cleanupErrors.length) {
       report.cleanupErrors = cleanupErrors;
@@ -186,7 +180,7 @@ exports.run = async function run() {
     report.success = checksPassed && !failure && cleanupErrors.length === 0;
     report.phase = report.success ? 'completed' : 'failed';
     report.finishedAt = new Date().toISOString();
-    output.appendLine(`${report.finishedAt} [${report.phase}] ${report.error || 'Run/Submit 및 Agent 첨부 확인 완료. 실제 AI 답변 검증은 별도입니다.'}`);
+    output.appendLine(`${report.finishedAt} [${report.phase}] ${report.error || 'Run/Submit and Agent attachments verified. An actual AI response requires separate verification.'}`);
     await persist();
     status.dispose();
     output.dispose();

@@ -69,7 +69,7 @@ def content_types():
 
 
 def files_to_package():
-    result = [ROOT / name for name in ("package.json", "README.md", "CHANGELOG.md", "LICENSE")]
+    result = [ROOT / name for name in ("package.json", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE")]
     for directory, suffixes in (("src", {".js"}), ("media", {".svg", ".png"}), ("docs", {".md"})):
         base = ROOT / directory
         if base.exists():

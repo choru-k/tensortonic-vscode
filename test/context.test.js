@@ -69,8 +69,8 @@ test('agent context keeps the exact unsaved code inside a fence longer than embe
   assert.ok(context.includes('`````python\n' + code + '`````'));
   assert.ok(context.includes(code));
   assert.doesNotMatch(context, /SENTINEL/);
-  assert.match(context, /한 번에 한 단계/);
-  assert.match(context, /요청하기 전에는 완성된 정답/);
+  assert.match(context, /one step at a time/);
+  assert.match(context, /Do not show a complete answer or full implementation unless/);
 });
 
 test('starter and public JSON with nested backticks cannot terminate their enclosing fences', () => {
@@ -84,12 +84,12 @@ test('starter and public JSON with nested backticks cannot terminate their enclo
 
 test('discussion prompt names both local files and asks for one tutoring step using current editor contents', () => {
   const prompt = buildDiscussionPrompt(fixture().ref, '/tmp/practice/my solution.py', '/tmp/practice/problem.md');
-  assert.match(prompt, /문제 설명 파일: \/tmp\/practice\/problem\.md/);
-  assert.match(prompt, /내 풀이 파일: \/tmp\/practice\/my solution\.py/);
-  assert.match(prompt, /저장하지 않은 변경/);
-  assert.match(prompt, /한 번에 한 단계/);
-  assert.match(prompt, /요청하기 전에는 완성된 정답/);
-  assert.match(prompt, /비공개 테스트/);
+  assert.match(prompt, /Problem statement file: \/tmp\/practice\/problem\.md/);
+  assert.match(prompt, /My solution file: \/tmp\/practice\/my solution\.py/);
+  assert.match(prompt, /unsaved editor changes/);
+  assert.match(prompt, /one step at a time/);
+  assert.match(prompt, /Do not show a complete answer or full implementation unless/);
+  assert.match(prompt, /private tests/);
   assert.doesNotMatch(prompt, /SENTINEL/);
 });
 
@@ -102,4 +102,25 @@ test('discussion paths reject control characters and remote URLs while keeping u
   assert.match(prompt, /````text\n/);
   assert.ok(prompt.includes('/tmp/```solution.py'));
   assert.throws(() => formatAgentContext(fixture(), null), /must be a string/);
+});
+
+// Intentional multilingual fixtures: repository language must not alter
+// upstream problem statements, learner code, or local filenames.
+test('English agent guidance preserves multilingual problem content and learner input', () => {
+  const problem = fixture();
+  problem.title = '가중치 업데이트';
+  problem.description = '원문의 요구사항을 그대로 유지하세요.';
+  problem.examples = ['입력: x=1\n출력: 2'];
+  problem.starterCode = '# 시작 코드\ndef update(x):\n    pass\n';
+  const code = '# 내 풀이\nprint("안녕하세요")\n';
+  const context = formatAgentContext(problem, code);
+  for (const original of [problem.title, problem.description, problem.examples[0], problem.starterCode, code]) {
+    assert.ok(context.includes(original), 'original multilingual content must remain unchanged');
+  }
+  assert.match(context, /^Below are the TensorTonic problem and current editor code\./);
+  assert.match(context, /one step at a time/);
+  const prompt = buildDiscussionPrompt(problem.ref, '/tmp/내 풀이.py', '/tmp/문제.md');
+  assert.match(prompt, /^Help me study this TensorTonic problem\./);
+  assert.ok(prompt.includes('My solution file: /tmp/내 풀이.py'));
+  assert.ok(prompt.includes('Problem statement file: /tmp/문제.md'));
 });

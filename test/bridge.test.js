@@ -29,6 +29,51 @@ function ready() {
   const b = new BrowserBridge(); b.token = token; b.connected = true; return b;
 }
 
+function controlledServer(port) {
+  const server = new EventEmitter();
+  return Object.assign(server, {
+    closeCount: 0,
+    listen(requestedPort, host, callback) {
+      assert.equal(requestedPort, 0); assert.equal(host, '127.0.0.1');
+      this.listenCallback = callback;
+    },
+    finishListening() { this.listenCallback(); },
+    address() { return { port }; }, unref() {}, closeAllConnections() {},
+    close(callback) { this.closeCount++; this.closeCallback = callback; },
+    finishClosing() { this.emit('close'); this.closeCallback(); },
+  });
+}
+
+async function pairingBridge(t, options = {}) {
+  let nextPort = 43210;
+  const bridge = new BrowserBridge({ ...options, serverFactory: () => {
+    const server = new EventEmitter();
+    const port = nextPort++;
+    return Object.assign(server, {
+      closeCount: 0, listen(_port, _host, callback) { setImmediate(callback); },
+      address() { return { port }; }, unref() {}, closeAllConnections() {},
+      close(callback) { this.closeCount++; this.emit('close'); callback(); },
+    });
+  } });
+  t.after(() => bridge.stop());
+  await bridge.start();
+  return bridge;
+}
+
+async function pair(bridge, pairingKey, options = {}) {
+  const raw = options.raw == null ? JSON.stringify(options.body ?? { pairingKey }) : options.raw;
+  const req = Readable.from([Buffer.from(raw)]);
+  Object.assign(req, {
+    url: options.url || '/pair', method: options.method || 'POST',
+    headers: { origin, host: `127.0.0.1:${bridge.port}`, ...options.headers },
+  });
+  const res = response();
+  await bridge._handle(req, res);
+  return res;
+}
+
+const pairingKeyOf = code => code.split(':')[2];
+
 test('only observed Python problem endpoints and bounded catalog parameters are permitted', () => {
   for (const p of ['/api/study-plans', '/api/study-plans/pytorch-basics', '/api/problems/sigmoid-numpy', '/api/study-plans/pytorch-basics/problems/pytorch-mini-training', '/api/problems/list?page=1&limit=100&planId=pytorch-basics']) assert.equal(isAllowedRequest(p), true, p);
   for (const p of ['/api/problems/sigmoid-numpy/run-cases', '/api/problems/sigmoid-numpy/submit', '/api/study-plans/pytorch-basics/problems/pytorch-mini-training/run', '/api/study-plans/pytorch-basics/problems/pytorch-mini-training/submit']) assert.equal(isAllowedRequest(p, 'POST'), true, p);
@@ -71,6 +116,244 @@ test('concurrent connection commands share one loopback listener and wait for it
   await bridge.stop();
 });
 
+test('disconnect cancels pending startup and reconnect waits for the old listener to close', { timeout: 3000 }, async () => {
+  const servers = [];
+  const bridge = new BrowserBridge({ serverFactory: () => {
+    const server = controlledServer(43210 + servers.length); servers.push(server); return server;
+  } });
+  const first = bridge.start();
+  const canceled = assert.rejects(first, /startup was canceled/);
+  const oldToken = bridge.token;
+  const stopping = bridge.stop();
+  const repeatedStop = bridge.stop();
+  const reconnect = bridge.start();
+  const concurrentReconnect = bridge.start();
+  await new Promise(setImmediate);
+  assert.equal(servers.length, 1, 'reconnect must wait for teardown');
+  assert.equal(servers[0].closeCount, 1, 'concurrent stops close once');
+  assert.equal(bridge.token, undefined);
+  assert.equal(bridge.port, undefined);
+  servers[0].finishClosing();
+  await Promise.all([stopping, repeatedStop, canceled]);
+  await new Promise(setImmediate);
+  assert.equal(servers.length, 2, 'concurrent reconnects share a fresh listener');
+  const newToken = bridge.token;
+  assert.notEqual(newToken, oldToken);
+  // Even a stale listen callback must not restore the previous port/session.
+  servers[0].finishListening();
+  assert.equal(bridge.port, undefined);
+  assert.equal(bridge.token, newToken);
+  servers[1].finishListening();
+  await Promise.all([reconnect, concurrentReconnect]);
+  assert.equal(bridge.port, 43211);
+  assert.equal(bridge.starting, undefined);
+  assert.equal(bridge.stopping, undefined);
+  const finalStop = bridge.stop();
+  await new Promise(setImmediate); servers[1].finishClosing(); await finalStop;
+  assert.equal(bridge.watchdog, undefined);
+});
+
+test('a bind error racing disconnect settles startup and permits another connection', { timeout: 3000 }, async () => {
+  const servers = [];
+  const bridge = new BrowserBridge({ serverFactory: () => {
+    const server = controlledServer(43210 + servers.length); servers.push(server); return server;
+  } });
+  const failed = assert.rejects(bridge.start(), /synthetic bind failure/);
+  const stopping = bridge.stop();
+  await new Promise(setImmediate);
+  servers[0].emit('error', new Error('synthetic bind failure'));
+  servers[0].finishClosing();
+  await Promise.all([failed, stopping]);
+  assert.equal(bridge.starting, undefined); assert.equal(bridge.token, undefined);
+  const retry = bridge.start();
+  servers[1].finishListening(); await retry;
+  assert.equal(bridge.port, 43211);
+  const finalStop = bridge.stop();
+  await new Promise(setImmediate); servers[1].finishClosing(); await finalStop;
+});
+
+test('a listener that closes before readiness rejects instead of leaving startup pending', { timeout: 3000 }, async () => {
+  const server = controlledServer(43210);
+  const bridge = new BrowserBridge({ serverFactory: () => server });
+  const failed = assert.rejects(bridge.start(), /startup was canceled/);
+  server.emit('close'); await failed;
+  assert.equal(bridge.starting, undefined); assert.equal(bridge.server, undefined);
+  assert.equal(bridge.token, undefined); assert.equal(bridge.port, undefined);
+});
+
+test('pairing code is opaque, single-use, expires in two minutes, and does not connect until poll', async t => {
+  let now = 1000;
+  const bridge = await pairingBridge(t, { now: () => now });
+  const previousToken = bridge.token;
+  const code = bridge.pairingCode();
+  assert.match(code, /^TT1:43210:[a-f0-9]{32}$/);
+  assert.notEqual(bridge.token, previousToken);
+  assert.equal(bridge.pairingTicket.expiresAt, 121000);
+  const res = await pair(bridge, pairingKeyOf(code));
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { base: 'http://127.0.0.1:43210', token: bridge.token });
+  assert.match(res.body.token, /^[a-f0-9]{64}$/);
+  assert.equal(bridge.connected, false); assert.equal(bridge.pairingTicket, undefined);
+  assert.equal((await pair(bridge, pairingKeyOf(code))).status, 403);
+  await send(bridge, '/poll', { key: res.body.token });
+  assert.equal(bridge.connected, true);
+});
+
+test('fresh pairing invalidates earlier tickets and redeemed-but-unused capabilities', async t => {
+  const bridge = await pairingBridge(t);
+  const first = bridge.pairingCode(); const firstToken = bridge.token;
+  const second = bridge.pairingCode();
+  assert.notEqual(first, second); assert.notEqual(firstToken, bridge.token);
+  assert.equal((await pair(bridge, pairingKeyOf(first))).status, 403);
+  assert.equal((await send(bridge, '/poll', { key: firstToken })).status, 403);
+  const redeemed = await pair(bridge, pairingKeyOf(second)); assert.equal(redeemed.status, 200);
+  const third = bridge.pairingCode();
+  assert.equal((await send(bridge, '/poll', { key: redeemed.body.token })).status, 403);
+  assert.equal((await pair(bridge, pairingKeyOf(third))).status, 200);
+});
+
+test('reissuing pairing clears abandoned polls and pending work without replay', async t => {
+  const bridge = await pairingBridge(t); let rejected;
+  const poll = response(); bridge.pollResponse = poll;
+  bridge.pending.set('old', { timer: setTimeout(() => {}, 1000), reject(error) { rejected = error; } });
+  bridge.queue.push({ id: 'old', method: 'POST' });
+  bridge.pairingCode();
+  assert.deepEqual(poll.body, { stop: true }); assert.match(rejected.message, /renewed/);
+  assert.equal(bridge.pollResponse, undefined); assert.equal(bridge.pending.size, 0); assert.equal(bridge.queue.length, 0);
+});
+
+test('pairing refuses absent/stopping listeners and never replaces a connected browser', async t => {
+  assert.throws(() => new BrowserBridge().pairingCode(), /Start the browser/);
+  const bridge = await pairingBridge(t);
+  bridge.pairingCode(); const originalToken = bridge.token; const ticket = bridge.pairingTicket;
+  bridge.connected = true;
+  assert.throws(() => bridge.pairingCode(), /already connected/);
+  assert.equal(bridge.token, originalToken); assert.equal(bridge.pairingTicket, ticket);
+  bridge.connected = false;
+  const stopping = bridge.stop(); assert.throws(() => bridge.pairingCode(), /Start the browser/); await stopping;
+});
+
+test('expired pairing is rejected at the exact TTL boundary and invalidated', async t => {
+  let now = 100;
+  const bridge = await pairingBridge(t, { now: () => now, pairingTtl: 25 });
+  const key = pairingKeyOf(bridge.pairingCode()); now = 125;
+  const rejected = await pair(bridge, key);
+  assert.equal(rejected.status, 403); assert.equal(bridge.pairingTicket, undefined);
+  assert.doesNotMatch(JSON.stringify(rejected.body), new RegExp(key));
+  now = 126; const freshKey = pairingKeyOf(bridge.pairingCode()); now = 150;
+  assert.equal((await pair(bridge, freshKey)).status, 200);
+});
+
+test('eight wrong redemption attempts invalidate the ticket; seven permit the correct code', async t => {
+  const bridge = await pairingBridge(t);
+  const key = pairingKeyOf(bridge.pairingCode());
+  const wrong = key[0] === 'a' ? 'b'.repeat(32) : 'a'.repeat(32);
+  for (let i = 0; i < 8; i++) assert.equal((await pair(bridge, wrong)).status, 403);
+  assert.equal(bridge.pairingTicket, undefined); assert.equal((await pair(bridge, key)).status, 403);
+  const fresh = pairingKeyOf(bridge.pairingCode());
+  for (let i = 0; i < 7; i++) assert.equal((await pair(bridge, 'wrong')).status, 403);
+  assert.equal((await pair(bridge, fresh)).status, 200);
+});
+
+test('pairing requires exact Origin and Host; untrusted origins/hosts cannot spend a ticket', async t => {
+  const bridge = await pairingBridge(t);
+  const key = pairingKeyOf(bridge.pairingCode());
+  for (const headers of [
+    { origin: 'https://evil.example' }, { origin: undefined }, { origin: 'null' },
+    { origin: 'https://www.tensortonic.com.evil.example' }, { host: 'localhost:43210' },
+    { host: '127.0.0.1:9999' }, { host: 'evil.example:43210' }, { host: undefined },
+  ]) assert.equal((await pair(bridge, key, { headers })).status, 403);
+  assert.equal(bridge.pairingTicket.attempts, 0);
+  assert.equal((await pair(bridge, key, { headers: { origin: 'https://tensortonic.com' } })).status, 200);
+});
+
+test('pairing requires literal POST /pair without a query; CORS OPTIONS grants no capability', async t => {
+  const bridge = await pairingBridge(t); const key = pairingKeyOf(bridge.pairingCode());
+  for (const options of [{ method: 'GET' }, { method: 'PUT' }, { url: '/pair?key=ignored' }, { url: '/pair?' }, { url: 'http://127.0.0.1:43210/pair' }]) {
+    assert.equal((await pair(bridge, key, options)).status, 403);
+  }
+  const preflight = await pair(bridge, key, { method: 'OPTIONS' });
+  assert.equal(preflight.status, 200); assert.deepEqual(preflight.body, {});
+  assert.equal(bridge.pairingTicket.attempts, 0);
+  assert.equal((await pair(bridge, key)).status, 200);
+});
+
+test('pairing JSON must contain only one correctly shaped pairingKey and fit within 1 KiB', async t => {
+  const bridge = await pairingBridge(t);
+  for (const raw of ['{', 'null', '[]', '"key"', '{}', '{"pairingKey":1}', '{"pairingKey":"' + 'A'.repeat(32) + '"}', '{"pairingKey":"' + 'é'.repeat(32) + '"}']) {
+    const key = pairingKeyOf(bridge.pairingCode());
+    assert.equal((await pair(bridge, key, { raw })).status, 403);
+  }
+  let key = pairingKeyOf(bridge.pairingCode());
+  assert.equal((await pair(bridge, key, { body: { pairingKey: key, url: 'https://evil.example' } })).status, 403);
+  key = pairingKeyOf(bridge.pairingCode());
+  assert.equal((await pair(bridge, key, { raw: JSON.stringify({ pairingKey: key }) + ' '.repeat(1024) })).status, 413);
+  key = pairingKeyOf(bridge.pairingCode());
+  const exact = JSON.stringify({ pairingKey: key }).padEnd(1024);
+  assert.equal((await pair(bridge, key, { raw: exact })).status, 200);
+});
+
+test('two tabs redeeming concurrently receive at most one capability', async t => {
+  const bridge = await pairingBridge(t); const key = pairingKeyOf(bridge.pairingCode());
+  const results = await Promise.all([pair(bridge, key), pair(bridge, key)]);
+  assert.deepEqual(results.map(result => result.status).sort(), [200, 403]);
+  assert.equal(results.filter(result => result.body.token).length, 1);
+});
+
+test('redemption begun before ticket rotation cannot consume the new ticket or revive the old token', async t => {
+  const bridge = await pairingBridge(t); const oldKey = pairingKeyOf(bridge.pairingCode());
+  const body = new Readable({ read() {} });
+  Object.assign(body, { url: '/pair', method: 'POST', headers: { origin, host: `127.0.0.1:${bridge.port}` } });
+  const res = response(); const inFlight = bridge._handle(body, res);
+  const fresh = pairingKeyOf(bridge.pairingCode()); const ticket = bridge.pairingTicket;
+  body.push(JSON.stringify({ pairingKey: oldKey })); body.push(null); await inFlight;
+  assert.equal(res.status, 403); assert.equal(bridge.pairingTicket, ticket); assert.equal(ticket.attempts, 0);
+  assert.equal((await pair(bridge, fresh)).status, 200);
+});
+
+test('pairing tickets are bound to the exact current session token and port', async t => {
+  const bridge = await pairingBridge(t);
+  let key = pairingKeyOf(bridge.pairingCode()); bridge.token = 'f'.repeat(64);
+  assert.equal((await pair(bridge, key)).status, 403);
+  key = pairingKeyOf(bridge.pairingCode()); bridge.port++;
+  assert.equal((await pair(bridge, key)).status, 403);
+});
+
+test('stop/restart invalidates every outstanding pairing ticket and capability', async t => {
+  const bridge = await pairingBridge(t); const key = pairingKeyOf(bridge.pairingCode()); const oldToken = bridge.token;
+  await bridge.stop(); assert.equal(bridge.pairingTicket, undefined); await bridge.start();
+  assert.notEqual(bridge.token, oldToken);
+  assert.equal((await pair(bridge, key)).status, 403);
+  const fresh = pairingKeyOf(bridge.pairingCode()); assert.equal((await pair(bridge, fresh)).status, 200);
+});
+
+test('authenticated disconnect revokes immediately but closes only after HTTP acknowledgement', async t => {
+  const bridge = await pairingBridge(t); bridge.pairingCode(); const capability = bridge.token; const server = bridge.server;
+  bridge.connected = true;
+  const pending = bridge.request('/api/problems/mock/submit', { method: 'POST', body: { code: 'pass' } });
+  const rejected = assert.rejects(pending, /disconnected/);
+  const req = Readable.from([]);
+  Object.assign(req, { url: '/disconnect?key=' + capability, method: 'POST', headers: { origin } });
+  const res = response();
+  res.end = function (text) { this.body = JSON.parse(text); this.writableEnded = true; };
+  await bridge._handle(req, res);
+  assert.equal(res.status, 200); assert.deepEqual(res.body, { ok: true });
+  assert.equal(bridge.token, undefined); assert.equal(bridge.pairingTicket, undefined); assert.equal(bridge.connected, false);
+  assert.equal(server.closeCount, 0, 'response must flush before closing sockets');
+  assert.equal((await send(bridge, '/poll', { key: capability })).status, 403);
+  res.emit('finish'); await bridge.stopping; await rejected;
+  assert.equal(server.closeCount, 1); assert.equal(bridge.server, undefined);
+  assert.equal(bridge.pending.size, 0); assert.equal(bridge.queue.length, 0);
+});
+
+test('disconnect with a wrong key/origin/method cannot revoke a valid connection', async t => {
+  const bridge = await pairingBridge(t); bridge.pairingCode(); const capability = bridge.token;
+  for (const options of [{ method: 'POST', key: 'bad' }, { method: 'POST', key: capability, origin: 'https://evil.example' }, { method: 'GET', key: capability }]) {
+    const res = await send(bridge, '/disconnect', options); assert.ok(res.status >= 400);
+    assert.equal(bridge.token, capability); assert.ok(bridge.server);
+  }
+});
+
 test('request travels through authenticated poll/result, retains false/zero data, and rejects replay', async () => {
   const bridge = ready();
   const pending = bridge.request('/api/problems/sigmoid-numpy');
@@ -103,6 +386,16 @@ test('disconnect rejects outstanding work and invalidates local capabilities', a
   await bridge.stop(); await check;
   assert.equal(bridge.connected, false); assert.equal(bridge.token, undefined);
   assert.equal(bridge.pending.size, 0); assert.equal(bridge.queue.length, 0);
+});
+
+test('disconnect prevents new grading requests before asynchronous teardown completes', async () => {
+  const bridge = ready();
+  const stopping = bridge.stop();
+  await assert.rejects(bridge.request('/api/problems/sigmoid-numpy/submit', {
+    method: 'POST', body: { code: 'pass', problemType: 'free' },
+  }), /Connect a signed-in/);
+  assert.equal(bridge.pending.size, 0); assert.equal(bridge.queue.length, 0);
+  await stopping;
 });
 
 test('browser code keeps cookies inside TensorTonic and forwards one exact grading operation', async () => {
@@ -164,4 +457,21 @@ test('browser connection timeout gives local-network guidance and never sends gr
   assert.match(messages.join('\n'), /local-network access/);
   assert.match(messages.join('\n'), /same computer/);
   assert.equal(sandbox.window.__tensorTonicVSCode, undefined);
+});
+
+test('connector diagnostics never expose capability or ticket from a network exception', async () => {
+  const messages = [];
+  const pairing = 'TT1:43210:' + 'b'.repeat(32);
+  const sandbox = {
+    location: { origin }, window: {}, URL, AbortController, AbortSignal,
+    console: Object.fromEntries(['info', 'warn', 'error'].map(name => [name, (...args) => messages.push(args.join(' '))])),
+    async fetch(url) { throw new Error(`request failed ${url} with ${pairing}`); },
+  };
+  const source = fs.readFileSync(require.resolve('../src/browser-connector'), 'utf8');
+  await vm.runInNewContext(`(${source})(${JSON.stringify({ base: 'http://127.0.0.1:43210', token })})`, sandbox);
+  const diagnostics = messages.join('\n');
+  assert.ok(!diagnostics.includes(token));
+  assert.ok(!diagnostics.includes(pairing));
+  assert.ok(!diagnostics.includes('?key='));
+  assert.match(diagnostics, /local-network access/);
 });

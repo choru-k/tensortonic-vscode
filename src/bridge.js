@@ -7,6 +7,8 @@ const path = require('node:path');
 
 const ORIGINS = new Set(['https://www.tensortonic.com', 'https://tensortonic.com']);
 const MAX_BYTES = 8 * 1024 * 1024;
+const MAX_PAIRING_BYTES = 1024;
+const MAX_PAIRING_ATTEMPTS = 8;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
 
 // The bridge cannot call arbitrary URLs, account settings, billing, or solutions.
@@ -47,6 +49,9 @@ class BrowserBridge {
     this.pollResponse = undefined;
     this.requestTimeout = options.requestTimeout || 180000;
     this.serverFactory = options.serverFactory || http.createServer;
+    this.pairingTtl = options.pairingTtl ?? 120000;
+    this.now = options.now || Date.now;
+    this.pairingTicket = undefined;
   }
 
   _connection(value) {
@@ -56,13 +61,18 @@ class BrowserBridge {
   }
 
   async start() {
+    // A reconnect requested while disconnect is closing the old listener must
+    // wait for that listener (and any canceled startup) to finish first.
+    if (this.stopping) await this.stopping;
     if (this.starting) return this.starting;
     if (this.server && this.port) return;
-    this.starting = this._start();
-    try { await this.starting; } finally { this.starting = undefined; }
+    const starting = this._start();
+    this.starting = starting;
+    try { await starting; } finally { if (this.starting === starting) this.starting = undefined; }
   }
 
   async _start() {
+    this.pairingTicket = undefined;
     this.token = crypto.randomBytes(32).toString('hex');
     const server = this.serverFactory((req, res) => {
       this._handle(req, res).catch(() => this._json(res, 400, { error: 'Invalid local request' }));
@@ -70,12 +80,21 @@ class BrowserBridge {
     this.server = server;
     try {
       await new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(0, '127.0.0.1', () => {
-          server.removeListener('error', reject);
-          resolve();
-        });
+        const cleanup = () => {
+          server.removeListener('error', onError);
+          server.removeListener('close', onClose);
+        };
+        const onError = error => { cleanup(); reject(error); };
+        const onClose = () => onError(new Error('Browser connection startup was canceled.'));
+        server.once('error', onError);
+        server.once('close', onClose);
+        try {
+          server.listen(0, '127.0.0.1', () => { cleanup(); resolve(); });
+        } catch (error) { onError(error); }
       });
+      // stop() can revoke this listener after its callback but before this
+      // continuation. Never publish a port or watchdog for a canceled session.
+      if (this.server !== server || this.stopping) throw new Error('Browser connection startup was canceled.');
       this.port = server.address().port;
       server.unref();
       this.watchdog = setInterval(() => {
@@ -86,8 +105,12 @@ class BrowserBridge {
       }, 15000);
       this.watchdog.unref();
     } catch (error) {
-      this.server = undefined;
-      this.token = undefined;
+      if (this.server === server && !this.stopping) {
+        this.server = undefined;
+        this.token = undefined;
+        this.port = undefined;
+        this.pairingTicket = undefined;
+      }
       throw new Error(`Could not start the local TensorTonic connection: ${error.message}`);
     }
   }
@@ -96,6 +119,62 @@ class BrowserBridge {
     if (!this.server || !this.port) throw new Error('Start the browser connection first.');
     const source = fs.readFileSync(path.join(__dirname, 'browser-connector.js'), 'utf8');
     return `(${source})(${JSON.stringify({ base: `http://127.0.0.1:${this.port}`, token: this.token })});`;
+  }
+
+  pairingCode() {
+    if (!this.server || !this.port || !this.token || this.stopping) throw new Error('Start the browser connection first.');
+    if (this.connected) throw new Error('A browser is already connected. Disconnect it before creating another pairing code.');
+    // A newly displayed code supersedes both earlier tickets and a redeemed
+    // capability whose browser has not yet polled. Never replay old work.
+    this._revokeSession(new Error('Browser pairing was renewed. Reconnect with the new pairing code.'));
+    this.token = crypto.randomBytes(32).toString('hex');
+    const key = crypto.randomBytes(16).toString('hex');
+    this.pairingTicket = { key, port: this.port, token: this.token, expiresAt: this.now() + this.pairingTtl, attempts: 0 };
+    return `TT1:${this.port}:${key}`;
+  }
+
+  _rejectPairing(res, ticket, status = 403) {
+    if (ticket && this.pairingTicket === ticket) {
+      ticket.attempts += 1;
+      if (ticket.attempts >= MAX_PAIRING_ATTEMPTS || this.now() >= ticket.expiresAt) this.pairingTicket = undefined;
+    }
+    return this._json(res, status, { error: 'Pairing request rejected. Create a new pairing code and try again.' });
+  }
+
+  async _pair(req, res) {
+    // Do not let other websites, forwarded hosts, URLs, or methods consume a
+    // legitimate ticket. Origin alone never authorizes redemption.
+    if (req.method !== 'POST' || req.url !== '/pair' || req.headers.host !== `127.0.0.1:${this.port}` || this.stopping) {
+      return this._rejectPairing(res);
+    }
+    const ticket = this.pairingTicket;
+    let body;
+    try {
+      let size = 0;
+      const parts = [];
+      // Do not destroy the request/socket until a size-limit response has been
+      // flushed. Buffer at most 1 KiB even when the sender streams a larger body.
+      for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+        size += chunk.length;
+        if (size > MAX_PAIRING_BYTES) {
+          res.once('finish', () => req.destroy());
+          return this._rejectPairing(res, ticket, 413);
+        }
+        parts.push(chunk);
+      }
+      body = JSON.parse(Buffer.concat(parts).toString('utf8'));
+    } catch (_) { return this._rejectPairing(res, ticket); }
+    if (!body || typeof body !== 'object' || Array.isArray(body) ||
+        Object.keys(body).length !== 1 || typeof body.pairingKey !== 'string' || !/^[a-f0-9]{32}$/.test(body.pairingKey) ||
+        !ticket || this.pairingTicket !== ticket || this.stopping || this.connected ||
+        ticket.port !== this.port || ticket.token !== this.token || this.now() >= ticket.expiresAt ||
+        !crypto.timingSafeEqual(Buffer.from(body.pairingKey), Buffer.from(ticket.key))) {
+      return this._rejectPairing(res, ticket);
+    }
+    // No awaits between validation and consumption: simultaneous tabs cannot
+    // redeem the same ticket twice, and a rotated ticket cannot revive a token.
+    this.pairingTicket = undefined;
+    return this._json(res, 200, { base: `http://127.0.0.1:${this.port}`, token: this.token });
   }
 
   _json(res, status, value) {
@@ -116,12 +195,23 @@ class BrowserBridge {
     let url;
     try { url = new URL(req.url, 'http://127.0.0.1'); }
     catch (_) { return this._json(res, 400, { error: 'Invalid local request' }); }
+    if (url.pathname === '/pair') return this._pair(req, res);
     const supplied = url.searchParams.get('key') || '';
-    if (!this.token || !/^[a-f0-9]{64}$/.test(supplied) || supplied.length !== this.token.length ||
+    if (!this.token || this.stopping || !/^[a-f0-9]{64}$/.test(supplied) || supplied.length !== this.token.length ||
         !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(this.token))) {
       return this._json(res, 403, { error: 'Pairing key rejected' });
     }
     this.lastSeen = Date.now();
+    if (url.pathname === '/disconnect' && req.method === 'POST') {
+      const acknowledged = new Promise(resolve => {
+        res.once('finish', resolve);
+        res.once('close', resolve);
+      });
+      // Revoke synchronously, but close sockets only after this acknowledgement
+      // is flushed (or the requester goes away). start() waits for this teardown.
+      void this._stopAfter(acknowledged);
+      return this._json(res, 200, { ok: true });
+    }
     if (url.pathname === '/poll' && req.method === 'GET') {
       this._connection(true);
       if (this.pollResponse) this._json(this.pollResponse, 409, { error: 'Another browser tab connected' });
@@ -170,7 +260,7 @@ class BrowserBridge {
     if (!isAllowedRequest(apiPath, method) || (method === 'POST' && !validateBody(options.body, apiPath))) {
       return Promise.reject(new Error('Unsupported TensorTonic request. Only Python problem browsing, Run and Submit are allowed.'));
     }
-    if (!this.connected) return Promise.reject(new Error('Connect a signed-in TensorTonic browser tab first.'));
+    if (!this.connected || this.stopping) return Promise.reject(new Error('Connect a signed-in TensorTonic browser tab first.'));
     // One grading operation at a time; never replay an uncertain submission.
     if (method === 'POST' && [...this.pending.values()].some(x => x.method === 'POST')) {
       return Promise.reject(new Error('A TensorTonic Run or Submit is already in progress.'));
@@ -195,14 +285,37 @@ class BrowserBridge {
     this.pending.clear(); this.queue.length = 0;
   }
 
-  async stop() {
-    clearInterval(this.watchdog);
+  _revokeSession(error = new Error('TensorTonic browser disconnected.')) {
+    this.pairingTicket = undefined;
+    this.token = undefined;
     if (this.pollResponse) { this._json(this.pollResponse, 200, { stop: true }); this.pollResponse = undefined; }
-    this._rejectAll(new Error('TensorTonic browser disconnected.'));
+    this._rejectAll(error);
     this._connection(false);
+  }
+
+  stop() { return this._stopAfter(); }
+
+  async _stopAfter(acknowledged) {
+    if (this.stopping) return this.stopping;
+    // Install the latch before running teardown so even an onDidChange
+    // callback that immediately reconnects cannot reuse the old listener.
+    const stopping = Promise.resolve(acknowledged).then(() => this._stop());
+    this.stopping = stopping;
+    this._revokeSession();
+    try { await stopping; } finally { if (this.stopping === stopping) this.stopping = undefined; }
+  }
+
+  async _stop() {
+    const starting = this.starting;
+    clearInterval(this.watchdog);
+    this.watchdog = undefined;
+    this._revokeSession();
     const server = this.server;
     this.server = undefined; this.token = undefined; this.port = undefined;
     if (server) await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+    // Closing a listener before its listen callback rejects its startup. Wait
+    // for that cancellation to clear starting before a new connection begins.
+    if (starting) await starting.catch(() => {});
   }
   dispose() { void this.stop(); }
 }

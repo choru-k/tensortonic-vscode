@@ -30,6 +30,9 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   const contexts = new Map();
   const webviews = [];
   const errors = [];
+  const information = [];
+  const informationChoices = [];
+  const clipboardWrites = [];
   const output = [];
   const statuses = [];
   const trees = [];
@@ -37,6 +40,9 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   const tools = new Map();
   const commandExecutions = [];
   const configuration = new Map([['studyPlan', 'pytorch-basics'], ['solutionDirectory', 'tensortonic']]);
+  const configurationListeners = [];
+  const activeEditorListeners = [];
+  const fireConfiguration = key => configurationListeners.forEach(listener => listener({ affectsConfiguration: name => name === `tensortonic.${key}` }));
   const calls = { list: [], get: [], run: [], submit: [] };
   const fixtures = new Map([DEFAULT_REF, SECOND_REF].map((ref, i) => [ref.slug, {
     ref,
@@ -128,8 +134,8 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         createDirectory: uri => fs.mkdir(uri.fsPath, { recursive: true }),
       },
       openTextDocument: openDocument,
-      getConfiguration: () => ({ get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback, update: async (key, value) => configuration.set(key, value) }),
-      onDidChangeConfiguration: () => disposable(),
+      getConfiguration: () => ({ get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback, update: async (key, value) => { configuration.set(key, value); fireConfiguration(key); } }),
+      onDidChangeConfiguration: listener => { configurationListeners.push(listener); return disposable(); },
       async applyEdit(edit) {
         try {
           for (const operation of edit.operations) {
@@ -166,9 +172,14 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         webviews.push(panel);
         return panel;
       },
-      async showTextDocument(document) { this.activeTextEditor = { document }; return this.activeTextEditor; },
+      async showTextDocument(document) {
+        this.activeTextEditor = { document };
+        for (const listener of activeEditorListeners) listener(this.activeTextEditor);
+        return this.activeTextEditor;
+      },
+      onDidChangeActiveTextEditor: listener => { activeEditorListeners.push(listener); return disposable(); },
       showErrorMessage: async message => { errors.push(message); },
-      showInformationMessage: async () => undefined,
+      showInformationMessage: async (...args) => { information.push(args); return informationChoices.shift(); },
       showQuickPick: async items => items[0],
       showInputBox: async () => undefined,
       withProgress: async (_, action) => action(),
@@ -189,14 +200,15 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     },
     languages: { registerCodeLensProvider(selector, provider) { codeLens.push({ selector, provider }); return disposable(); } },
     lm: { registerTool(name, tool) { tools.set(name, tool); return { dispose() { tools.delete(name); } }; } },
-    env: { openExternal: async () => true },
+    env: { openExternal: async () => true, clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
   };
 
   class BrowserBridge {
-    constructor() { this.connected = connected; }
-    async start() {}
+    constructor() { this.connected = connected; this.starts = 0; this.pairings = 0; }
+    async start() { this.starts++; }
     async stop() { this.connected = false; }
     connectionCode() { return '/* local connection fixture */'; }
+    pairingCode() { this.pairings++; return 'TT1:43210:' + 'a'.repeat(32); }
     request() { throw new Error('The UI should use the injected client in this test.'); }
   }
   class TensorTonicClient {
@@ -232,11 +244,55 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     Module._load = originalLoad;
   }
   const savedState = new Map();
-  const context = { subscriptions: [], workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
+  const context = { subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
   const api = extension.activate(context);
   t.after(() => { for (const subscription of context.subscriptions.reverse()) subscription.dispose(); });
-  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions };
+  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites };
 }
+
+test('a late previous-plan refresh cannot replace the current plan catalogue', async t => {
+  const h = await harness(t);
+  let completeOld;
+  h.api.client.listProblems = plan => plan === 'pytorch-basics'
+    ? new Promise(resolve => { completeOld = resolve; })
+    : Promise.resolve([{ slug: 'new-plan-problem', planId: plan, title: 'New plan' }]);
+  const oldRefresh = h.api.refresh();
+  await h.vscode.workspace.getConfiguration('tensortonic').update('studyPlan', 'numpy-basics');
+  await h.api.refresh();
+  completeOld([{ ...DEFAULT_REF, title: 'Stale plan' }]);
+  await oldRefresh;
+  const tree = h.trees[0];
+  assert.equal(tree.description, 'numpy-basics');
+  assert.deepEqual(tree.options.treeDataProvider.getChildren().map(item => item.label), ['New plan']);
+});
+
+test('an older refresh finishing cannot clear a newer refresh loading state', async t => {
+  const h = await harness(t);
+  const completions = [];
+  h.api.client.listProblems = () => new Promise(resolve => completions.push(resolve));
+  const older = h.api.refresh();
+  const newer = h.api.refresh();
+  completions[0]([{ ...DEFAULT_REF, title: 'Stale' }]);
+  await older;
+  assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Loading problems…');
+  completions[1]([{ ...SECOND_REF, title: 'Current' }]);
+  await newer;
+  assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Current');
+});
+
+test('disconnect invalidates an in-flight catalogue without stale rows or errors', async t => {
+  const h = await harness(t);
+  let rejectOld;
+  h.api.client.listProblems = () => new Promise((resolve, reject) => { rejectOld = reject; });
+  const oldRefresh = h.api.refresh();
+  await h.commands.get('tensortonic.disconnect')();
+  rejectOld(new Error('Canceled old connection'));
+  assert.deepEqual(await oldRefresh, []);
+  h.api.bridge.connected = true;
+  assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Refresh problems');
+  assert.equal(h.trees[0].description, undefined);
+  assert.deepEqual(h.errors, []);
+});
 
 test('activation exposes the commands promised by the manifest and connection state', async t => {
   const h = await harness(t);
@@ -406,9 +462,9 @@ test('Discuss with Agent attaches the selected problem, solution and tests witho
   assert.ok(options.query.includes(selected.uri.fsPath));
   assert.ok(options.query.includes(selected.contextUri.fsPath));
   assert.match(options.query, /pytorch-mini-training\?studyPlan=pytorch-basics/);
-  assert.match(options.query, /저장하지 않은 변경/);
-  assert.match(options.query, /한 번에 한 단계/);
-  assert.match(options.query, /요청하기 전에는 완성된 정답/);
+  assert.match(options.query, /unsaved editor changes/);
+  assert.match(options.query, /one step at a time/);
+  assert.match(options.query, /Do not show a complete answer or full implementation unless/);
   assert.equal(solution.getText(), unsaved);
   assert.equal(solution.isDirty, true);
   assert.equal(await fs.readFile(selected.uri.fsPath, 'utf8'), persisted);
@@ -493,5 +549,171 @@ test('Codex integration attaches the corresponding problem and current solution 
   assert.ok(h.commandExecutions.some(call => call.id === 'chatgpt.openSidebar'));
   assert.equal(await fs.readFile(opened.uri.fsPath, 'utf8'), saved);
   assert.equal(solution.isDirty, true);
+  assert.deepEqual(h.errors, []);
+});
+
+test('switching back to an earlier solution updates Agent context before chat takes focus', async t => {
+  const h = await harness(t);
+  const first = await h.api.openProblem(DEFAULT_REF);
+  const firstDocument = await h.vscode.workspace.openTextDocument(first.uri);
+  firstDocument.setText(firstDocument.getText().replace('    pass', '    return FIRST_RESELECTED_UNSAVED_CODE'));
+  await h.api.openProblem(SECOND_REF);
+  await h.vscode.window.showTextDocument(firstDocument); // A -> B -> A, via editor tabs.
+  h.vscode.window.activeTextEditor = undefined; // Agent now has focus.
+  const result = await h.tools.get('tensortonic_current_problem').invoke({ input: {} });
+  const text = result.content.map(part => part.value).join('\n');
+  assert.match(text, /FIRST_RESELECTED_UNSAVED_CODE/);
+  assert.match(text, /# Mini training/);
+  assert.doesNotMatch(text, /# Dropout/);
+  assert.equal(firstDocument.isDirty, true);
+  assert.deepEqual(h.errors, []);
+});
+
+test('a delayed old problem response cannot replace the latest clicked problem or create stale files', async t => {
+  const h = await harness(t);
+  const getProblem = h.api.client.getProblem.bind(h.api.client);
+  let completeFirst;
+  h.api.client.getProblem = ref => ref.slug === DEFAULT_REF.slug
+    ? new Promise(resolve => { completeFirst = resolve; })
+    : getProblem(ref);
+  const first = h.api.openProblem(DEFAULT_REF);
+  const second = await h.api.openProblem(SECOND_REF);
+  completeFirst(await getProblem(DEFAULT_REF));
+  assert.equal(await first, undefined);
+  assert.equal(h.vscode.window.activeTextEditor.document.uri.fsPath, second.uri.fsPath);
+  assert.equal((await h.api.currentContext()).ref.slug, SECOND_REF.slug);
+  const files = await fs.readdir(path.dirname(second.uri.fsPath));
+  assert.equal(files.some(name => name.startsWith(DEFAULT_REF.slug)), false);
+});
+
+test('disconnect cancels a pending problem open before file and editor side effects', async t => {
+  const h = await harness(t);
+  let complete;
+  h.api.client.getProblem = () => new Promise(resolve => { complete = resolve; });
+  const opening = h.api.openProblem(DEFAULT_REF);
+  await h.commands.get('tensortonic.disconnect')();
+  complete(structuredClone(h.fixtures.get(DEFAULT_REF.slug)));
+  assert.equal(await opening, undefined);
+  assert.deepEqual(await fs.readdir(h.root), []);
+  assert.equal(h.vscode.window.activeTextEditor, undefined);
+});
+
+test('repeated Submit is rejected across the full command lifecycle, including metadata GETs', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  let finishGrading;
+  let startedGrading;
+  const gradingStarted = new Promise(resolve => { startedGrading = resolve; });
+  h.api.client.submit = async (problem, code) => {
+    h.calls.submit.push({ problem, code });
+    startedGrading();
+    return new Promise(resolve => { finishGrading = resolve; });
+  };
+  const first = h.commands.get('tensortonic.submit')(opened.uri);
+  await gradingStarted;
+  const getCount = h.calls.get.length;
+  assert.equal(await h.commands.get('tensortonic.submit')(opened.uri), undefined);
+  assert.equal(await h.commands.get('tensortonic.run')(opened.uri), undefined);
+  assert.equal(h.calls.get.length, getCount, 'Duplicate clicks must not enqueue metadata GETs');
+  assert.equal(h.calls.submit.length, 1);
+  assert.equal(h.calls.run.length, 0);
+  assert.match(h.errors.at(-1), /already in progress/);
+  finishGrading({ status: 'passed' });
+  assert.equal((await first).status, 'passed');
+  h.api.client.submit = async () => ({ status: 'passed', newAttempt: true });
+  assert.equal((await h.commands.get('tensortonic.submit')(opened.uri)).newAttempt, true, 'Lock releases after completion');
+});
+
+test('grading command lock releases on validation errors and upstream failures', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  const tests = await h.vscode.workspace.openTextDocument(opened.testsUri);
+  tests.setText('not-json');
+  assert.equal(await h.commands.get('tensortonic.run')(opened.uri), undefined);
+  tests.setText('[]');
+  h.api.client.run = async () => { throw new Error('Upstream failed'); };
+  assert.equal(await h.commands.get('tensortonic.run')(opened.uri), undefined);
+  h.api.client.run = async () => ({ status: 'passed' });
+  assert.equal((await h.commands.get('tensortonic.run')(opened.uri)).status, 'passed');
+});
+
+test('explicit Description targets its own solution after another editor was selected', async t => {
+  const h = await harness(t, { externalCommands: ['markdown.showPreviewToSide'] });
+  const first = await h.api.openProblem(DEFAULT_REF);
+  const firstDocument = await h.vscode.workspace.openTextDocument(first.uri);
+  const firstContext = await fs.readFile(first.contextUri.fsPath, 'utf8');
+  const second = await h.api.openProblem(SECOND_REF);
+  await h.vscode.window.showTextDocument(firstDocument);
+  await h.commands.get('tensortonic.description')(second.uri);
+  assert.equal(await fs.readFile(first.contextUri.fsPath, 'utf8'), firstContext);
+  const preview = h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide').at(-1);
+  assert.equal(preview.args[0].fsPath, second.contextUri.fsPath);
+  assert.match(await fs.readFile(second.contextUri.fsPath, 'utf8'), /# Dropout/);
+});
+
+test('reconnecting while a grading command reads inputs cannot send code to a new session', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  const openDocument = h.vscode.workspace.openTextDocument;
+  let finishRead, reading;
+  const started = new Promise(resolve => { reading = resolve; });
+  h.vscode.workspace.openTextDocument = async uri => {
+    const document = await openDocument(uri);
+    if (uri.fsPath === opened.testsUri.fsPath) {
+      reading();
+      await new Promise(resolve => { finishRead = resolve; });
+    }
+    return document;
+  };
+  const running = h.commands.get('tensortonic.run')(opened.uri);
+  await started;
+  h.api.bridge.token = 'different-session';
+  finishRead();
+  assert.equal(await running, undefined);
+  assert.equal(h.calls.run.length, 0);
+  assert.match(h.errors.at(-1), /browser connection changed/);
+});
+
+test('companion connection writes a ticket only after explicit Copy and never creates a secret document', async t => {
+  const h = await harness(t, { connected: false });
+  assert.equal(await h.commands.get('tensortonic.connect')(), undefined);
+  assert.equal(h.api.bridge.starts, 0);
+  assert.deepEqual(h.clipboardWrites, []);
+  h.informationChoices.push('Copy pairing code', undefined);
+  assert.deepEqual(await h.commands.get('tensortonic.connect')(), { pairingRequested: true });
+  assert.equal(h.api.bridge.starts, 1);
+  assert.equal(h.api.bridge.pairings, 1);
+  assert.deepEqual(h.clipboardWrites, ['TT1:43210:' + 'a'.repeat(32)]);
+  assert.equal(h.documents.size, 0);
+  assert.equal(h.output.some(line => /TT1:/.test(line)), false);
+  assert.equal(h.information.some(args => args.some(value => typeof value === 'string' && value.includes('TT1:'))), false);
+  assert.deepEqual(h.errors, []);
+});
+
+test('already connected and overlapping Connect gestures cannot rotate pairing or overwrite clipboard', async t => {
+  const connected = await harness(t);
+  await connected.commands.get('tensortonic.connect')();
+  assert.equal(connected.api.bridge.pairings, 0);
+  assert.deepEqual(connected.clipboardWrites, []);
+  assert.match(connected.information[0][0], /already connected/);
+  const h = await harness(t, { connected: false });
+  let choose;
+  h.informationChoices.push(new Promise(resolve => { choose = resolve; }));
+  const first = h.commands.get('tensortonic.connect')();
+  assert.equal(await h.commands.get('tensortonic.connect')(), undefined);
+  assert.equal(h.information.length, 1);
+  choose('Copy pairing code');
+  await first;
+  assert.equal(h.api.bridge.pairings, 1);
+  assert.equal(h.clipboardWrites.length, 1);
+});
+
+test('companion setup guide is nonsecret and does not start pairing', async t => {
+  const h = await harness(t, { connected: false });
+  h.informationChoices.push('Companion setup');
+  await h.commands.get('tensortonic.connect')();
+  assert.equal(h.api.bridge.starts, 0);
+  assert.deepEqual(h.clipboardWrites, []);
+  assert.match(h.vscode.window.activeTextEditor.document.getText(), /no-console connection/);
   assert.deepEqual(h.errors, []);
 });

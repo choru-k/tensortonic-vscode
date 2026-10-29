@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TensorTonic VS Code Companion (Unofficial)",
+  "version": "0.1.0",
+  "description": "Connect a TensorTonic tab to your local VS Code after an explicit pairing action. No cookies are read or stored.",
+  "minimum_chrome_version": "120",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Connect TensorTonic to VS Code",
+    "default_popup": "popup.html"
+  }
+}

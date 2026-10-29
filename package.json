@@ -1,8 +1,8 @@
 {
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
-  "description": "Browse, solve, run, and submit TensorTonic Python problems from VS Code through your signed-in browser.",
-  "version": "0.2.1",
+  "description": "Browse and solve TensorTonic Python problems with a no-console browser companion; login cookies stay in your browser.",
+  "version": "0.3.0",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -38,7 +38,9 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "package": "python3 scripts/package.py"
+    "package": "python3 scripts/package.py",
+    "test:transport": "node --test test/*.integration.js",
+    "package:companion": "python3 scripts/package_companion.py"
   },
   "contributes": {
     "viewsContainers": {
@@ -61,7 +63,7 @@
     "commands": [
       {
         "command": "tensortonic.connect",
-        "title": "Connect browser",
+        "title": "Connect browser companion",
         "category": "TensorTonic",
         "icon": "$(plug)"
       },

@@ -1,90 +1,98 @@
 # TensorTonic for VS Code — Unofficial
 
-VS Code에서 TensorTonic 문제를 보고, Python 풀이를 작성하고, Run / Submit으로 채점합니다. 기본 학습 계획은 `pytorch-basics`입니다.
+Browse TensorTonic problems in VS Code, write Python solutions, and use **Run** or **Submit** to receive grading results. The default study plan is `pytorch-basics`.
 
-TensorTonic의 공식 확장이 아닙니다. 현재 Python 무료 문제와 Python 학습 계획 문제를 지원합니다. SQL, CUDA, Triton 및 별도의 프로젝트·면접 문제는 지원하지 않습니다.
+This is not an official TensorTonic extension. It currently supports free Python problems and Python study-plan problems. SQL, CUDA, Triton, and separate project or interview exercises are not supported.
 
-## 설치
+## Installation
 
-VS Code 1.95 이상이 필요합니다. Extensions 화면의 `…` → **Install from VSIX…**에서 설치 파일을 선택하거나 다음 명령을 사용합니다.
+Requires VS Code 1.95 or later. In the Extensions view, choose `…` → **Install from VSIX…** and select the package, or run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.2.1.vsix
+code --install-extension releases/tensortonic-vscode-0.3.0.vsix
 ```
 
-풀이를 저장할 로컬 폴더를 VS Code에서 열고 TensorTonic 아이콘을 클릭합니다.
+Open a local folder for your solutions in VS Code, then select the TensorTonic activity-bar icon.
 
-## 브라우저 연결
+## Connect your browser — no console required
 
-1. 브라우저에서 [TensorTonic](https://www.tensortonic.com/)에 평소처럼 로그인합니다. GitHub 로그인도 사이트에서 진행합니다.
-2. VS Code 명령 팔레트에서 **TensorTonic: Connect browser**를 실행합니다.
-3. 열린 JavaScript 문서의 연결 코드를 TensorTonic 탭의 개발자 도구 → Console에 붙여넣어 실행합니다. macOS의 Chrome 계열 브라우저는 `⌘⌥J`로 Console을 엽니다.
-4. 브라우저에서 로컬 네트워크 연결 여부를 물으면 연결 목적을 확인한 뒤 허용합니다. 브라우저 탭을 열어 두면 VS Code 문제 목록이 표시됩니다.
+Install the **TensorTonic Browser Companion** once, then pair it with VS Code. GitHub sign-in, passwords, and login cookies stay in the browser. The current distribution is an unpacked browser extension supplied in the [companion ZIP](releases/tensortonic-browser-companion-0.1.0.zip), not a Chrome Web Store listing. Read the [installation, permissions, and troubleshooting guide](docs/browser-companion.md) first. If your organization blocks installation, do not disable or bypass its policy.
 
-연결이 진행되지 않으면 브라우저의 이 사이트에 대한 로컬 네트워크 권한을 확인하세요. 이 권한은 TensorTonic 탭이 같은 컴퓨터에서 실행 중인 VS Code의 임시 로컬 서버에 접속하는 데 필요합니다. 연결 요청은 30초 안에 응답이 없으면 안내와 함께 중단되므로 권한을 확인한 뒤 새 연결 코드를 실행합니다. 원격 브라우저·별도 VM 브라우저는 내 Mac의 `127.0.0.1`에 연결할 수 없습니다.
+1. In a browser **on the same computer as VS Code**, sign in to [TensorTonic](https://www.tensortonic.com/) normally. Complete GitHub sign-in and 2FA on the website, and confirm that you are using the intended account.
+2. In VS Code, run **TensorTonic: Connect browser companion** and choose **Copy pairing code**.
+3. Open the companion popup on the signed-in TensorTonic tab, paste the code, and select **Connect this tab**. No DevTools or console is needed.
+4. If the browser asks for local-network access, review the request. This is a temporary connection to `127.0.0.1` on the same computer and must be permitted by your browser and organization. Keep the tab open.
 
-로그인 쿠키는 브라우저 밖으로 내보내지 않습니다. 확장은 임시로 열린 로컬 연결을 통해 허용된 TensorTonic 문제 API만 요청합니다. 연결 코드는 다른 사람에게 공유하거나 저장소에 커밋하지 마세요. **Disconnect browser**로 연결을 종료할 수 있습니다. 탭 새로고침 또는 VS Code 재시작 후에는 다시 연결합니다.
+Each pairing code expires after two minutes and can be used only once. Issuing a new code, disconnecting, or restarting VS Code invalidates the old code. Pair again after refreshing the tab. Do not share the code. The popup clears its input after a connection attempt; it does not export login cookies to VS Code or save them to files or extension storage. Copying the one-use code into the popup is still required.
 
-## 문제 풀기
+Use **Disconnect browser** in VS Code or **Disconnect** in the companion to end the session. Disconnect before switching to another tab or account. A browser on another computer or VM cannot reach your computer's `127.0.0.1` listener.
 
-- 사이드바에서 문제를 선택하면 문제 설명과 풀이 파일이 나란히 열립니다.
-- 풀이 파일 위의 **Run**, **Submit**, **Description**, **Test cases** 버튼을 사용합니다.
-- **Run**은 옆의 `.tests.json` 파일에 있는 테스트 케이스로 실행합니다. 이 파일은 JSON 배열 형식을 유지하면서 편집합니다.
-- **Submit**은 현재 편집 중인 코드를 TensorTonic에 보내 사이트의 채점 결과를 표시합니다. 실행·제출은 TensorTonic 서버에서 처리됩니다.
-- 기존 풀이 파일과 테스트 파일은 다시 문제를 열어도 덮어쓰지 않습니다.
-- **Choose study plan**에 문제 URL의 `studyPlan` 값을 입력하면 학습 계획을 바꿉니다. 빈 값은 무료 문제 목록입니다.
+## Solve problems
 
-풀이 파일 첫 줄의 `# tensortonic: {...}` 메타데이터는 문제와 파일을 연결하므로 유지하세요. 저장 위치는 기본적으로 현재 워크스페이스의 `tensortonic/<학습계획>/`입니다.
+- Select a problem in the sidebar to open its description and solution file side by side.
+- Use the **Run**, **Submit**, **Description**, and **Test cases** buttons above the solution.
+- **Run** uses the adjacent `.tests.json` file. You can edit it, but keep it as a JSON array.
+- **Submit** sends the current editor code to TensorTonic and displays its grading result. Both execution and grading run on TensorTonic's servers.
+- Reopening a problem does not overwrite existing solution or test files.
+- Use **Choose study plan** with the `studyPlan` value from a problem URL to switch plans. Leave it empty to browse free problems.
 
-## Agent와 함께 문제 논의
+Keep the `# tensortonic: {...}` metadata on the solution's first line: it associates the file with its problem. The default location is `tensortonic/<study-plan>/` inside the current workspace.
 
-- 풀이 위 **Discuss with Agent**를 누르면 VS Code 기본 Agent 채팅에 문제 설명·현재 풀이·테스트 파일이 첨부됩니다. 질문은 입력된 상태로 열리며 직접 전송합니다.
-- 문제는 옆의 Markdown 미리보기에서 수식·예제와 함께 읽을 수 있고, `.problem.md` 원문은 Agent가 파일로 읽습니다. 개인 노트는 별도 파일에 작성하세요. 생성된 문제 파일을 수정했다면 덮어쓰지 않습니다.
-- Agent는 `#tensortonicProblem` 도구로 선택된 문제와 **저장하지 않은 현재 코드**를 읽을 수 있습니다. 이 도구는 실행·제출·정답 조회를 하지 않습니다.
-- 질문은 한 번에 한 단계씩 의논하고, 요청 전에는 완성 답안을 작성하지 않도록 시작합니다.
-- Codex 확장을 사용하는 경우 **TensorTonic: Attach problem and solution to Codex**로 두 파일을 추가할 수 있습니다. Codex의 파일 첨부 명령이 제공되는 버전이 필요합니다. 기본 Chat 연동과 Codex 연동은 별개입니다.
+## Discuss problems with an Agent
 
-## 설정과 확인
+- Select **Discuss with Agent** above a solution to attach the problem statement, current solution, and tests to VS Code's built-in Agent chat. The question opens as a draft; you send it yourself.
+- Read the problem's equations and examples in the adjacent Markdown preview. The Agent reads the generated `.problem.md` source file. Keep personal notes in a separate file; if you edit a generated problem file, the extension will not overwrite it.
+- An Agent can use `#tensortonicProblem` to read the selected problem and **current unsaved editor code**. The tool does not run or submit code, or retrieve reference solutions.
+- The English discussion prompt asks for one learning step at a time, without a complete answer unless you request one. You can edit the draft or ask the Agent to use another language.
+- If you use the Codex extension, **TensorTonic: Attach problem and solution to Codex** adds those two files. This requires a Codex version that exposes its file-attachment command. Built-in Chat and Codex integration are separate.
 
-| 설정 | 기본값 | 의미 |
+## Settings and diagnostics
+
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| `tensortonic.studyPlan` | `pytorch-basics` | 학습 계획 slug. 빈 값은 무료 문제 |
-| `tensortonic.solutionDirectory` | `tensortonic` | 워크스페이스 안의 상대 저장 폴더 |
+| `tensortonic.studyPlan` | `pytorch-basics` | Study-plan slug; leave empty for free problems |
+| `tensortonic.solutionDirectory` | `tensortonic` | Relative solution folder inside the workspace |
 
-**TensorTonic: Check connection and problem access** 명령은 연결, 문제 목록, 문제 설명과 시작 코드의 접근을 확인합니다. 실행 결과는 Output → TensorTonic에서 확인합니다.
+**TensorTonic: Check connection and problem access** checks the connection, problem list, statement, and starter-code access. Results appear in **Output → TensorTonic**.
 
-이 확장은 TensorTonic 웹 클라이언트에서 확인한 API를 사용합니다. 공식 API 보장이 없어 사이트 변경 시 연동 수정이 필요할 수 있습니다. 유료 문제에는 기존 TensorTonic 구독 권한이 그대로 적용됩니다. 연결할 때는 현재 로그인된 계정이 맞는지 확인하세요.
+The extension uses API contracts observed in TensorTonic's web client. There is no official API guarantee, so site changes may require integration updates. Existing TensorTonic subscription requirements still apply to paid problems. Confirm the signed-in account before connecting.
 
-## 이번 버전의 검증 범위
+## Validation status
 
-자동 테스트와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
+Official VS Code on the assistant's Linux VM was used to check the real extension host: commands, problem files, CodeLens, unsaved edits, simulated Run/Submit, and Agent file attachments. Real loopback HTTP tests and unit regression tests are also provided. The [detailed validation record](docs/vm-validation.md) distinguishes simulated responses from actual browser validation.
 
-실제 Mac의 VS Code 1.144에서 확장 활성화와 연결 코드 생성까지 확인했습니다. 브라우저 로컬 네트워크 권한이 미승인인 상태에서 연결 대기 시간이 만료됐으므로, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 아직 완료하지 못했습니다. 문제 설명에는 Code의 Markdown 미리보기를 사용하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
+**Installing the companion and testing it with a live account in the managed browser remain incomplete.** The user approved installation, but this environment's browser automation policy blocked navigation to `chrome://extensions`; no installation or activation was performed, and no alternate route was used to bypass the restriction. Earlier website API observations of Run 3/3 and Submit 43/43 do not establish that the installed companion works end to end with VS Code. An Agent's actual response has not been automatically requested or verified either.
 
-## 개발과 패키징
+## Development and packaging
 
-외부 npm 패키지가 필요하지 않습니다. Node.js와 Python 3가 설치되어 있어야 합니다.
+No external npm packages are required. Install Node.js and Python 3, then run:
 
 ```sh
-node --test test/*.test.js
+npm test
+npm run test:transport
 python3 scripts/package.py
+python3 scripts/package_companion.py
 ```
 
-VS Code에서 이 소스 폴더를 열고 **Run TensorTonic extension** 설정을 실행하면 Extension Development Host에서 실행합니다. 개발 호스트에는 별도의 `test/workspace` 폴더를 엽니다. 부모 창에 열린 소스 폴더를 그대로 전달하면 Code가 중복 폴더를 제거해 빈 창이 열릴 수 있기 때문입니다. 원격 SSH·컨테이너·VS Code for the Web 환경은 지원하지 않습니다. 확장과 브라우저는 같은 컴퓨터에서 실행해야 합니다.
+Open this source folder in VS Code and launch **Run TensorTonic extension** to use an Extension Development Host. The development host opens the separate `test/workspace` folder: passing the source folder already open in the parent window can cause VS Code to remove the duplicate folder and open an empty window. Remote SSH, containers, and VS Code for the Web are not supported. The extension and browser must run on the same computer.
 
-## 실제 계정 E2E 실행
+`test:transport` opens real loopback HTTP ports and requires permission to do so. It does not sign in, call the live API, or submit to the service. `test/vscode-mock-integration.js` uses the real VS Code API and a local connection but simulates the browser and upstream grading responses. See the [Linux VM validation record](docs/vm-validation.md) for commands and live-account limitations.
 
-아래 설정은 실제 Code와 로그인 계정을 사용하며 모의 서버를 사용하지 않습니다.
+Repository documentation, maintained UI text, code comments, and test descriptions are written in English. Preserve upstream problem text and intentional multilingual test fixtures. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and review guidelines.
 
-1. 이 저장소 폴더를 본인의 VS Code에서 엽니다.
-2. Run and Debug에서 **TensorTonic: live account E2E**를 선택하고 **Run → Run Without Debugging**으로 실행합니다. 디버거를 붙인 실행에서는 설치된 Code의 Node 네트워크 계측 오류가 관찰됐습니다. 이 오류와 테스트 창 종료 사이의 인과관계는 확인되지 않았습니다.
-3. 개발 호스트의 연결 안내를 읽고 임시 연결 코드를 로그인된 TensorTonic 브라우저 콘솔에서 실행합니다. 로컬 네트워크 연결 권한이 필요하며 확장과 같은 컴퓨터의 브라우저를 사용합니다.
-4. 보고서는 **실행한 저장소**의 `dist/e2e-report.json`에 진행 중에도 저장됩니다. 이미 풀었던 Softmax 문제만 재제출하며, 미해결 상태이면 테스트를 중단합니다.
+## Run the live-account E2E test
 
-테스트가 끝나거나 연결 대기 시간이 만료되면 개발 호스트 창이 종료될 수 있습니다. 직접 문제를 풀거나 Agent와 계속 대화하려면 **Run TensorTonic extension** 설정을 사용하세요.
+This configuration uses the real VS Code host and a signed-in account, not a mock server.
 
-이 검증은 문제 열기·편집·Run·Submit·Agent 문맥 도구·채팅 첨부까지 검사합니다. Agent의 실제 답변 이해 여부는 채팅 화면에서 별도로 확인해야 하며, 자동 보고서에 완료된 것으로 기록하지 않습니다.
+1. Open this repository folder in VS Code.
+2. In Run and Debug, select **TensorTonic: live account E2E**, then use **Run → Run Without Debugging**. A Node network-instrumentation error was observed in the installed VS Code during a debug launch; its relationship to the test window closing was not established.
+3. The companion must already be installed in a permitted browser. In the development host, choose **Copy pairing code** and enter it in the companion popup on your signed-in TensorTonic tab. The browser must be on the same computer and allow the local-network connection.
+4. The runner saves progress to `dist/e2e-report.json` in **the repository from which it was launched**. It submits only the already-solved **Softmax from Scratch** problem again; it stops if that problem is unsolved for the current account.
 
-## 참고
+The development-host window may close when the test ends or the connection wait expires. Use **Run TensorTonic extension** instead if you want to keep solving problems or chatting with an Agent.
 
-문제 탐색, 설명 패널, Run / Submit CodeLens의 사용 흐름은 [LeetCode OpenSource VS Code 확장](https://github.com/LeetCode-OpenSource/vscode-leetcode)에서 영감을 받았습니다. 해당 확장의 LeetCode 전용 CLI 및 인증 코드는 포함하지 않았습니다. 이 구현의 소스 코드는 MIT 라이선스입니다. TensorTonic 이름과 서비스는 해당 소유자의 자산입니다.
+The test checks opening and editing a problem, Run, Submit, the Agent context tool, and chat attachments. Whether the Agent understands the problem in its actual response must be checked separately in chat; the automated report does not mark that as verified.
+
+## Acknowledgments
+
+The problem browser, description panel, and Run/Submit CodeLens workflow were inspired by the [LeetCode OpenSource VS Code extension](https://github.com/LeetCode-OpenSource/vscode-leetcode). Its LeetCode-specific CLI and authentication code are not included. This implementation is licensed under MIT. The TensorTonic name and service belong to their respective owners.

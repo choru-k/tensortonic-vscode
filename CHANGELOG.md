@@ -1,25 +1,37 @@
 # Changelog
 
+## 0.3.0
+
+- Replace console pasting with a separate Manifest V3 browser companion popup. It uses only the `activeTab` and `scripting` permissions; browser installation requires separate user approval.
+- Add two-minute, single-use pairing codes, host/origin/session validation, and rejection of reused codes and excessive attempts. Login cookies are never copied or stored.
+- Copy pairing codes to the clipboard only through the explicit Copy action; keep them out of documents and logs.
+- Fix a startup race where disconnecting could prevent a later reconnection.
+- Prevent stale problem-list and problem-open responses from overwriting the latest selection.
+- Keep Agent context aligned with the reselected solution tab, and update only the explicitly requested solution's document for Description.
+- Lock the entire Run/Submit command against duplicate execution; cancel transmission if the connection changes while reading inputs.
+- Add real loopback HTTP integration tests and safe, simulated grading checks in a real VS Code host.
+- Standardize repository documentation, companion UI, Agent prompts, and test instructions in English while preserving upstream problem content and intentional multilingual fixtures.
+
 ## 0.2.1
 
-- 개발 호스트가 부모 창과 다른 테스트 폴더를 열도록 수정합니다.
-- 실제 계정 E2E의 연결 안내, 대기 상태 및 단계별 보고서를 제공합니다.
-- 로컬 연결 요청에 제한 시간을 두고 브라우저 네트워크 권한 확인 방법을 안내합니다.
-- 실제 Mac에서 관찰한 확장 활성화와 연결 대기 결과를 검증 문서에 반영합니다.
+- Open a separate test folder in the development host instead of reusing the parent window's folder.
+- Add connection instructions, waiting status, and phase-by-phase reports for the live-account E2E test.
+- Add timeouts to local connection requests and guidance for checking browser network permissions.
+- Document extension activation and connection-wait observations from the actual Mac.
 
 ## 0.2.0
 
-- 문제 Markdown 및 수식 미리보기를 제공합니다.
-- Agent 채팅에 문제·풀이·테스트 파일을 함께 첨부합니다.
-- 현재 문제와 저장하지 않은 코드를 읽는 문맥 도구를 추가합니다.
-- 선택적으로 Codex 파일 첨부 명령을 지원합니다.
-- 생성된 문제 파일의 개인 수정 사항을 보존합니다.
-- 실제 Code에서 실행하는 계정 E2E 설정과 보고서를 추가합니다.
+- Add Markdown problem statements and equation previews.
+- Attach problem, solution, and test files together in Agent chat.
+- Add a context tool for reading the current problem and unsaved editor code.
+- Support an optional Codex file-attachment command.
+- Preserve personal edits in generated problem files.
+- Add a live-account E2E configuration and report for use in real VS Code.
 
 ## 0.1.0
 
-- TensorTonic Python 문제와 학습 계획을 사이드바에서 탐색합니다.
-- 문제 설명, 로컬 풀이 파일, 편집 가능한 JSON 테스트 케이스를 엽니다.
-- CodeLens의 Run / Submit으로 TensorTonic 채점 서비스를 이용합니다.
-- 로그인된 브라우저 탭을 연결하며 인증 쿠키는 브라우저에 유지합니다.
-- npm 의존성 없이 설치용 VSIX를 생성할 수 있습니다.
+- Browse TensorTonic Python problems and study plans in the sidebar.
+- Open problem descriptions, local solution files, and editable JSON test cases.
+- Use TensorTonic's grading service through Run/Submit CodeLens actions.
+- Connect a signed-in browser tab while keeping login cookies in the browser.
+- Build an installable VSIX without npm dependencies.

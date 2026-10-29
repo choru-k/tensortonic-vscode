@@ -121,7 +121,7 @@ class ProblemTreeProvider {
   getChildren(element) {
     if (element) return [];
     if (!this.state.bridge.connected) {
-      const item = new vscode.TreeItem('Connect your TensorTonic browser tab');
+      const item = new vscode.TreeItem('Connect your TensorTonic browser companion');
       item.command = { command: 'tensortonic.connect', title: 'Connect browser' };
       item.iconPath = new vscode.ThemeIcon('plug');
       return [item];
@@ -190,7 +190,7 @@ async function createTextFile(uri, content) {
 function activate(context) {
   const bridge = new BrowserBridge();
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
-  const state = { bridge, problems: [], loading: false, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined };
+  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined };
   const tree = new ProblemTreeProvider(state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'tensortonic.connect';
@@ -217,6 +217,7 @@ function activate(context) {
   }
   updateConnection();
   bridge.onDidChange = () => {
+    if (!bridge.connected) invalidateProblems();
     updateConnection();
     if (bridge.connected) refresh().catch(showError);
   };
@@ -228,25 +229,48 @@ function activate(context) {
   }
 
   function requireConnection() {
-    if (!bridge.connected) throw new Error('Connect a signed-in TensorTonic browser tab using “TensorTonic: Connect browser” first.');
+    if (!bridge.connected) throw new Error('Connect a signed-in TensorTonic browser tab using “TensorTonic: Connect browser companion” first.');
+  }
+
+  function invalidateProblems() {
+    state.refreshGeneration += 1;
+    state.openGeneration += 1;
+    state.problems = [];
+    state.loading = false;
+    treeView.description = undefined;
+    treeView.message = undefined;
+    tree.refresh();
   }
 
   async function refresh() {
     requireConnection();
+    const planId = getPlanId();
+    const generation = ++state.refreshGeneration;
+    const connection = bridge.token;
+    const isCurrent = () => generation === state.refreshGeneration && bridge.connected &&
+      bridge.token === connection && getPlanId() === planId;
     state.loading = true;
     tree.refresh();
     try {
-      const problems = await client.listProblems(getPlanId());
+      const problems = await client.listProblems(planId);
+      // A previous plan/session may finish after a newer refresh. Never publish
+      // stale rows, labels or loading state into the current selection.
+      if (!isCurrent()) return state.problems;
       if (!Array.isArray(problems)) throw new Error('TensorTonic returned an unexpected problem list.');
       state.problems = problems.filter(problem => {
         try { normalizeRef(problem); return true; } catch (_) { return false; }
       });
-      treeView.description = getPlanId() || 'Free problems';
+      treeView.description = planId || 'Free problems';
       treeView.message = state.problems.length ? undefined : 'No problems found. Try another study plan or refresh.';
       return state.problems;
+    } catch (error) {
+      if (!isCurrent()) return state.problems;
+      throw error;
     } finally {
-      state.loading = false;
-      tree.refresh();
+      if (generation === state.refreshGeneration) {
+        state.loading = false;
+        tree.refresh();
+      }
     }
   }
 
@@ -262,38 +286,48 @@ function activate(context) {
     const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
       ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
     await vscode.workspace.getConfiguration('tensortonic').update('studyPlan', chosen, target);
-    state.problems = [];
-    tree.refresh();
+    invalidateProblems();
     if (bridge.connected) await refresh();
   }
 
+  async function companionGuide() {
+    const uri = vscode.Uri.joinPath(context.extensionUri, 'docs', 'browser-companion.md');
+    return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: false });
+  }
+
+  let pairingPromptInProgress = false;
   async function connect() {
-    await bridge.start();
-    if (bridge.connected) {
-      await refresh();
-      return vscode.window.showInformationMessage('TensorTonic browser is connected.');
+    if (pairingPromptInProgress) return undefined;
+    pairingPromptInProgress = true;
+    try {
+      if (bridge.connected) {
+        await refresh();
+        return vscode.window.showInformationMessage('TensorTonic browser is already connected. Disconnect before pairing another tab or account.');
+      }
+      const chosen = await vscode.window.showInformationMessage('Connect with the TensorTonic browser companion', {
+        modal: true,
+        detail: 'Sign in normally on TensorTonic in the same computer’s browser. Copy a one-use pairing code, then paste it into the companion popup on that tab. No console or login-cookie copying is needed. The code expires after two minutes.',
+      }, 'Copy pairing code', 'Companion setup');
+      if (chosen === 'Companion setup') return companionGuide();
+      if (chosen !== 'Copy pairing code') return undefined;
+      await bridge.start();
+      if (bridge.connected) return vscode.window.showInformationMessage('TensorTonic browser is already connected.');
+      // Clipboard writes happen only after the explicit Copy action. Never
+      // put the ticket or longer-lived capability in a document, log or URL.
+      const ticket = bridge.pairingCode();
+      await vscode.env.clipboard.writeText(ticket);
+      const next = await vscode.window.showInformationMessage('Pairing code copied. Paste it into the browser companion within two minutes. Keep that TensorTonic tab open.', 'Open TensorTonic', 'Companion setup');
+      if (next === 'Open TensorTonic') await vscode.env.openExternal(vscode.Uri.parse('https://www.tensortonic.com/'));
+      if (next === 'Companion setup') await companionGuide();
+      return { pairingRequested: true };
+    } finally {
+      pairingPromptInProgress = false;
     }
-    const content = [
-      '// Connect TensorTonic to VS Code',
-      '// 1. Open https://www.tensortonic.com in your browser and sign in normally.',
-      '// 2. Open Developer Tools → Console on that TensorTonic tab.',
-      '// 3. Paste and run the connection code below. Keep the tab open.',
-      '// This code forwards only TensorTonic API requests through your own signed-in tab.',
-      '// Your login cookies stay in the browser. Do not share this connection code.',
-      '// If your browser asks about local-network access, allow it for this connection.',
-      '',
-      bridge.connectionCode(),
-      '',
-    ].join('\n');
-    const document = await vscode.workspace.openTextDocument({ language: 'javascript', content });
-    await vscode.window.showTextDocument(document, { preview: false });
-    const chosen = await vscode.window.showInformationMessage('Run the connection code in the Console of your signed-in TensorTonic tab. Keep that tab open.', 'Open TensorTonic');
-    if (chosen === 'Open TensorTonic') await vscode.env.openExternal(vscode.Uri.parse('https://www.tensortonic.com/'));
   }
 
   async function disconnect() {
+    invalidateProblems();
     await bridge.stop();
-    state.problems = [];
     updateConnection();
   }
 
@@ -338,10 +372,12 @@ function activate(context) {
     return root;
   }
 
-  async function showDescription(problem, solutionUri) {
+  async function showDescription(problem, solutionUri, isCurrent = () => true) {
     const commands = await vscode.commands.getCommands(true);
+    if (!isCurrent()) return;
     if (solutionUri && commands.includes('markdown.showPreviewToSide')) {
       const uri = await writeProblemContext(problem, solutionUri);
+      if (!isCurrent()) return;
       await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
       return;
     }
@@ -361,25 +397,36 @@ function activate(context) {
     if (!input) return search();
     requireConnection();
     const ref = normalizeRef(input);
+    const generation = ++state.openGeneration;
+    const connection = bridge.token;
+    const isCurrent = () => generation === state.openGeneration && bridge.connected && bridge.token === connection;
     const problem = await client.getProblem(ref);
+    if (!isCurrent()) return undefined;
     if (!problem || typeof problem !== 'object') throw new Error('TensorTonic returned an unexpected problem response.');
     problem.ref = normalizeRef(problem.ref || ref);
     const root = await solutionRoot();
-    if (!root) return undefined;
+    if (!root || !isCurrent()) return undefined;
     const folder = vscode.Uri.joinPath(root, problem.ref.planId || 'free');
     await vscode.workspace.fs.createDirectory(folder);
+    if (!isCurrent()) return undefined;
     const settings = fileSettings(problem.ref);
     const uri = vscode.Uri.joinPath(folder, `${problem.ref.slug}.${settings.extension}`);
     const starter = typeof problem.starterCode === 'string' ? problem.starterCode : '';
     await createTextFile(uri, `${settings.comment} tensortonic: ${JSON.stringify(problem.ref)}\n${settings.comment} ${problemUrl(problem.ref)}\n\n${starter}${starter.endsWith('\n') ? '' : '\n'}`);
+    if (!isCurrent()) return undefined;
     const testCases = Array.isArray(problem.testCases) ? problem.testCases : Array.isArray(problem.examples) ? problem.examples : [];
     await createTextFile(testsUriFor(uri), JSON.stringify(testCases, null, 2) + '\n');
+    if (!isCurrent()) return undefined;
     const document = await vscode.workspace.openTextDocument(uri);
+    if (!isCurrent()) return undefined;
     await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
+    if (!isCurrent()) return undefined;
     state.lastSolutionUri = uri;
     state.currentProblem = problem;
     const contextUri = await writeProblemContext(problem, uri);
-    await showDescription(problem, uri);
+    if (!isCurrent()) return undefined;
+    await showDescription(problem, uri, isCurrent);
+    if (!isCurrent()) return undefined;
     return { problem, uri, testsUri: testsUriFor(uri), contextUri };
   }
 
@@ -484,10 +531,19 @@ function activate(context) {
   async function description(input) {
     requireConnection();
     const ref = await refFrom(input);
+    let solutionUri;
+    if (input instanceof vscode.Uri) solutionUri = input;
+    else if (input && input.uri instanceof vscode.Uri) solutionUri = input.uri;
+    else if (!input) solutionUri = (await managedDocument(input)).document.uri;
+    else if (state.lastSolutionUri) {
+      // Cached problem identity and last-selected editor can intentionally
+      // differ. Match the actual document before writing its context file.
+      const selected = await managedDocument(state.lastSolutionUri);
+      if (selected.ref.slug === ref.slug && selected.ref.planId === ref.planId) solutionUri = selected.document.uri;
+    }
     const problem = await client.getProblem(ref);
     problem.ref = normalizeRef(problem.ref || ref);
-    const same = state.currentProblem && JSON.stringify(normalizeRef(state.currentProblem.ref)) === JSON.stringify(ref);
-    await showDescription(problem, same ? state.lastSolutionUri : undefined);
+    await showDescription(problem, solutionUri);
     return problem;
   }
 
@@ -513,8 +569,22 @@ function activate(context) {
     state.resultsPanel.reveal(vscode.ViewColumn.Beside, true);
   }
 
+  let executionInProgress = false;
   async function execute(action, input) {
+    if (executionInProgress) throw new Error('A TensorTonic Run or Submit is already in progress.');
+    // Cover metadata/test reads as well as the POST: otherwise a second click
+    // can wait on its GET, then submit again after the first grading completes.
+    executionInProgress = true;
+    try {
+      return await executeOnce(action, input);
+    } finally {
+      executionInProgress = false;
+    }
+  }
+
+  async function executeOnce(action, input) {
     requireConnection();
+    const connection = bridge.token;
     const { document, ref } = await managedDocument(input);
     const code = document.getText();
     const problem = await client.getProblem(ref);
@@ -529,8 +599,11 @@ function activate(context) {
         if (!Array.isArray(testCases)) throw new Error('The .tests.json file must contain a JSON array of test cases.');
       } else testCases = Array.isArray(problem.testCases) ? problem.testCases : [];
     }
-    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: action === 'submit' ? 'Submitting to TensorTonic…' : 'Running TensorTonic test cases…', cancellable: false }, () =>
-      action === 'submit' ? client.submit(problem, code) : client.run(problem, code, testCases));
+    const result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: action === 'submit' ? 'Submitting to TensorTonic…' : 'Running TensorTonic test cases…', cancellable: false }, () => {
+      requireConnection();
+      if (bridge.token !== connection) throw new Error('The browser connection changed. Review the selected account before running or submitting again.');
+      return action === 'submit' ? client.submit(problem, code) : client.run(problem, code, testCases);
+    });
     showResults(action, problem, result);
     if (action === 'submit') refresh().catch(showError);
     return result;
@@ -563,11 +636,19 @@ function activate(context) {
     }));
   }
   context.subscriptions.push(vscode.languages.registerCodeLensProvider([{ scheme: 'file', language: 'python' }, { scheme: 'file', language: 'sql' }, { scheme: 'file', language: 'cpp' }, { scheme: 'file', pattern: '**/*.cu' }], new SolutionCodeLensProvider()));
+  function rememberSelectedSolution(editor) {
+    if (!editor || editor.document.uri.scheme !== 'file') return;
+    try {
+      readRef(editor.document.getText());
+      state.lastSolutionUri = editor.document.uri;
+    } catch (_) { /* Description, tests and chat must not replace the selection. */ }
+  }
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(rememberSelectedSolution));
+  rememberSelectedSolution(vscode.window.activeTextEditor);
   context.subscriptions.push({ dispose() { bridge.stop().catch(() => {}); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
-      state.problems = [];
-      tree.refresh();
+      invalidateProblems();
     }
   }));
 
