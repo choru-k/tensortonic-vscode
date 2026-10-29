@@ -2,58 +2,221 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "Browse, solve, run, and submit TensorTonic Python problems from VS Code through your signed-in browser.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "choru-local",
   "license": "MIT",
-  "engines": { "vscode": "^1.95.0" },
-  "categories": ["Education", "Other"],
-  "keywords": ["tensortonic", "pytorch", "machine-learning", "practice"],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Education",
+    "Other"
+  ],
+  "keywords": [
+    "tensortonic",
+    "pytorch",
+    "machine-learning",
+    "practice"
+  ],
   "main": "./src/extension.js",
-  "extensionKind": ["ui"],
-  "activationEvents": ["onView:tensortonicProblems"],
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onView:tensortonicProblems",
+    "onLanguageModelTool:tensortonic_current_problem"
+  ],
   "capabilities": {
-    "untrustedWorkspaces": { "supported": false, "description": "TensorTonic writes solution files and sends code to its execution service." },
-    "virtualWorkspaces": { "supported": false, "description": "The browser connection requires a local VS Code extension host." }
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "TensorTonic writes solution files and sends code to its execution service."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "The browser connection requires a local VS Code extension host."
+    }
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "package": "python3 scripts/package.py"
   },
   "contributes": {
-    "viewsContainers": { "activitybar": [{ "id": "tensortonic", "title": "TensorTonic", "icon": "media/tensortonic.svg" }] },
-    "views": { "tensortonic": [{ "id": "tensortonicProblems", "name": "Problems" }] },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "tensortonic",
+          "title": "TensorTonic",
+          "icon": "media/tensortonic.svg"
+        }
+      ]
+    },
+    "views": {
+      "tensortonic": [
+        {
+          "id": "tensortonicProblems",
+          "name": "Problems"
+        }
+      ]
+    },
     "commands": [
-      { "command": "tensortonic.connect", "title": "Connect browser", "category": "TensorTonic", "icon": "$(plug)" },
-      { "command": "tensortonic.disconnect", "title": "Disconnect browser", "category": "TensorTonic", "icon": "$(debug-disconnect)" },
-      { "command": "tensortonic.openProblem", "title": "Open problem", "category": "TensorTonic" },
-      { "command": "tensortonic.search", "title": "Search problems", "category": "TensorTonic", "icon": "$(search)" },
-      { "command": "tensortonic.refresh", "title": "Refresh problems", "category": "TensorTonic", "icon": "$(refresh)" },
-      { "command": "tensortonic.run", "title": "Run test cases", "category": "TensorTonic", "icon": "$(play)" },
-      { "command": "tensortonic.submit", "title": "Submit solution", "category": "TensorTonic", "icon": "$(cloud-upload)" },
-      { "command": "tensortonic.description", "title": "Show problem description", "category": "TensorTonic" },
-      { "command": "tensortonic.openTests", "title": "Edit test cases", "category": "TensorTonic" },
-      { "command": "tensortonic.openInBrowser", "title": "Open original problem in browser", "category": "TensorTonic" },
-      { "command": "tensortonic.chooseStudyPlan", "title": "Choose study plan", "category": "TensorTonic", "icon": "$(list-selection)" },
-      { "command": "tensortonic.smokeTest", "title": "Check connection and problem access", "category": "TensorTonic" }
+      {
+        "command": "tensortonic.connect",
+        "title": "Connect browser",
+        "category": "TensorTonic",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "tensortonic.disconnect",
+        "title": "Disconnect browser",
+        "category": "TensorTonic",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "tensortonic.openProblem",
+        "title": "Open problem",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.search",
+        "title": "Search problems",
+        "category": "TensorTonic",
+        "icon": "$(search)"
+      },
+      {
+        "command": "tensortonic.refresh",
+        "title": "Refresh problems",
+        "category": "TensorTonic",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "tensortonic.run",
+        "title": "Run test cases",
+        "category": "TensorTonic",
+        "icon": "$(play)"
+      },
+      {
+        "command": "tensortonic.submit",
+        "title": "Submit solution",
+        "category": "TensorTonic",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "tensortonic.description",
+        "title": "Show problem description",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.openTests",
+        "title": "Edit test cases",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.openInBrowser",
+        "title": "Open original problem in browser",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.chooseStudyPlan",
+        "title": "Choose study plan",
+        "category": "TensorTonic",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "tensortonic.smokeTest",
+        "title": "Check connection and problem access",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.openAgentContext",
+        "title": "Open problem context for coding agents",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.discussWithAgent",
+        "title": "Discuss problem with Agent",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.discussWithCodex",
+        "title": "Attach problem and solution to Codex",
+        "category": "TensorTonic"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "tensortonic.connect", "when": "view == tensortonicProblems && !tensortonic.connected", "group": "navigation@1" },
-        { "command": "tensortonic.search", "when": "view == tensortonicProblems && tensortonic.connected", "group": "navigation@2" },
-        { "command": "tensortonic.chooseStudyPlan", "when": "view == tensortonicProblems", "group": "navigation@3" },
-        { "command": "tensortonic.refresh", "when": "view == tensortonicProblems && tensortonic.connected", "group": "navigation@4" },
-        { "command": "tensortonic.disconnect", "when": "view == tensortonicProblems && tensortonic.connected", "group": "connection@1" }
+        {
+          "command": "tensortonic.connect",
+          "when": "view == tensortonicProblems && !tensortonic.connected",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tensortonic.search",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tensortonic.chooseStudyPlan",
+          "when": "view == tensortonicProblems",
+          "group": "navigation@3"
+        },
+        {
+          "command": "tensortonic.refresh",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "navigation@4"
+        },
+        {
+          "command": "tensortonic.disconnect",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "connection@1"
+        }
       ],
       "view/item/context": [
-        { "command": "tensortonic.openInBrowser", "when": "view == tensortonicProblems && viewItem == tensortonicProblem", "group": "navigation" }
+        {
+          "command": "tensortonic.openInBrowser",
+          "when": "view == tensortonicProblems && viewItem == tensortonicProblem",
+          "group": "navigation"
+        }
       ]
     },
     "configuration": {
       "title": "TensorTonic",
       "properties": {
-        "tensortonic.studyPlan": { "type": "string", "default": "pytorch-basics", "description": "TensorTonic studyPlan slug. Leave empty to browse free problems.", "scope": "window" },
-        "tensortonic.solutionDirectory": { "type": "string", "default": "tensortonic", "description": "Relative folder inside the workspace for solution code and editable test cases.", "scope": "window" }
+        "tensortonic.studyPlan": {
+          "type": "string",
+          "default": "pytorch-basics",
+          "description": "TensorTonic studyPlan slug. Leave empty to browse free problems.",
+          "scope": "window"
+        },
+        "tensortonic.solutionDirectory": {
+          "type": "string",
+          "default": "tensortonic",
+          "description": "Relative folder inside the workspace for solution code and editable test cases.",
+          "scope": "window"
+        }
       }
-    }
-  }
+    },
+    "languageModelTools": [
+      {
+        "name": "tensortonic_current_problem",
+        "displayName": "Read current TensorTonic problem",
+        "modelDescription": "Read the selected TensorTonic problem statement, constraints, public tests, and the current student code including unsaved editor changes. Use when discussing a TensorTonic exercise. Does not run, submit, or retrieve reference solutions.",
+        "userDescription": "Read the current TensorTonic exercise and editor code for discussion.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "tensortonicProblem",
+        "inputSchema": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/choru-k/tensortonic-vscode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/choru-k/tensortonic-vscode/issues"
+  },
+  "homepage": "https://github.com/choru-k/tensortonic-vscode#readme"
 }

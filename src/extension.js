@@ -1,12 +1,15 @@
 'use strict';
 
 const vscode = require('vscode');
+const crypto = require('node:crypto');
 const { TensorTonicClient } = require('./client');
 const { BrowserBridge } = require('./bridge');
+const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = require('./context');
 
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
   'description', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
+  'openAgentContext', 'discussWithAgent', 'discussWithCodex',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
@@ -87,6 +90,13 @@ function testsUriFor(uri) {
   return uri.with({ path: uri.path.replace(/\.[^/.]+$/, '') + '.tests.json' });
 }
 
+function contextUriFor(uri) {
+  return uri.with({ path: uri.path.replace(/\.[^/.]+$/, '') + '.problem.md' });
+}
+
+const CONTEXT_MARKER = '<!-- TensorTonic generated problem context -->';
+const contextHash = text => crypto.createHash('sha256').update(text).digest('hex');
+
 function buildHtml(title, body) {
   return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -144,8 +154,8 @@ class SolutionCodeLensProvider {
       return [];
     }
     const range = new vscode.Range(0, 0, 0, 0);
-    return ['run', 'submit', 'description', 'openTests'].map(name => new vscode.CodeLens(range, {
-      title: { run: 'Run', submit: 'Submit', description: 'Description', openTests: 'Test cases' }[name],
+    return ['run', 'submit', 'description', 'openTests', 'discussWithAgent'].map(name => new vscode.CodeLens(range, {
+      title: { run: 'Run', submit: 'Submit', description: 'Description', openTests: 'Test cases', discussWithAgent: 'Discuss with Agent' }[name],
       command: `tensortonic.${name}`,
       arguments: [document.uri],
     }));
@@ -180,7 +190,7 @@ async function createTextFile(uri, content) {
 function activate(context) {
   const bridge = new BrowserBridge();
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
-  const state = { bridge, problems: [], loading: false, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined };
+  const state = { bridge, problems: [], loading: false, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined };
   const tree = new ProblemTreeProvider(state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'tensortonic.connect';
@@ -328,7 +338,13 @@ function activate(context) {
     return root;
   }
 
-  function showDescription(problem) {
+  async function showDescription(problem, solutionUri) {
+    const commands = await vscode.commands.getCommands(true);
+    if (solutionUri && commands.includes('markdown.showPreviewToSide')) {
+      const uri = await writeProblemContext(problem, solutionUri);
+      await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
+      return;
+    }
     const ref = normalizeRef(problem.ref || problem);
     if (!state.statementPanel) {
       state.statementPanel = vscode.window.createWebviewPanel('tensortonic.description', 'TensorTonic problem', { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true }, { enableScripts: false, localResourceRoots: [] });
@@ -361,8 +377,89 @@ function activate(context) {
     const document = await vscode.workspace.openTextDocument(uri);
     await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
     state.lastSolutionUri = uri;
-    showDescription(problem);
-    return { problem, uri, testsUri: testsUriFor(uri) };
+    state.currentProblem = problem;
+    const contextUri = await writeProblemContext(problem, uri);
+    await showDescription(problem, uri);
+    return { problem, uri, testsUri: testsUriFor(uri), contextUri };
+  }
+
+  async function writeProblemContext(problem, solutionUri) {
+    const uri = contextUriFor(solutionUri);
+    const markdown = buildProblemMarkdown(problem);
+    const content = `${CONTEXT_MARKER}\n<!-- sha256:${contextHash(markdown)} -->\n\n${markdown}`;
+    if (!await fileExists(uri)) {
+      await createTextFile(uri, content);
+    } else {
+      const document = await vscode.workspace.openTextDocument(uri);
+      if (document.getText() === content) return uri;
+      // A generated context must never replace a learner's notes or unsaved edits.
+      const existing = document.getText().match(/^<!-- TensorTonic generated problem context -->\n<!-- sha256:([a-f0-9]{64}) -->\n\n([\s\S]*)$/);
+      if (!existing || contextHash(existing[2]) !== existing[1] || document.isDirty) {
+        throw new Error('The generated .problem.md file has been edited. Save your notes in another file before refreshing its problem context.');
+      }
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(uri, new vscode.Range(new vscode.Position(0, 0), document.positionAt(document.getText().length)), content);
+      if (!await vscode.workspace.applyEdit(edit) || !await document.save()) throw new Error('Could not refresh the generated problem context.');
+    }
+    return uri;
+  }
+
+  async function currentContext(input) {
+    let selected = input;
+    if (!selected) {
+      const active = vscode.window.activeTextEditor && vscode.window.activeTextEditor.document;
+      try { if (active) readRef(active.getText()); else throw new Error(); selected = active.uri; }
+      catch (_) { selected = state.lastSolutionUri; }
+    }
+    const { document, ref } = await managedDocument(selected);
+    let problem = state.currentProblem;
+    const same = problem && JSON.stringify(normalizeRef(problem.ref)) === JSON.stringify(ref);
+    if (!same) {
+      requireConnection();
+      problem = await client.getProblem(ref);
+      problem.ref = normalizeRef(problem.ref || ref);
+    }
+    state.currentProblem = problem;
+    state.lastSolutionUri = document.uri;
+    const problemUri = await writeProblemContext(problem, document.uri);
+    return { document, ref, problem, problemUri };
+  }
+
+  async function openAgentContext(input) {
+    const context = await currentContext(input);
+    return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(context.problemUri), { viewColumn: vscode.ViewColumn.Beside, preview: false });
+  }
+
+  async function discussWithAgent(input) {
+    const { document, ref, problemUri } = await currentContext(input);
+    const commands = await vscode.commands.getCommands(true);
+    if (!commands.includes('workbench.action.chat.open')) {
+      await openAgentContext(document.uri);
+      throw new Error('VS Code Chat is unavailable. The .problem.md file is ready to attach in your coding agent.');
+    }
+    const attachFiles = [problemUri, document.uri];
+    const testsUri = testsUriFor(document.uri);
+    if (await fileExists(testsUri)) attachFiles.push(testsUri);
+    await vscode.commands.executeCommand('workbench.action.chat.open', {
+      mode: 'agent', isPartialQuery: true,
+      query: buildDiscussionPrompt(ref, document.uri.fsPath, problemUri.fsPath),
+      attachFiles,
+    });
+    return { problemUri, solutionUri: document.uri, attachedFiles: attachFiles };
+  }
+
+  async function discussWithCodex(input) {
+    const { document, problemUri } = await currentContext(input);
+    const commands = await vscode.commands.getCommands(true);
+    if (!commands.includes('chatgpt.addFileToThread')) {
+      throw new Error('The Codex VS Code extension is not installed or does not expose file attachment. Use Discuss with Agent or attach the .problem.md file manually.');
+    }
+    for (const uri of [problemUri, document.uri]) {
+      await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: false });
+      await vscode.commands.executeCommand('chatgpt.addFileToThread');
+    }
+    if (commands.includes('chatgpt.openSidebar')) await vscode.commands.executeCommand('chatgpt.openSidebar');
+    return { problemUri, solutionUri: document.uri };
   }
 
   async function managedDocument(input) {
@@ -389,7 +486,8 @@ function activate(context) {
     const ref = await refFrom(input);
     const problem = await client.getProblem(ref);
     problem.ref = normalizeRef(problem.ref || ref);
-    showDescription(problem);
+    const same = state.currentProblem && JSON.stringify(normalizeRef(state.currentProblem.ref)) === JSON.stringify(ref);
+    await showDescription(problem, same ? state.lastSolutionUri : undefined);
     return problem;
   }
 
@@ -456,6 +554,7 @@ function activate(context) {
   const handlers = {
     connect, disconnect, openProblem, search, refresh, description, openTests, openInBrowser,
     chooseStudyPlan, run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
+    openAgentContext, discussWithAgent, discussWithCodex,
   };
   for (const [name, handler] of Object.entries(handlers)) {
     context.subscriptions.push(vscode.commands.registerCommand(`tensortonic.${name}`, async (...args) => {
@@ -472,9 +571,21 @@ function activate(context) {
     }
   }));
 
-  return { bridge, client, refresh, openProblem, smokeTest, commands: COMMANDS.slice() };
+  if (vscode.lm && typeof vscode.lm.registerTool === 'function') {
+    context.subscriptions.push(vscode.lm.registerTool('tensortonic_current_problem', {
+      async invoke() {
+        const { document, problem } = await currentContext();
+        return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(formatAgentContext(problem, document.getText()))]);
+      },
+      async prepareInvocation() {
+        return { invocationMessage: 'Reading the selected TensorTonic problem and current editor code' };
+      },
+    }));
+  }
+
+  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, commands: COMMANDS.slice() };
 }
 
 function deactivate() {}
 
-module.exports = { activate, deactivate, escapeHtml, htmlToText, normalizeRef, readRef, problemUrl, testsUriFor };
+module.exports = { activate, deactivate, escapeHtml, htmlToText, normalizeRef, readRef, problemUrl, testsUriFor, contextUriFor };

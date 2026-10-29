@@ -9,7 +9,7 @@ TensorTonic의 공식 확장이 아닙니다. 현재 Python 무료 문제와 Pyt
 VS Code 1.95 이상이 필요합니다. Extensions 화면의 `…` → **Install from VSIX…**에서 설치 파일을 선택하거나 다음 명령을 사용합니다.
 
 ```sh
-code --install-extension tensortonic-vscode-0.1.0.vsix
+code --install-extension releases/tensortonic-vscode-0.2.0.vsix
 ```
 
 풀이를 저장할 로컬 폴더를 VS Code에서 열고 TensorTonic 아이콘을 클릭합니다.
@@ -34,6 +34,14 @@ code --install-extension tensortonic-vscode-0.1.0.vsix
 
 풀이 파일 첫 줄의 `# tensortonic: {...}` 메타데이터는 문제와 파일을 연결하므로 유지하세요. 저장 위치는 기본적으로 현재 워크스페이스의 `tensortonic/<학습계획>/`입니다.
 
+## Agent와 함께 문제 논의
+
+- 풀이 위 **Discuss with Agent**를 누르면 VS Code 기본 Agent 채팅에 문제 설명·현재 풀이·테스트 파일이 첨부됩니다. 질문은 입력된 상태로 열리며 직접 전송합니다.
+- 문제는 옆의 Markdown 미리보기에서 수식·예제와 함께 읽을 수 있고, `.problem.md` 원문은 Agent가 파일로 읽습니다. 개인 노트는 별도 파일에 작성하세요. 생성된 문제 파일을 수정했다면 덮어쓰지 않습니다.
+- Agent는 `#tensortonicProblem` 도구로 선택된 문제와 **저장하지 않은 현재 코드**를 읽을 수 있습니다. 이 도구는 실행·제출·정답 조회를 하지 않습니다.
+- 질문은 한 번에 한 단계씩 의논하고, 요청 전에는 완성 답안을 작성하지 않도록 시작합니다.
+- Codex 확장을 사용하는 경우 **TensorTonic: Attach problem and solution to Codex**로 두 파일을 추가할 수 있습니다. Codex의 파일 첨부 명령이 제공되는 버전이 필요합니다. 기본 Chat 연동과 Codex 연동은 별개입니다.
+
 ## 설정과 확인
 
 | 설정 | 기본값 | 의미 |
@@ -47,9 +55,9 @@ code --install-extension tensortonic-vscode-0.1.0.vsix
 
 ## 이번 버전의 검증 범위
 
-자동 테스트 24개와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
+자동 테스트 37개와 VS Code의 별도 프로필 VSIX 설치 검사를 통과했습니다. GitHub로 로그인한 실제 TensorTonic 계정에서 기존에 풀었던 Softmax 문제의 Run 3/3, Submit 43/43 통과 응답을 확인했습니다.
 
-현재 제작 환경에서는 로컬 서버 포트 열기와 기본 VS Code 설치 폴더 쓰기가 제한되어, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 완료하지 못했습니다. 위의 브라우저 연결 절차를 실행한 뒤 Check connection 명령으로 먼저 확인해 주세요. 문제 설명은 Markdown/수식 원문을 읽을 수 있는 텍스트로 표시하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
+현재 제작 환경에서는 로컬 서버 포트 열기와 기본 VS Code 설치 폴더 쓰기가 제한되어, **설치된 확장 버튼 → 로컬 브라우저 연결 → 실제 채점**을 한 번에 잇는 최종 검증은 완료하지 못했습니다. 위의 브라우저 연결 절차를 실행한 뒤 Check connection 명령으로 먼저 확인해 주세요. 문제 설명에는 Code의 Markdown 미리보기를 사용하며 웹사이트의 인터랙티브 시각화는 포함하지 않습니다.
 
 ## 개발과 패키징
 
@@ -61,6 +69,17 @@ python3 scripts/package.py
 ```
 
 VS Code에서 이 소스 폴더를 열고 F5를 누르면 Extension Development Host에서 실행합니다. 원격 SSH·컨테이너·VS Code for the Web 환경은 지원하지 않습니다. 확장과 브라우저는 같은 컴퓨터에서 실행해야 합니다.
+
+## 실제 계정 E2E 실행
+
+이 제작 환경의 macOS는 Code 실행을 `kLSNoLaunchPermissionErr`로 거부하고, 앱 화면 제어도 응답하지 않아 최종 실행을 완료하지 못했습니다. 아래 설정은 실제 Code와 로그인 계정을 사용하며 모의 서버를 사용하지 않습니다.
+
+1. 이 저장소 폴더를 본인의 VS Code에서 엽니다.
+2. Run and Debug에서 **TensorTonic: live account E2E**를 선택하고 F5를 누릅니다.
+3. 개발 호스트에 열린 임시 연결 코드를 로그인된 TensorTonic 브라우저 콘솔에서 실행합니다.
+4. 보고서는 `dist/e2e-report.json`에 저장됩니다. 이미 풀었던 Softmax 문제만 재제출하며, 미해결 상태이면 테스트를 중단합니다.
+
+이 검증은 문제 열기·편집·Run·Submit·Agent 문맥 도구·채팅 첨부까지 검사합니다. Agent의 실제 답변 이해 여부는 채팅 화면에서 별도로 확인해야 하며, 자동 보고서에 완료된 것으로 기록하지 않습니다.
 
 ## 참고
 
