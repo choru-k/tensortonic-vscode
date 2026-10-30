@@ -44,6 +44,38 @@ function successData(response, label) {
   return response.data;
 }
 
+function studyPlanOrder(plan, catalogue, planId) {
+  if (!plan || plan.id !== planId || !Array.isArray(plan.sections)) {
+    throw new Error('TensorTonic returned an unexpected study-plan order.');
+  }
+  const ordered = [];
+  const used = new Set();
+  const sortItems = items => {
+    if (items.some(item => !item || typeof item !== 'object' || !Number.isFinite(item.sortOrder))) {
+      throw new Error('TensorTonic returned an invalid study-plan sort order.');
+    }
+    // Stable ties retain the service's array order. Never use the catalogue's global sortOrder.
+    return [...items].sort((a, b) => a.sortOrder - b.sortOrder);
+  };
+  for (const section of sortItems(plan.sections)) {
+    if (!Array.isArray(section.problems)) throw new Error('TensorTonic returned an unexpected study-plan section.');
+    for (const problem of sortItems(section.problems)) {
+      if (!SUPPORTED_SOURCES.has(problem.type)) continue;
+      const id = slug(problem.slug, 'study-plan problem slug');
+      // Plan slugs identify the API problem; catalogue slugs can instead be browser aliases.
+      let matches = catalogue.filter(ref => ref.apiId === id);
+      if (!matches.length) matches = catalogue.filter(ref => ref.slug === id);
+      if (matches.length !== 1) throw new Error('TensorTonic catalogue and study-plan order do not match. Refresh the problem list and try again.');
+      const ref = matches[0];
+      if (!used.has(ref)) { ordered.push(ref); used.add(ref); }
+    }
+  }
+  if (used.size !== catalogue.length) {
+    throw new Error('TensorTonic catalogue and study-plan order do not match. Refresh the problem list and try again.');
+  }
+  return ordered;
+}
+
 function visibleCases(cases) {
   if (!Array.isArray(cases)) return [];
   return cases.filter(item => item && typeof item === 'object' && item.isPublic !== false);
@@ -82,6 +114,7 @@ class TensorTonicClient {
       for (const item of data.problems) {
         if (!item || !SUPPORTED_SOURCES.has(item.source)) continue;
         if (!planId && item.source !== 'free') continue;
+        if (planId && item.planId !== planId) continue;
         const apiId = item.sourceId || item.id;
         if (typeof apiId !== 'string' || !SLUG.test(apiId)) continue;
         if (typeof item.slug !== 'string' || !SLUG.test(item.slug)) continue;
@@ -99,7 +132,11 @@ class TensorTonicClient {
         const key = `${ref.planId || ''}/${ref.slug}`;
         if (!seen.has(key)) { result.push(ref); seen.add(key); }
       }
-      if (!data.pagination || data.pagination.hasMore !== true) return result;
+      if (!data.pagination || data.pagination.hasMore !== true) {
+        if (!planId) return result;
+        const plan = successData(await this.request(`/api/study-plans/${planId}`, { method: 'GET' }), 'study-plan order');
+        return studyPlanOrder(plan, result, planId);
+      }
       if (data.problems.length === 0 || !Number.isInteger(data.pagination.totalPages) || data.pagination.totalPages <= page) {
         throw new Error('TensorTonic returned invalid catalogue pagination.');
       }

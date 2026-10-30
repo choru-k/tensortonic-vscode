@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.1
+
+- Follow the website's study-plan section/problem sort order, joining catalogue progress and API identifiers without hardcoded curricula.
+- Add Previous/Next study-plan commands and CodeLens using the active solution's plan, with non-wrapping boundaries, stale-request protection, and preservation of local edits.
+- Replace raw Run/Submit JSON with a clear outcome, reported test counts and runtime, expandable individual test results, and optional collapsed debug JSON.
+- Show grading-request failures in the results panel without claiming a failed submission or retrying an uncertain request.
+- Activate the built-in Markdown preview before checking command availability, avoiding raw headings and math in the plain-text fallback on first problem open.
+- Clearly identify degraded plain-text previews, keep their script-disabled CSP, and remove the old fallback panel when native preview becomes available.
+- Cover activation, preview failures, stale navigation, native Markdown/math rendering, and preservation of sanitized content with regression checks.
+- Clarify that solved checkmarks do not import earlier website submissions; newly created solution files use starter code and existing local files are preserved.
+
 ## 0.3.0
 
 - Replace console pasting with a separate Manifest V3 browser companion popup. It uses only the `activeTab` and `scripting` permissions; browser installation requires separate user approval.

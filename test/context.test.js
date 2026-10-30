@@ -50,6 +50,24 @@ test('remote images, active HTML and downloaded links cannot become executable c
   assert.match(markdown, /\[Original TensorTonic problem\]\(https:\/\/www\.tensortonic\.com/);
 });
 
+test('safe context preserves Markdown headings, inline math, display math and code fences for native rendering', () => {
+  const problem = fixture();
+  const formula = String.raw`$$
+s(y)=\sum_{t=1}^{T}\log P(y_t\mid y_0,\ldots,y_{t-1})
+$$`;
+  problem.description = '## Requirements\n\nKeep $y_0$ and $T$.\n\n' + formula +
+    '\n\n- Preserve beam order.\n\n```python\nscore = 0\n```\n' +
+    '<script src="https://evil.example/remote.js">SCRIPT_SENTINEL</script>\n' +
+    '![tracker](https://evil.example/tracker.png)';
+  const markdown = buildProblemMarkdown(problem);
+  assert.match(markdown, /^## Requirements$/m);
+  assert.ok(markdown.includes('Keep $y_0$ and $T$.'));
+  assert.ok(markdown.includes(formula));
+  assert.ok(markdown.includes('```python\nscore = 0\n```'));
+  assert.match(markdown, /^- Preserve beam order\.$/m);
+  assert.doesNotMatch(markdown, /SCRIPT_SENTINEL|evil\.example|<script|!\[/);
+});
+
 test('metadata cannot change the original-source host or inject lines', () => {
   for (const ref of [
     { slug: 'https://evil.example' },

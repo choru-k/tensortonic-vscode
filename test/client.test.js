@@ -10,19 +10,83 @@ function detail(extra = {}) {
     testCases: [{ id: 'public', inputs: { x: 0 }, isPublic: true }, { id: 'private', inputs: { x: 999 }, isPublic: false }],
     solution: 'DO NOT SHOW ANSWERS', theory: 'DO NOT COPY THEORY', ...extra };
 }
+function planData(problems, extra = {}) {
+  return { id: 'pytorch-basics', sections: [{ sortOrder: 1, problems: problems.map((slug, index) => ({ slug, type: 'python', sortOrder: index + 1 })) }], ...extra };
+}
 
 test('catalog paginates, deduplicates and retains API id separately from canonical browser slug', async () => {
   const requests = [];
   const python = { slug: 'browser-slug', id: 'api-id', sourceId: 'api-id', source: 'python', category: 'pytorch', planId: 'pytorch-basics', title: 'Example', solved: true };
   const client = new TensorTonicClient(async path => {
     requests.push(path);
+    if (path === '/api/study-plans/pytorch-basics') return ok(planData(['api-id']));
     return ok({ problems: requests.length === 1 ? [python, { ...python, slug: 'gpu-problem', source: 'cuda' }] : [python], pagination: { hasMore: requests.length === 1, totalPages: 2 } });
   });
   const problems = await client.listProblems('pytorch-basics');
   assert.equal(problems.length, 1);
   assert.equal(problems[0].slug, 'browser-slug'); assert.equal(problems[0].apiId, 'api-id');
   assert.equal(problems[0].solved, true);
-  assert.deepEqual(requests, ['/api/problems/list?page=1&limit=100&planId=pytorch-basics', '/api/problems/list?page=2&limit=100&planId=pytorch-basics']);
+  assert.deepEqual(requests, ['/api/problems/list?page=1&limit=100&planId=pytorch-basics', '/api/problems/list?page=2&limit=100&planId=pytorch-basics', '/api/study-plans/pytorch-basics']);
+});
+
+test('study plans use section and problem sortOrder, retaining progress and API/browser identities', async () => {
+  const item = (id, extra = {}) => ({ id, slug: id, source: 'python', planId: 'pytorch-basics', category: 'pytorch', ...extra });
+  const catalogue = [item('last', { sortOrder: 1 }), item('second', { sortOrder: 999 }), item('first', { sourceId: 'api-first', solved: true, title: 'First' }), item('other-plan', { planId: 'numpy-basics' })];
+  const plan = planData([], { sections: [
+    { sortOrder: 2, problems: [{ slug: 'last', type: 'python', sortOrder: 1 }] },
+    { sortOrder: 1, problems: [{ slug: 'second', type: 'python', sortOrder: 2 }, { slug: 'api-first', type: 'python', sortOrder: 1 }] },
+  ] });
+  const calls = [];
+  const client = new TensorTonicClient(async (path, options) => {
+    calls.push({ path, options });
+    return ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan);
+  });
+  const result = await client.listProblems('pytorch-basics');
+  assert.deepEqual(result.map(p => p.slug), ['first', 'second', 'last']);
+  assert.deepEqual(result[0], { slug: 'first', apiId: 'api-first', catalogSlug: 'first', source: 'python', technology: 'pytorch', planId: 'pytorch-basics', title: 'First', difficulty: '', solved: true });
+  assert.ok(calls.every(call => call.options.method === 'GET'));
+  assert.equal(plan.sections[0].sortOrder, 2, 'ordering must not mutate the service response');
+});
+
+test('study-plan stable ties and repeated entries preserve service sequence without duplicates', async () => {
+  const catalogue = ['b', 'a'].map(slug => ({ slug, id: slug, source: 'python', planId: 'pytorch-basics' }));
+  const plan = planData([], { sections: [
+    { sortOrder: 1, problems: [{ slug: 'a', type: 'python', sortOrder: 1 }, { slug: 'b', type: 'python', sortOrder: 1 }] },
+    { sortOrder: 1, problems: [{ slug: 'a', type: 'python', sortOrder: 1 }, { slug: 'unsupported', type: 'cuda', sortOrder: 2 }] },
+  ] });
+  const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan));
+  assert.deepEqual((await client.listProblems('pytorch-basics')).map(p => p.slug), ['a', 'b']);
+});
+
+test('missing or mismatched study-plan order fails explicitly instead of silently showing catalogue order', async () => {
+  const catalogue = [{ slug: 'a', id: 'a', source: 'python', planId: 'pytorch-basics' }];
+  for (const plan of [
+    {}, planData(['a'], { id: 'wrong-plan' }), planData([], { sections: [{ problems: [] }] }),
+    planData([], { sections: [{ sortOrder: 1, problems: null }] }),
+    planData([], { sections: [{ sortOrder: 1, problems: [{ slug: 'a', type: 'python' }] }] }),
+    planData(['missing']), planData([]),
+  ]) {
+    const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan));
+    await assert.rejects(client.listProblems('pytorch-basics'), /study-plan/);
+  }
+  const client = new TensorTonicClient(async path => path.startsWith('/api/problems/list?') ? ok({ problems: catalogue }) : { status: 'error', message: 'Plan access denied' });
+  await assert.rejects(client.listProblems('pytorch-basics'), /Plan access denied/);
+});
+
+test('ambiguous API identities are rejected rather than navigating to the wrong problem', async () => {
+  const catalogue = ['browser-a', 'browser-b'].map(slug => ({ slug, sourceId: 'shared-id', source: 'python', planId: 'pytorch-basics' }));
+  const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : planData(['shared-id'])));
+  await assert.rejects(client.listProblems('pytorch-basics'), /do not match/);
+});
+
+test('empty study plans remain empty and plan metadata transport errors are surfaced', async () => {
+  const empty = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: [] } : planData([])));
+  assert.deepEqual(await empty.listProblems('pytorch-basics'), []);
+  const unavailable = new TensorTonicClient(async path => {
+    if (path.startsWith('/api/problems/list?')) return ok({ problems: [] });
+    throw new Error('Bridge disconnected');
+  });
+  await assert.rejects(unavailable.listProblems('pytorch-basics'), /Bridge disconnected/);
 });
 
 test('free catalog does not accidentally mix premium study-plan problems', async () => {

@@ -17,7 +17,7 @@ exports.run = async function run() {
   const secondRef = {...ref, slug:'vm-only-other', apiId:'vm-only-other'};
   let releaseSubmit;
   let holdSubmit = false;
-  const raw = {id:'vm-only-double',title:'VM fixture: double',description:'Return $2x$.\n\n<script>alert("inert")</script>',starterCode:'def double(x):\n    pass\n',testCases:[{id:'public-1',inputs:{x:2},isPublic:true},{id:'hidden',inputs:{x:'PRIVATE_SENTINEL'},isPublic:false}],solution:'ANSWER_SENTINEL'};
+  const raw = {id:'vm-only-double',title:'VM fixture: double',description:'Return $2x$.\n\n## Requirements\n\n- Preserve shape.\n\n$$\ny=\\sum_{t=1}^{T} x_t\n$$\n\n<script>alert("inert")</script>\n![tracker](https://invalid.example/tracker.png)',starterCode:'def double(x):\n    pass\n',testCases:[{id:'public-1',inputs:{x:2},isPublic:true},{id:'hidden',inputs:{x:'PRIVATE_SENTINEL'},isPublic:false}],solution:'ANSWER_SENTINEL'};
   const wait = async predicate => { const deadline=Date.now()+10000; while(!predicate()){ assert.ok(Date.now()<deadline,'bounded readiness wait'); await new Promise(r=>setTimeout(r,20)); } };
   const replace = async (doc,content) => { const edit=new vscode.WorkspaceEdit();edit.replace(doc.uri,new vscode.Range(new vscode.Position(0,0),doc.positionAt(doc.getText().length)),content);assert.equal(await vscode.workspace.applyEdit(edit),true); };
   const ok = label => { report.checks.push(label); fs.mkdirSync(path.dirname(OUT),{recursive:true});fs.writeFileSync(OUT,JSON.stringify(report,null,2)); };
@@ -30,7 +30,7 @@ exports.run = async function run() {
     assert.equal((await api.smokeTest()).connected,false);
     const commands=await vscode.commands.getCommands(true);
     for(const id of api.commands) assert.ok(commands.includes(id),id);
-    ok('Extension activates; all 15 commands register; initially disconnected');
+    ok(`Extension activates; all ${api.commands.length} commands register; initially disconnected`);
     await api.bridge.start();
     const origin='https://www.tensortonic.com';
     const sandbox={location:{origin,href:origin+'/'},URL,AbortController,AbortSignal,console:{info(){},warn(){},error(){}},
@@ -40,7 +40,8 @@ exports.run = async function run() {
           const request={method:options.method||'GET',path:target.pathname,body:options.body?JSON.parse(options.body):undefined}; requests.push(request);
           assert.equal(options.credentials,'include');assert.equal(options.redirect,'error');
           let data;
-          if(request.path==='/api/problems/list') data={problems:[{id:ref.apiId,sourceId:ref.apiId,slug:ref.slug,planId:ref.planId,title:raw.title,source:'python',category:'Python',solved:false}],pagination:{hasMore:false}};
+          if(request.path==='/api/problems/list') data={problems:[secondRef,ref].map(item=>({id:item.apiId,sourceId:item.apiId,slug:item.slug,planId:item.planId,title:item.slug===ref.slug?raw.title:'Other VM problem',source:'python',category:'Python',solved:false})),pagination:{hasMore:false}};
+          else if(request.path===`/api/study-plans/${ref.planId}`) data={id:ref.planId,sections:[{sortOrder:1,problems:[{slug:secondRef.apiId,type:'python',sortOrder:2},{slug:ref.apiId,type:'python',sortOrder:1}]}]};
           else if(request.path===`/api/study-plans/${ref.planId}/problems/${ref.apiId}`) data=raw;
           else if(request.path===`/api/study-plans/${secondRef.planId}/problems/${secondRef.apiId}`) data={...raw,title:'Other VM problem',id:secondRef.apiId};
           else if(request.path.endsWith('/run')||request.path.endsWith('/submit')) {
@@ -62,17 +63,28 @@ exports.run = async function run() {
     const paired=await companion.connect(api.bridge.pairingCode());
     assert.ok(['connecting','connected'].includes(paired.phase));
     await wait(()=>api.bridge.connected);
-    const access=await api.smokeTest();assert.equal(access.problemCount,1);assert.equal(access.problem.testCaseCount,1);
-    ok('Companion redeems one-use ticket over actual HTTP; original connector lists fake Python problem');
+    const access=await api.smokeTest();assert.equal(access.problemCount,2);assert.equal(access.problem.testCaseCount,1);
+    ok('Companion redeems one-use ticket over actual HTTP; original connector lists fake Python problems in plan order');
     const opened=await api.openProblem(ref);assert.ok(opened.uri&&opened.testsUri&&opened.contextUri);
     const solution=await vscode.workspace.openTextDocument(opened.uri), cases=await vscode.workspace.openTextDocument(opened.testsUri), context=await vscode.workspace.openTextDocument(opened.contextUri);
     const originalCode=solution.getText(), originalTests=cases.getText(), originalContext=context.getText();
     assert.match(originalCode,/tensortonic:/);assert.equal(JSON.parse(originalTests).length,1);assert.ok(!originalContext.includes('PRIVATE_SENTINEL'));assert.ok(!originalContext.includes('ANSWER_SENTINEL'));
     ok('Real workspace creates solution, public tests and safe agent context; hidden/reference data omitted');
+    assert.equal(vscode.extensions.getExtension('vscode.markdown-language-features').isActive,true,
+      'Opening the first problem must activate the built-in Markdown renderer');
+    const rendered = await vscode.commands.executeCommand('markdown.api.render',context);
+    assert.match(rendered,/<h2\b[^>]*>Requirements<\/h2>/);
+    assert.match(rendered,/<li[^>]*>Preserve shape\.<\/li>/);
+    assert.match(rendered,/class="katex"/);
+    assert.match(rendered,/class="katex-display"/);
+    assert.doesNotMatch(rendered,/<script|<iframe|<img|invalid\.example|alert\("inert"\)/);
+    ok('Native Markdown renders headings, lists, inline and display math without remote active content');
     const lenses=await vscode.commands.executeCommand('vscode.executeCodeLensProvider',opened.uri);
     assert.ok(lenses&&lenses.some(x=>x.command&&x.command.command==='tensortonic.run'));
     assert.ok(lenses.some(x=>x.command&&x.command.command==='tensortonic.discussWithAgent'));
-    ok('Real Python document receives Run/Submit/Description/Test cases/Agent CodeLens');
+    assert.ok(lenses.some(x=>x.command&&x.command.command==='tensortonic.previousProblem'));
+    assert.ok(lenses.some(x=>x.command&&x.command.command==='tensortonic.nextProblem'));
+    ok('Real Python document receives Run/Submit/Description/Test cases/Agent/Previous/Next CodeLens');
     const edited=originalCode+'\n# UNSAVED_VM_SENTINEL\n';await replace(solution,edited);
     const customCases=[{id:'custom-vm',inputs:{x:7},expected:14}];await replace(cases,JSON.stringify(customCases));
     assert.equal(solution.isDirty,true);assert.equal(cases.isDirty,true);
@@ -99,6 +111,12 @@ exports.run = async function run() {
     ok('Invalid unsaved test JSON is rejected without a grading request');
     await api.openProblem(ref);assert.equal(solution.getText(),edited);assert.equal(cases.getText(),JSON.stringify(customCases));
     ok('Reopening preserves unsaved code and edited test cases');
+    const navigated=await vscode.commands.executeCommand('tensortonic.nextProblem',opened.uri);
+    assert.equal(navigated.problem.ref.slug,secondRef.slug);
+    const returned=await vscode.commands.executeCommand('tensortonic.previousProblem',navigated.uri);
+    assert.equal(returned.problem.ref.slug,ref.slug);
+    assert.equal(solution.getText(),edited);assert.equal(cases.getText(),JSON.stringify(customCases));
+    ok('Previous/Next follow authoritative plan order, not reversed catalogue order, and preserve unsaved work');
     const secondOpened=await api.openProblem(secondRef);
     await vscode.window.showTextDocument(solution,{viewColumn:vscode.ViewColumn.One});
     const firstContextBeforeDescription=context.getText();

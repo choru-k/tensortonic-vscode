@@ -22,7 +22,7 @@ class Uri {
 
 function disposable() { return { dispose() {} }; }
 
-async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'] } = {}) {
+async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tensortonic-ui-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const documents = new Map();
@@ -168,7 +168,10 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       createOutputChannel() { return { appendLine: line => output.push(line), dispose() {} }; },
       createTreeView(id, options) { const tree = { id, options, dispose() {} }; trees.push(tree); return tree; },
       createWebviewPanel(type, title, column, options) {
-        const panel = { type, title, options, webview: { html: '' }, onDidDispose: () => disposable(), reveal() {} };
+        let onDispose;
+        const panel = { type, title, options, webview: { html: '' },
+          onDidDispose(listener) { onDispose = listener; return disposable(); },
+          dispose() { this.disposed = true; if (onDispose) onDispose(); }, reveal() {} };
         webviews.push(panel);
         return panel;
       },
@@ -199,6 +202,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       },
     },
     languages: { registerCodeLensProvider(selector, provider) { codeLens.push({ selector, provider }); return disposable(); } },
+    extensions: { getExtension: id => id === 'vscode.markdown-language-features' ? markdownExtension : undefined },
     lm: { registerTool(name, tool) { tools.set(name, tool); return { dispose() { tools.delete(name); } }; } },
     env: { openExternal: async () => true, clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
   };
@@ -355,6 +359,51 @@ test('Run uses the selected solution and current unsaved code and test cases', a
   assert.ok(panel.webview.html.includes('&lt;script&gt;'));
   assert.ok(!panel.webview.html.includes('<script>'));
   assert.deepEqual(h.errors, []);
+});
+
+test('observed Run and Submit response shapes become readable, script-free result panels', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  h.api.client.run = async () => ({ status: 'passed', tests: [{
+    id: 'test-1', name: 'Case 1', ok: true, isPublic: true, msg: '',
+    inputs: { logits: [[1, 2, 3]] }, expected: [[0.09, 0.2447, 0.6652]],
+    actual: [[0.09, 0.2447, 0.6652]], logs: '',
+  }] });
+  await h.commands.get('tensortonic.run')(opened.uri);
+  const panel = h.webviews.find(value => value.type === 'tensortonic.results');
+  assert.match(panel.webview.html, /<h2>Passed<\/h2>/);
+  for (const label of ['Case 1', 'Input', 'Expected', 'Actual']) assert.ok(panel.webview.html.includes(label));
+  assert.match(panel.webview.html, /<details class="result-case result-passed">/);
+  assert.match(panel.webview.html, /<details class="result-debug"><summary>Raw response \(JSON\)<\/summary>/);
+  assert.doesNotMatch(panel.webview.html, /0 \/ 0/);
+  h.api.client.submit = async () => ({ status: 'passed', tests: [], passed: 43, total: 43, duration_ms: 1006, newBadges: [] });
+  await h.commands.get('tensortonic.submit')(opened.uri);
+  assert.match(panel.webview.html, /43 \/ 43/);
+  assert.match(panel.webview.html, /1006 ms/);
+  assert.match(panel.webview.html, /Individual test details were not returned/);
+  assert.doesNotMatch(panel.webview.html, /zero test cases|No tests executed/);
+  assert.equal(panel.options.enableScripts, false);
+  assert.deepEqual(panel.options.localResourceRoots, []);
+  assert.match(panel.webview.html, /default-src 'none'/);
+  assert.doesNotMatch(panel.webview.html, /<script|<iframe|<img/);
+});
+
+test('a failed grading request replaces an earlier pass with a visible uncertain-outcome error without retry', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  await h.commands.get('tensortonic.submit')(opened.uri);
+  const panel = h.webviews.find(value => value.type === 'tensortonic.results');
+  assert.match(panel.webview.html, /<h2>Passed<\/h2>/);
+  let requests = 0;
+  h.api.client.submit = async () => { requests++; throw new Error('Timed out <script>alert(1)</script>'); };
+  assert.equal(await h.commands.get('tensortonic.submit')(opened.uri), undefined);
+  assert.equal(requests, 1);
+  assert.match(panel.webview.html, /Request error/);
+  assert.match(panel.webview.html, /No confirmed grading result was received/);
+  assert.match(panel.webview.html, /Check TensorTonic before submitting again/);
+  assert.match(panel.webview.html, /&lt;script&gt;/);
+  assert.doesNotMatch(panel.webview.html, /<script|<h2>Passed<\/h2>|Raw response \(JSON\)|0 \/ 0/);
+  assert.equal(h.errors.length, 1, 'the existing error notification is retained');
 });
 
 test('an unrelated file or invalid test JSON is never sent for execution', async t => {
@@ -651,6 +700,93 @@ test('explicit Description targets its own solution after another editor was sel
   assert.match(await fs.readFile(second.contextUri.fsPath, 'utf8'), /# Dropout/);
 });
 
+test('first problem open activates native Markdown before checking its preview command', async t => {
+  const externalCommands = [];
+  let activations = 0;
+  const markdownExtension = { async activate() {
+    activations++;
+    externalCommands.push('markdown.showPreviewToSide');
+  } };
+  const h = await harness(t, { externalCommands, markdownExtension });
+  h.fixtures.get(DEFAULT_REF.slug).description = '## Requirements\n\nKeep $y_0$.\n\n$$\ns(y)=\\sum_{t=1}^{T} \\log P(y_t)\n$$';
+  assert.ok(!(await h.vscode.commands.getCommands()).includes('markdown.showPreviewToSide'));
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  assert.equal(activations, 1);
+  const preview = h.commandExecutions.find(call => call.id === 'markdown.showPreviewToSide');
+  assert.equal(preview.args[0].fsPath, opened.contextUri.fsPath);
+  const markdown = await fs.readFile(opened.contextUri.fsPath, 'utf8');
+  assert.match(markdown, /## Requirements/);
+  assert.ok(markdown.includes('$y_0$'));
+  assert.ok(markdown.includes('$$\ns(y)=\\sum_{t=1}^{T} \\log P(y_t)\n$$'));
+  assert.equal(h.webviews.length, 0, 'first use must not silently select the unformatted fallback');
+});
+
+test('unavailable native Markdown clearly labels its inert plain-text fallback', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  assert.ok(opened.uri && opened.contextUri);
+  const panel = h.webviews[0];
+  assert.match(panel.webview.html, /Plain-text fallback/);
+  assert.match(panel.webview.html, /Enable the built-in Markdown Language Features extension/);
+  assert.equal(panel.options.enableScripts, false);
+  assert.deepEqual(panel.options.localResourceRoots, []);
+  assert.match(panel.webview.html, /default-src 'none'/);
+  assert.doesNotMatch(panel.webview.html, /<script|<iframe|<link\b/);
+});
+
+test('native Markdown activation or preview failure does not prevent opening a solution', async t => {
+  for (const stage of ['activate', 'preview']) {
+    await t.test(stage, async t => {
+      const externalCommands = ['markdown.showPreviewToSide'];
+      const h = await harness(t, { externalCommands, markdownExtension: { async activate() {
+        if (stage === 'activate') throw new Error('UNTRUSTED_RENDERER_EXCEPTION');
+      } } });
+      const execute = h.vscode.commands.executeCommand;
+      h.vscode.commands.executeCommand = async (id, ...args) => {
+        if (id === 'markdown.showPreviewToSide') throw new Error('UNTRUSTED_RENDERER_EXCEPTION');
+        return execute(id, ...args);
+      };
+      const opened = await h.api.openProblem(DEFAULT_REF);
+      assert.ok(opened.uri && opened.testsUri && opened.contextUri);
+      assert.match(h.webviews[0].webview.html, /Plain-text fallback/);
+      assert.doesNotMatch(h.output.join('\n'), /UNTRUSTED_RENDERER_EXCEPTION/);
+      assert.equal(h.errors.length, 0);
+    });
+  }
+});
+
+test('late native Markdown activation cannot show an older problem after newer navigation', async t => {
+  let finishActivation, startedActivation;
+  let count = 0;
+  const started = new Promise(resolve => { startedActivation = resolve; });
+  const externalCommands = [];
+  const h = await harness(t, { externalCommands, markdownExtension: { async activate() {
+    if (++count === 1) {
+      startedActivation();
+      await new Promise(resolve => { finishActivation = resolve; });
+    } else externalCommands.push('markdown.showPreviewToSide');
+  } } });
+  const old = h.api.openProblem(DEFAULT_REF);
+  await started;
+  const current = await h.api.openProblem(SECOND_REF);
+  finishActivation();
+  assert.equal(await old, undefined);
+  const previews = h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide');
+  assert.deepEqual(previews.map(call => call.args[0].fsPath), [current.contextUri.fsPath]);
+  assert.equal(h.webviews.length, 0);
+});
+
+test('a recovered native preview disposes the previous degraded problem panel', async t => {
+  const externalCommands = [];
+  const h = await harness(t, { externalCommands });
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  const fallback = h.webviews[0];
+  externalCommands.push('markdown.showPreviewToSide');
+  await h.commands.get('tensortonic.description')(opened.uri);
+  assert.equal(fallback.disposed, true);
+  assert.equal(h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide').length, 1);
+});
+
 test('reconnecting while a grading command reads inputs cannot send code to a new session', async t => {
   const h = await harness(t);
   const opened = await h.api.openProblem(DEFAULT_REF);
@@ -716,4 +852,110 @@ test('companion setup guide is nonsecret and does not start pairing', async t =>
   assert.deepEqual(h.clipboardWrites, []);
   assert.match(h.vscode.window.activeTextEditor.document.getText(), /no-console connection/);
   assert.deepEqual(h.errors, []);
+});
+
+test('Previous and Next follow the active solution plan and preserve unsaved work', async t => {
+  const h = await harness(t);
+  const first = await h.api.openProblem(DEFAULT_REF);
+  const document = await h.vscode.workspace.openTextDocument(first.uri);
+  const cases = await h.vscode.workspace.openTextDocument(first.testsUri);
+  const code = document.getText() + '\n# My unsaved work\n';
+  const tests = '[{"id":"mine","inputs":{"x":42}}]';
+  document.setText(code); cases.setText(tests);
+  h.configuration.set('studyPlan', 'unrelated-sidebar-plan');
+  const next = await h.commands.get('tensortonic.nextProblem')(first.uri);
+  assert.equal(h.calls.list.at(-1), DEFAULT_REF.planId);
+  assert.equal(next.problem.ref.slug, SECOND_REF.slug);
+  const previous = await h.commands.get('tensortonic.previousProblem')(next.uri);
+  assert.equal(previous.problem.ref.slug, DEFAULT_REF.slug);
+  assert.equal(document.getText(), code);
+  assert.equal(cases.getText(), tests);
+  assert.equal(h.configuration.get('studyPlan'), 'unrelated-sidebar-plan', 'navigation must not silently change sidebar settings');
+  assert.equal(h.calls.run.length + h.calls.submit.length, 0);
+});
+
+test('study-plan navigation has non-wrapping boundaries and handles missing current problems', async t => {
+  const h = await harness(t);
+  const first = await h.api.openProblem(DEFAULT_REF);
+  let reads = h.calls.get.length;
+  assert.equal(await h.commands.get('tensortonic.previousProblem')(first.uri), undefined);
+  assert.equal(h.calls.get.length, reads);
+  assert.match(h.information.at(-1)[0], /first problem/);
+  const last = await h.api.openProblem(SECOND_REF);
+  reads = h.calls.get.length;
+  assert.equal(await h.commands.get('tensortonic.nextProblem')(last.uri), undefined);
+  assert.equal(h.calls.get.length, reads);
+  assert.match(h.information.at(-1)[0], /last problem/);
+  h.api.client.listProblems = async () => [{ ...DEFAULT_REF, planId: 'other-plan' }];
+  assert.equal(await h.commands.get('tensortonic.nextProblem')(last.uri), undefined);
+  assert.match(h.information.at(-1)[0], /not found/);
+  assert.equal(h.calls.get.length, reads);
+});
+
+test('free problem files have no study-plan navigation CodeLens or catalogue request', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  const document = await h.vscode.workspace.openTextDocument(opened.uri);
+  const provider = h.codeLens[0].provider;
+  assert.ok(provider.provideCodeLenses(document).some(lens => lens.command.command === 'tensortonic.nextProblem'));
+  document.setText('# tensortonic: {"slug":"free-problem"}\npass\n');
+  assert.ok(!provider.provideCodeLenses(document).some(lens => /(?:previous|next)Problem/.test(lens.command.command)));
+  const requests = h.calls.list.length;
+  assert.equal(await h.commands.get('tensortonic.nextProblem')(document.uri), undefined);
+  assert.equal(h.calls.list.length, requests);
+  assert.match(h.information.at(-1)[0], /available for study-plan problems/);
+});
+
+test('late navigation responses cannot override a newer problem open or a changed connection', async t => {
+  for (const interruption of ['navigation', 'connection']) {
+    await t.test(interruption, async t => {
+      const h = await harness(t);
+      const opened = await h.api.openProblem(DEFAULT_REF);
+      let finish, started;
+      const waiting = new Promise(resolve => { started = resolve; });
+      h.api.client.listProblems = async () => { started(); return new Promise(resolve => { finish = resolve; }); };
+      const pending = h.commands.get('tensortonic.nextProblem')(opened.uri);
+      await waiting;
+      if (interruption === 'navigation') await h.api.openProblem(DEFAULT_REF);
+      else h.api.bridge.token = 'new-session';
+      const reads = h.calls.get.length;
+      finish([DEFAULT_REF, SECOND_REF]);
+      assert.equal(await pending, undefined);
+      assert.equal(h.calls.get.length, reads);
+      assert.ok(!h.commandExecutions.some(call => call.id === 'tensortonic.submit'));
+    });
+  }
+});
+
+
+test('late navigation errors do not interrupt a newer selection', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  let reject, started;
+  const waiting = new Promise(resolve => { started = resolve; });
+  h.api.client.listProblems = async () => { started(); return new Promise((_, fail) => { reject = fail; }); };
+  const pending = h.commands.get('tensortonic.nextProblem')(opened.uri);
+  await waiting;
+  await h.api.openProblem(SECOND_REF);
+  reject(new Error('An older plan request failed'));
+  assert.equal(await pending, undefined);
+  assert.deepEqual(h.errors, []);
+});
+
+
+test('study navigation prefers API identity over a reused browser slug', async t => {
+  const h = await harness(t);
+  const opened = await h.api.openProblem({...DEFAULT_REF, apiId: 'stable-api-id'});
+  const document = await h.vscode.workspace.openTextDocument(opened.uri);
+  document.setText('# tensortonic: '+JSON.stringify({...DEFAULT_REF,apiId:'stable-api-id'})+'\npass\n');
+  h.api.client.listProblems = async () => [
+    {...DEFAULT_REF, apiId:'different-api-id'},
+    {...DEFAULT_REF, slug:'renamed-browser-alias', apiId:'stable-api-id'},
+    SECOND_REF,
+  ];
+  const next = await h.commands.get('tensortonic.nextProblem')(opened.uri);
+  assert.equal(next.problem.ref.slug,SECOND_REF.slug);
+  h.api.client.listProblems = async () => [{...DEFAULT_REF,apiId:'different-api-id'},SECOND_REF];
+  assert.equal(await h.commands.get('tensortonic.nextProblem')(opened.uri),undefined);
+  assert.match(h.information.at(-1)[0],/not found/);
 });

@@ -6,10 +6,10 @@ This is not an official TensorTonic extension. It currently supports free Python
 
 ## Installation
 
-Requires VS Code 1.95 or later. In the Extensions view, choose `…` → **Install from VSIX…** and select the package, or run:
+Requires VS Code 1.95 or later. Download [TensorTonic 0.3.1 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.3.1.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.3.0.vsix
+code --install-extension releases/tensortonic-vscode-0.3.1.vsix
 ```
 
 Open a local folder for your solutions in VS Code, then select the TensorTonic activity-bar icon.
@@ -29,14 +29,19 @@ Use **Disconnect browser** in VS Code or **Disconnect** in the companion to end 
 
 ## Solve problems
 
-- Select a problem in the sidebar to open its description and solution file side by side.
+- Select a problem in the sidebar to open its description and solution file side by side. Study-plan lists follow the website's section and problem ordering rather than the general catalogue order.
 - Use the **Run**, **Submit**, **Description**, and **Test cases** buttons above the solution.
+- For a study-plan solution, use **Previous problem** and **Next problem** above the code or in the command palette. Navigation uses that solution's plan, even if the sidebar is showing another plan; it stops at the first/last problem without wrapping and preserves existing files and unsaved edits.
 - **Run** uses the adjacent `.tests.json` file. You can edit it, but keep it as a JSON array.
 - **Submit** sends the current editor code to TensorTonic and displays its grading result. Both execution and grading run on TensorTonic's servers.
+- Results show the outcome, reported passed/total counts, and runtime first. Expand a test to inspect its input, expected/actual output, and available error or log details. **Raw response (JSON)** is collapsed for optional debugging. Absent case details are identified; unavailable counts and timings are never fabricated as zero or treated as a failure.
 - Reopening a problem does not overwrite existing solution or test files.
+- A solved checkmark reflects your TensorTonic progress, not a downloaded solution. A newly created `.py` file contains the problem's starter code, even for a solved problem. Importing your previous website submission is not implemented; copy your own saved code into the local file if you want to continue it here.
 - Use **Choose study plan** with the `studyPlan` value from a problem URL to switch plans. Leave it empty to browse free problems.
 
 Keep the `# tensortonic: {...}` metadata on the solution's first line: it associates the file with its problem. The default location is `tensortonic/<study-plan>/` inside the current workspace.
+
+Descriptions activate VS Code's built-in Markdown preview on first use, including its local math renderer. If Markdown Language Features is disabled or fails to start, an explicitly labeled plain-text fallback remains available; enable the built-in extension and reopen **Description** to restore formatting. The extension does not change your preview security or `markdown.math.enabled` settings, load remote rendering scripts, or enable scripts in its fallback panel.
 
 ## Discuss problems with an Agent
 
@@ -61,7 +66,9 @@ The extension uses API contracts observed in TensorTonic's web client. There is 
 
 Official VS Code on the assistant's Linux VM was used to check the real extension host: commands, problem files, CodeLens, unsaved edits, simulated Run/Submit, and Agent file attachments. Real loopback HTTP tests and unit regression tests are also provided. The [detailed validation record](docs/vm-validation.md) distinguishes simulated responses from actual browser validation.
 
-**Installing the companion and testing it with a live account in the managed browser remain incomplete.** The user approved installation, but this environment's browser automation policy blocked navigation to `chrome://extensions`; no installation or activation was performed, and no alternate route was used to bypass the restriction. Earlier website API observations of Run 3/3 and Submit 43/43 do not establish that the installed companion works end to end with VS Code. An Agent's actual response has not been automatically requested or verified either.
+The user's manual 0.3.0 screenshots subsequently confirmed companion-connected problem browsing, Run success, Submit **43/43** with **1006 ms**, and an Agent response using the three attached files. Those are user-driven observations, not automated cloud tests. The managed cloud browser still blocks companion installation, and no alternate installation route was used.
+
+The 0.3.1 preview, results, and study-navigation changes have separate [patch validation notes](docs/preview-validation.md). A new real Linux VS Code launch exited before the host tests could run, so its native rendering assertions are not yet fresh passing evidence for this patch.
 
 ## Development and packaging
 
