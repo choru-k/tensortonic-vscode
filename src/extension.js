@@ -13,7 +13,7 @@ const { buildCardHtml } = require('./cards/webview');
 
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
-  'description', 'interactiveExplanation', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
+  'description', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
   'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
@@ -592,6 +592,43 @@ function activate(context) {
   }
 
   async function interactiveExplanation(input) {
+    // Delegate normal top-level navigation to VS Code's native Chromium browser.
+    // Never frame/proxy the page, alter headers, or transfer browser credentials.
+    const generation = ++state.cardGeneration;
+    const navigation = state.openGeneration;
+    const isCurrent = () => !disposed && generation === state.cardGeneration && navigation === state.openGeneration;
+    let ref;
+    try { ref = await refFrom(input || state.lastSolutionUri); }
+    catch (error) { if (!isCurrent()) return; throw error; }
+    if (!isCurrent()) return;
+    const url = problemUrl(ref);
+    let available;
+    try { available = await vscode.commands.getCommands(true); }
+    catch (error) { if (!isCurrent()) return; throw error; }
+    if (!isCurrent()) return;
+    const nativeCommand = 'workbench.action.browser.open';
+    let unavailable = !available.includes(nativeCommand);
+    if (!unavailable) {
+      try {
+        await vscode.commands.executeCommand(nativeCommand, { url, openToSide: true, reuseUrlFilter: url });
+        // Dispatch is not proof of page loading, authentication or entitlement.
+        return isCurrent() ? { ref, target: 'integrated', requested: true } : undefined;
+      } catch (_) {
+        if (!isCurrent()) return;
+        unavailable = true;
+      }
+    }
+    if (unavailable) {
+      const choice = await vscode.window.showInformationMessage(
+        'The original page could not be opened in VS Code’s Integrated Browser. Use a desktop VS Code version with Integrated Browser, or open your normal browser. Sign in on the website yourself; browser sessions are separate.',
+        'Open in external browser');
+      if (!isCurrent() || choice !== 'Open in external browser') return { ref, target: 'none', requested: false };
+      const opened = await vscode.env.openExternal(vscode.Uri.parse(url));
+      return { ref, target: 'external', requested: opened === true };
+    }
+  }
+
+  async function offlineExploration(input) {
     // Independent experiments use only a validated local identity, never account data.
     const generation = ++state.cardGeneration;
     const navigation = state.openGeneration;
@@ -602,7 +639,7 @@ function activate(context) {
     if (!isCurrent()) return;
     const card = resolveCard(ref);
     if (!state.cardPanel) {
-      const panel = vscode.window.createWebviewPanel('tensortonic.explanation', 'Interactive explanation',
+      const panel = vscode.window.createWebviewPanel('tensortonic.explanation', 'Offline learning exploration',
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
         { enableScripts: true, localResourceRoots: [] });
       state.cardPanel = panel;
@@ -610,7 +647,7 @@ function activate(context) {
         if (state.cardPanel === panel) { state.cardPanel = undefined; state.cardGeneration++; }
       }, null, context.subscriptions);
     }
-    state.cardPanel.title = card ? `${card.title} — independent exploration` : 'Interactive explanation unavailable';
+    state.cardPanel.title = card ? `${card.title} — offline exploration` : 'Offline exploration unavailable';
     state.cardPanel.webview.html = buildCardHtml(ref);
     state.cardPanel.reveal(vscode.ViewColumn.Beside, true);
     return { ref, supported: !!card, cardId: card && card.id };
@@ -749,7 +786,7 @@ function activate(context) {
   const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan });
 
   const handlers = {
-    connect, disconnect, openProblem, search, refresh, description, interactiveExplanation, openTests, openInBrowser,
+    connect, disconnect, openProblem, search, refresh, description, interactiveExplanation, offlineExploration, openOriginalInVSCode: interactiveExplanation, openTests, openInBrowser,
     chooseStudyPlan, showStudyPlan,
     startStudying: () => studyWorkspace.start(),
     changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),

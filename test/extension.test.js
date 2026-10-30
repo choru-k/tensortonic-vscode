@@ -1191,7 +1191,7 @@ test('a recent matching Start request restores only the new study sidebar, never
 });
 
 test('interactive explanation is explicit, offline, isolated, and does not touch statement/solution/network',async t=>{
- const h=await harness(t,{connected:false});const command=h.commands.get('tensortonic.interactiveExplanation');
+ const h=await harness(t,{connected:false});const command=h.commands.get('tensortonic.offlineExploration');
  const result=await command(DEFAULT_REF);assert.equal(result.cardId,'training-loop');assert.equal(result.supported,true);
  const panel=h.webviews[0];assert.equal(panel.type,'tensortonic.explanation');assert.deepEqual(panel.options,{enableScripts:true,localResourceRoots:[]});assert.match(panel.webview.html,/data-card="training-loop"/);
  assert.deepEqual(h.calls,{list:[],get:[],run:[],submit:[]});assert.deepEqual(await fs.readdir(h.root),[]);
@@ -1199,34 +1199,78 @@ test('interactive explanation is explicit, offline, isolated, and does not touch
  panel.dispose();await command(DEFAULT_REF);assert.equal(h.webviews.length,2);panel.dispose();await command(DEFAULT_REF);assert.equal(h.webviews.length,2,'late old disposal cannot clear replacement');
 });
 test('unsupported explanation is honest, inert, and refuses misleading aliases',async t=>{
- const h=await harness(t);const result=await h.commands.get('tensortonic.interactiveExplanation')({...DEFAULT_REF,apiId:'unknown'});
+ const h=await harness(t);const result=await h.commands.get('tensortonic.offlineExploration')({...DEFAULT_REF,apiId:'unknown'});
  assert.equal(result.supported,false);assert.match(h.webviews[0].webview.html,/not a completed interactive card/);assert.doesNotMatch(h.webviews[0].webview.html,/<script/);assert.deepEqual(h.calls.get,[]);
 });
 test('explanation is discoverable from code lens and sidebar and remains usable from generated context',async t=>{
  const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const document=await h.vscode.workspace.openTextDocument(opened.uri);
  const lenses=h.codeLens[0].provider.provideCodeLenses(document);assert.ok(lenses.some(l=>l.command.command==='tensortonic.interactiveExplanation'));
- const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.ok(manifest.contributes.menus['view/item/context'].some(m=>m.command==='tensortonic.interactiveExplanation'));
+ const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.ok(manifest.contributes.menus['view/item/context'].some(m=>m.command==='tensortonic.offlineExploration'));
  assert.match(await fs.readFile(opened.contextUri.fsPath,'utf8'),/Interactive explanation/);
  await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(opened.contextUri));
- const count=h.calls.get.length;assert.equal((await h.commands.get('tensortonic.interactiveExplanation')()).cardId,'training-loop');assert.equal(h.calls.get.length,count);
+ const count=h.calls.get.length;assert.equal((await h.commands.get('tensortonic.offlineExploration')()).cardId,'training-loop');assert.equal(h.calls.get.length,count);
 });
 test('newer explanation wins over slow local metadata reads',async t=>{
  const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const original=h.vscode.workspace.openTextDocument;
  let finish;h.vscode.workspace.openTextDocument=async uri=>{await new Promise(resolve=>{finish=resolve;});return original(uri);};
- const command=h.commands.get('tensortonic.interactiveExplanation');const older=command(opened.uri);await command({slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'});finish();await older;
+ const command=h.commands.get('tensortonic.offlineExploration');const older=command(opened.uri);await command({slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'});finish();await older;
  const panels=h.webviews.filter(p=>p.type==='tensortonic.explanation');assert.equal(panels.length,1);assert.match(panels[0].webview.html,/data-card="softmax"/);
 });
 test('navigation and disconnect invalidate pending explanations without stale errors',async t=>{
  const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const original=h.vscode.workspace.openTextDocument;
  let reject;h.vscode.workspace.openTextDocument=()=>new Promise((_,r)=>{reject=r;});
- const pending=h.commands.get('tensortonic.interactiveExplanation')(opened.uri);await h.commands.get('tensortonic.disconnect')();reject(new Error('stale metadata failure'));await pending;
+ const pending=h.commands.get('tensortonic.offlineExploration')(opened.uri);await h.commands.get('tensortonic.disconnect')();reject(new Error('stale metadata failure'));await pending;
  assert.deepEqual(h.errors,[]);assert.equal(h.webviews.filter(p=>p.type==='tensortonic.explanation').length,0);
  h.vscode.workspace.openTextDocument=original;
- assert.equal((await h.commands.get('tensortonic.interactiveExplanation')(DEFAULT_REF)).supported,true,'new explicit offline request works after disconnect');
+ assert.equal((await h.commands.get('tensortonic.offlineExploration')(DEFAULT_REF)).supported,true,'new explicit offline request works after disconnect');
 });
 test('closing the card or navigating to a newer problem cancels a pending card open',async t=>{
- const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const command=h.commands.get('tensortonic.interactiveExplanation');await command(DEFAULT_REF);const panel=h.webviews.find(p=>p.type==='tensortonic.explanation');
+ const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const command=h.commands.get('tensortonic.offlineExploration');await command(DEFAULT_REF);const panel=h.webviews.find(p=>p.type==='tensortonic.explanation');
  const original=h.vscode.workspace.openTextDocument;let finish;h.vscode.workspace.openTextDocument=async uri=>{await new Promise(r=>{finish=r;});return original(uri);};
  const pending=command(opened.uri);panel.dispose();finish();await pending;assert.equal(h.webviews.filter(p=>p.type==='tensortonic.explanation').length,1);
  const pending2=command(opened.uri);h.vscode.workspace.openTextDocument=original;await h.api.openProblem(SECOND_REF);finish();await pending2;assert.equal(h.webviews.filter(p=>p.type==='tensortonic.explanation').length,1);assert.deepEqual(h.errors,[]);
+});
+
+test('primary explanation opens the live original page via native browser only after an explicit gesture',async t=>{
+ const native='workbench.action.browser.open';const h=await harness(t,{connected:false,externalCommands:[native]});
+ assert.deepEqual(h.commandExecutions,[]);const command=h.commands.get('tensortonic.interactiveExplanation');
+ const result=await command({slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'});
+ assert.deepEqual(result,{ref:{slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'},target:'integrated',requested:true});
+ const url='https://www.tensortonic.com/problems/pytorch-softmax-from-scratch?studyPlan=pytorch-basics';
+ assert.deepEqual(h.commandExecutions,[{id:native,args:[{url,openToSide:true,reuseUrlFilter:url}],activeDocument:undefined}]);
+ assert.equal(h.webviews.length,0);assert.deepEqual(h.calls,{list:[],get:[],run:[],submit:[]});assert.deepEqual(await fs.readdir(h.root),[]);
+ await h.commands.get('tensortonic.openOriginalInVSCode')({slug:'another-problem',planId:'another-plan'});
+ assert.equal(h.commandExecutions[1].args[0].url,'https://www.tensortonic.com/problems/another-problem?studyPlan=another-plan');
+ assert.equal(h.commandExecutions[1].args[0].reuseUrlFilter,h.commandExecutions[1].args[0].url);
+});
+test('native URL/filter never accept arbitrary destinations, glob metacharacters or downloaded fields',async t=>{
+ const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');
+ for(const ref of [{slug:'https://evil.example'},{slug:'../auth'},{slug:'problem*'},{slug:'valid',planId:'x?redirect=evil'}])await command(ref);
+ assert.equal(h.commandExecutions.length,0);assert.equal(h.errors.length,4);
+ await command({...DEFAULT_REF,url:'https://evil.example',reuseUrlFilter:'**',visualizationComponent:'evil'});
+ assert.equal(h.commandExecutions[0].args[0].url,'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics');
+});
+test('missing native browser offers an explicit external choice; cancel never launches anything',async t=>{
+ const h=await harness(t,{connected:false,externalCommands:[]});let opened=[];h.vscode.env.openExternal=async uri=>{opened.push(uri.toString());return true;};
+ const command=h.commands.get('tensortonic.interactiveExplanation');assert.equal((await command(DEFAULT_REF)).target,'none');assert.deepEqual(opened,[]);
+ assert.match(h.information[0][0],/sessions are separate/);h.informationChoices.push('Open in external browser');assert.equal((await command(DEFAULT_REF)).target,'external');
+ assert.deepEqual(opened,['https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics']);assert.equal(h.webviews.length,0);
+});
+test('failed native dispatch is not replayed and requires a user choice for external fallback',async t=>{
+ const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const execute=h.vscode.commands.executeCommand;let attempts=0,external=0;
+ h.vscode.commands.executeCommand=async(id,...args)=>{if(id===native){attempts++;throw new Error('unavailable');}return execute(id,...args);};h.vscode.env.openExternal=async()=>{external++;return true;};
+ const result=await h.commands.get('tensortonic.interactiveExplanation')(DEFAULT_REF);assert.equal(result.target,'none');assert.equal(attempts,1);assert.equal(external,0);assert.deepEqual(h.errors,[]);
+});
+test('newer native request supersedes older command discovery; disconnect cancels stale fallback',async t=>{
+ const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');const get=h.vscode.commands.getCommands;
+ let finish,started;const waiting=new Promise(r=>{started=r;});h.vscode.commands.getCommands=async()=>{started();await new Promise(r=>{finish=r;});return[native];};
+ const pending=command(DEFAULT_REF);await waiting;h.vscode.commands.getCommands=get;await command({slug:'second',planId:'pytorch-basics'});finish();await pending;
+ assert.equal(h.commandExecutions.filter(c=>c.id===native).length,1);assert.match(h.commandExecutions.find(c=>c.id===native).args[0].url,/\/second\?/);
+ h.vscode.commands.getCommands=async()=>[];let choose,prompted;const shown=new Promise(r=>{prompted=r;});h.vscode.window.showInformationMessage=async()=>{prompted();return new Promise(r=>{choose=r;});};let external=0;h.vscode.env.openExternal=async()=>{external++;return true;};
+ const fallback=command(DEFAULT_REF);await shown;await h.commands.get('tensortonic.disconnect')();choose('Open in external browser');await fallback;assert.equal(external,0);
+});
+test('ordinary problem opening and next navigation never open original pages automatically',async t=>{
+ const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});await h.api.openProblem(DEFAULT_REF);await h.commands.get('tensortonic.nextProblem')();
+ assert.equal(h.commandExecutions.filter(c=>c.id===native).length,0);assert.equal(h.webviews.some(p=>p.type==='tensortonic.explanation'),false);
+ const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.equal(manifest.contributes.commands.find(c=>c.command==='tensortonic.offlineExploration').title,'Offline learning exploration');
 });

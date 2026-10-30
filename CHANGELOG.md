@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Make Interactive explanation open the original TensorTonic page in VS Code’s native Integrated Browser, with feature detection and canonical URL reuse filtering without wildcards. No per-problem visualization implementation is needed for this path.
+- Keep original independent cards under a clearly separate Offline learning exploration command/sidebar action.
+- Preserve the external-browser action; unavailable/failed native dispatch offers an explicit external choice, never silently falls back or changes security settings.
+- Keep sign-in user-owned and separate from the existing external companion session; do not transfer cookies or promise authenticated rendering.
+- Do not automatically open or navigate native pages on startup, refresh, problem open, or Previous/Next.
+
+
 ## 0.4.0
 
 - Add 30 independently authored, bounded local PyTorch basics explorations with editable controls, numerical tables/plots, softmax rows and a neural-network architecture diagram.

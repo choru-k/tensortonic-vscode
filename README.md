@@ -6,10 +6,10 @@ This is not an official TensorTonic extension. It currently supports free Python
 
 ## Installation
 
-Requires VS Code 1.95 or later. Download [TensorTonic 0.4.0 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.4.0.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
+Requires VS Code 1.95 or later. Download [TensorTonic 0.5.0 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.5.0.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.4.0.vsix
+code --install-extension releases/tensortonic-vscode-0.5.0.vsix
 ```
 
 For a separate study space, use **TensorTonic: Start studying** from the Command Palette or the Study plan toolbar. You can still use the extension in an ordinary existing workspace if you prefer.
@@ -121,9 +121,21 @@ The test checks opening and editing a problem, Run, Submit, the Agent context to
 
 The problem browser, description panel, and Run/Submit CodeLens workflow were inspired by the [LeetCode OpenSource VS Code extension](https://github.com/LeetCode-OpenSource/vscode-leetcode). Its LeetCode-specific CLI and authentication code are not included. This implementation is licensed under MIT. The TensorTonic name and service belong to their respective owners.
 
-## Interactive explanations (0.4.0)
+## Original interactive explanations (0.5.0)
 
-Select **Interactive explanation** above your solution, right-click a problem in the Study plan sidebar, or run **TensorTonic: Show interactive explanation**. The explicit action opens a separate local webview; it never replaces the native Markdown/math description or changes your solution. A generated context note points to these actions. Reopening an exploration resets it to its original example; use **Calculate** after changing controls and **Reset example** to restore defaults.
+Select **Interactive explanation** above your solution, use the problem’s sidebar context action, or run **TensorTonic: Open original problem in VS Code**. On supported desktop VS Code, this opens the **actual TensorTonic page** in VS Code’s native Integrated Browser beside your editor. The site renders its own interactive cards and applies its own account/subscription access; the extension does not implement a separate card for each problem. The complete page may also include TensorTonic’s navigation and code editor—not only its explanation card.
+
+Sign in normally **inside the Integrated Browser**. Its session is separate from Chrome/Helium/Safari; existing cookies are not transferred. Subscription access and any GitHub/OAuth login must succeed on the actual site. The existing external browser companion connection remains the Run/Submit bridge; opening the page does not pair that companion or transfer its session. We do not change browser storage, trust, permissions, or AI page-sharing settings.
+
+This action requires VS Code’s native Integrated Browser command, introduced in the 1.109 release family. Current command arguments were checked in official desktop VS Code 1.144.0. Older versions, web builds, or alternative editors may not expose it. If unavailable or the command fails, the extension offers **Open in external browser** and opens it only if you choose that option. You can always use the existing **Open original problem in browser** action. Dispatching the command is not verification that the page loaded or that login succeeded.
+
+Only an explicit action opens a page: startup, refresh, opening a solution, and Previous/Next do not spawn or navigate browser tabs. Reopening the same original URL requests reuse of a matching native browser tab; a different problem may open another tab. No broad wildcard reuse can redirect an unrelated page or in-progress login. Native VS Code owns tab close/reopen and page focus. Native Markdown/math and your solution remain intact.
+
+This is normal top-level browser navigation, **not an iframe, copied page, reverse proxy, or header/CSP bypass**. Native original-page login and card rendering have not yet been visually verified on the user’s Mac; see [0.5.0 verification](docs/original-page-validation.md).
+
+## Optional offline learning explorations (0.4.0 retained)
+
+Run **TensorTonic: Offline learning exploration** or use that separately named sidebar context action. This optional action opens a separate local webview; it never replaces the native Markdown/math description or changes your solution. The generated context note distinguishes this optional experiment from the original-page action. Reopening an exploration resets it to its original example; use **Calculate** after changing controls and **Reset example** to restore defaults.
 
 All **30 PyTorch basics problem identities** have independently authored numerical explorations: tensor operations, derivatives, layers, normalization, losses, training, data sampling, convolution, recurrent cells, attention and beam search. Softmax includes two editable logit vectors and temperature; the small neural-network lab includes editable layer widths, inputs, seeded weights, a connected architecture diagram and computed forward values. These are illustrative mathematical examples, **not TensorTonic’s original visualizations, reference solutions, or exact PyTorch API emulations**. Other plans or unknown/new problem IDs show an explicit unavailable notice rather than a generic placeholder presented as support.
 

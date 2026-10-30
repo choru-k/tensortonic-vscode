@@ -67,7 +67,7 @@ function buildProblemMarkdown(problem) {
   const sections = [
     `# ${title}`,
     `[Original TensorTonic problem](${url})`,
-    '**Interactive exploration:** Use the **Interactive explanation** action above your solution, the problem’s sidebar context menu, or **TensorTonic: Show interactive explanation** in the Command Palette. These are independent local examples, not the website’s original cards or a reference solution. PyTorch basics has 30 supported explorations; other problems show an explicit unavailable notice.',
+    '**Original interactive explanation:** Use **Interactive explanation** above your solution or **TensorTonic: Open original problem in VS Code** to open the live TensorTonic page in VS Code’s Integrated Browser. Sign in there separately; the site controls subscription access. This opens the complete original page, possibly including its editor. **TensorTonic: Offline learning exploration** keeps the optional independent examples separate.',
     statementMarkdown(problem.description) || 'Problem statement is unavailable. Open the original problem to check it.',
   ];
   const examples = Array.isArray(problem.examples) ? problem.examples.filter(item => typeof item === 'string') : [];
