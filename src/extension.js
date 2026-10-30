@@ -8,10 +8,12 @@ const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = requ
 const { renderResult } = require('./results');
 const { ProblemTreeProvider } = require('./tree');
 const { StudyWorkspace } = require('./study-workspace');
+const { resolveCard } = require('./cards');
+const { buildCardHtml } = require('./cards/webview');
 
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
-  'description', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
+  'description', 'interactiveExplanation', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
   'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
@@ -131,10 +133,10 @@ class SolutionCodeLensProvider {
       return [];
     }
     const range = new vscode.Range(0, 0, 0, 0);
-    const actions = ['run', 'submit', 'description', 'openTests', 'discussWithAgent'];
+    const actions = ['run', 'submit', 'description', 'interactiveExplanation', 'openTests', 'discussWithAgent'];
     if (ref.planId) actions.push('previousProblem', 'nextProblem');
     return actions.map(name => new vscode.CodeLens(range, {
-      title: { run: 'Run', submit: 'Submit', description: 'Description', openTests: 'Test cases', discussWithAgent: 'Discuss with Agent', previousProblem: 'Previous problem', nextProblem: 'Next problem' }[name],
+      title: { run: 'Run', submit: 'Submit', description: 'Description', interactiveExplanation: 'Interactive explanation', openTests: 'Test cases', discussWithAgent: 'Discuss with Agent', previousProblem: 'Previous problem', nextProblem: 'Next problem' }[name],
       command: `tensortonic.${name}`,
       arguments: [document.uri],
     }));
@@ -169,7 +171,7 @@ async function createTextFile(uri, content) {
 function activate(context) {
   const bridge = new BrowserBridge();
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
-  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
+  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, cardGeneration: 0, cardPanel: undefined, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
   const tree = new ProblemTreeProvider(vscode, state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'tensortonic.connect';
@@ -203,7 +205,7 @@ function activate(context) {
   context.subscriptions.push(treeView.onDidChangeVisibility(event => {
     if (event.visible) revealCurrentProblem();
   }));
-  context.subscriptions.push({ dispose() { disposed = true; revealPending = false; } });
+  context.subscriptions.push({ dispose() { disposed = true; revealPending = false; state.cardGeneration++; if (state.cardPanel) state.cardPanel.dispose(); } });
 
 
   function getPlanId() {
@@ -589,6 +591,31 @@ function activate(context) {
     return problem;
   }
 
+  async function interactiveExplanation(input) {
+    // Independent experiments use only a validated local identity, never account data.
+    const generation = ++state.cardGeneration;
+    const navigation = state.openGeneration;
+    const isCurrent = () => !disposed && generation === state.cardGeneration && navigation === state.openGeneration;
+    let ref;
+    try { ref = await refFrom(input || state.lastSolutionUri); }
+    catch (error) { if (!isCurrent()) return; throw error; }
+    if (!isCurrent()) return;
+    const card = resolveCard(ref);
+    if (!state.cardPanel) {
+      const panel = vscode.window.createWebviewPanel('tensortonic.explanation', 'Interactive explanation',
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, localResourceRoots: [] });
+      state.cardPanel = panel;
+      panel.onDidDispose(() => {
+        if (state.cardPanel === panel) { state.cardPanel = undefined; state.cardGeneration++; }
+      }, null, context.subscriptions);
+    }
+    state.cardPanel.title = card ? `${card.title} — independent exploration` : 'Interactive explanation unavailable';
+    state.cardPanel.webview.html = buildCardHtml(ref);
+    state.cardPanel.reveal(vscode.ViewColumn.Beside, true);
+    return { ref, supported: !!card, cardId: card && card.id };
+  }
+
   async function openTests(input) {
     const { document } = await managedDocument(input);
     const uri = testsUriFor(document.uri);
@@ -722,7 +749,7 @@ function activate(context) {
   const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan });
 
   const handlers = {
-    connect, disconnect, openProblem, search, refresh, description, openTests, openInBrowser,
+    connect, disconnect, openProblem, search, refresh, description, interactiveExplanation, openTests, openInBrowser,
     chooseStudyPlan, showStudyPlan,
     startStudying: () => studyWorkspace.start(),
     changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),
@@ -740,7 +767,9 @@ function activate(context) {
   function rememberSelectedSolution(editor) {
     if (!editor || editor.document.uri.scheme !== 'file') return;
     try {
-      state.activeRef = readRef(editor.document.getText());
+      const selectedRef = readRef(editor.document.getText());
+      if (JSON.stringify(selectedRef) !== JSON.stringify(state.activeRef)) state.cardGeneration++;
+      state.activeRef = selectedRef;
       state.lastSolutionUri = editor.document.uri;
       tree.refresh();
       revealCurrentProblem();

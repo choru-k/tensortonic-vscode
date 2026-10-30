@@ -6,10 +6,10 @@ This is not an official TensorTonic extension. It currently supports free Python
 
 ## Installation
 
-Requires VS Code 1.95 or later. Download [TensorTonic 0.3.2 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.3.2.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
+Requires VS Code 1.95 or later. Download [TensorTonic 0.4.0 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.4.0.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.3.2.vsix
+code --install-extension releases/tensortonic-vscode-0.4.0.vsix
 ```
 
 For a separate study space, use **TensorTonic: Start studying** from the Command Palette or the Study plan toolbar. You can still use the extension in an ordinary existing workspace if you prefer.
@@ -85,7 +85,7 @@ The user's manual 0.3.0 screenshots subsequently confirmed companion-connected p
 
 The 0.3.1 preview, results, and study-navigation changes have separate [patch validation notes](docs/preview-validation.md). Later user screenshots confirmed formatted equations/headings, readable Run **3/3, 3 ms**, and Submit **43/43, 688 ms**; the user also confirmed ordering and Next navigation. These remain manual observations, not automated cloud tests.
 
-The 0.3.2 dedicated study-window workflow and section sidebar have their own [validation notes](docs/sidebar-validation.md). Native desktop verification of the new window workflow and view remains pending; cloud tests do not claim a rendered VS Code sidebar check. Interactive website cards are still not included; use the original-problem link for those controls.
+The 0.3.2 dedicated study-window workflow and section sidebar have their own [validation notes](docs/sidebar-validation.md). Native desktop verification of the new window workflow and view remains pending; cloud tests do not claim a rendered VS Code sidebar check. Version 0.4.0 adds independent local interactive explorations described below; these are not copies of the website cards.
 
 ## Development and packaging
 
@@ -120,3 +120,11 @@ The test checks opening and editing a problem, Run, Submit, the Agent context to
 ## Acknowledgments
 
 The problem browser, description panel, and Run/Submit CodeLens workflow were inspired by the [LeetCode OpenSource VS Code extension](https://github.com/LeetCode-OpenSource/vscode-leetcode). Its LeetCode-specific CLI and authentication code are not included. This implementation is licensed under MIT. The TensorTonic name and service belong to their respective owners.
+
+## Interactive explanations (0.4.0)
+
+Select **Interactive explanation** above your solution, right-click a problem in the Study plan sidebar, or run **TensorTonic: Show interactive explanation**. The explicit action opens a separate local webview; it never replaces the native Markdown/math description or changes your solution. A generated context note points to these actions. Reopening an exploration resets it to its original example; use **Calculate** after changing controls and **Reset example** to restore defaults.
+
+All **30 PyTorch basics problem identities** have independently authored numerical explorations: tensor operations, derivatives, layers, normalization, losses, training, data sampling, convolution, recurrent cells, attention and beam search. Softmax includes two editable logit vectors and temperature; the small neural-network lab includes editable layer widths, inputs, seeded weights, a connected architecture diagram and computed forward values. These are illustrative mathematical examples, **not TensorTonic’s original visualizations, reference solutions, or exact PyTorch API emulations**. Other plans or unknown/new problem IDs show an explicit unavailable notice rather than a generic placeholder presented as support.
+
+The experiments run offline from validated problem metadata, with bounded inputs, deterministic seeded examples, tables and plots. They make no service requests, inspect no account answers/tests, and do not run/submit student code. The scripted card view allows only nonce-authorized bundled extension code/styles; it permits no network, frames, downloaded HTML, or arbitrary modules. Existing statement/results previews keep their previous security model. See [coverage and verification](docs/cards-validation.md), including the remaining native visual-QA limit.

@@ -2,7 +2,7 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "Browse and solve TensorTonic Python problems with a no-console browser companion; login cookies stay in your browser.",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -173,6 +173,12 @@
         "title": "Start studying in another folder\u2026",
         "category": "TensorTonic",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "tensortonic.interactiveExplanation",
+        "title": "Show interactive explanation",
+        "category": "TensorTonic",
+        "icon": "$(graph)"
       }
     ],
     "menus": {
@@ -213,6 +219,11 @@
           "command": "tensortonic.openInBrowser",
           "when": "view == tensortonicProblems && viewItem == tensortonicProblem",
           "group": "navigation"
+        },
+        {
+          "command": "tensortonic.interactiveExplanation",
+          "when": "view == tensortonicProblems && viewItem == tensortonicProblem",
+          "group": "navigation@2"
         }
       ]
     },

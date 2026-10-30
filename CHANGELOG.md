@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- Add 30 independently authored, bounded local PyTorch basics explorations with editable controls, numerical tables/plots, softmax rows and a neural-network architecture diagram.
+- Add explicit solution CodeLens, sidebar context action and command; preserve native statement rendering and the 0.3.2 study-window workflow.
+- Use nonce-only scripted webview isolation with no network, account content, or automatic grading. Unknown problems explicitly report unsupported coverage.
+- Add numerical, DOM-mock, security and lifecycle tests; native visual verification remains uncompleted.
+
+
 ## 0.3.2
 
 - Add Start studying with an explicitly chosen, remembered local folder and a separate VS Code window; reuse the current single-folder study window and preserve development workspaces/unsaved edits.
