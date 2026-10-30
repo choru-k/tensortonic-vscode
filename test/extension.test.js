@@ -12,8 +12,9 @@ const DEFAULT_REF = { slug: 'pytorch-mini-training', planId: 'pytorch-basics', t
 const SECOND_REF = { slug: 'pytorch-dropout', planId: 'pytorch-basics', technology: 'PyTorch' };
 
 class Uri {
-  constructor(filePath) { this.fsPath = filePath; this.path = filePath; this.scheme = 'file'; }
+  constructor(filePath) { this.fsPath = filePath; this.path = filePath; this.scheme = 'file'; this.authority = ''; this.query = ''; this.fragment = ''; }
   static file(value) { return new Uri(path.resolve(value)); }
+  static isUri(value) { return value instanceof Uri; }
   static parse(value) { return value.startsWith('file:') ? Uri.file(decodeURIComponent(new URL(value).pathname)) : { scheme: 'https', toString: () => value }; }
   static joinPath(base, ...parts) { return Uri.file(path.join(base.fsPath, ...parts)); }
   with(changes) { return Uri.file(changes.path || this.fsPath); }
@@ -22,7 +23,7 @@ class Uri {
 
 function disposable() { return { dispose() {} }; }
 
-async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension } = {}) {
+async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tensortonic-ui-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const documents = new Map();
@@ -106,6 +107,8 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   }
   const vscode = {
     Uri, EventEmitter, WorkspaceEdit,
+    FileType: { File: 1, Directory: 2, SymbolicLink: 64 },
+    UIKind: { Desktop: 1, Web: 2 },
     Position: class Position { constructor(line, character) { this.line = line; this.character = character; } },
     Range: class Range {
       constructor(...args) {
@@ -119,16 +122,17 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     CodeLens: class CodeLens { constructor(range, command) { this.range = range; this.command = command; } },
     ThemeIcon: class ThemeIcon { constructor(id) { this.id = id; } },
     TreeItem: class TreeItem { constructor(label, collapsibleState) { this.label = label; this.collapsibleState = collapsibleState; } },
-    TreeItemCollapsibleState: { None: 0 },
+    TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
     StatusBarAlignment: { Left: 1 },
     ViewColumn: { One: 1, Beside: -2 },
     ConfigurationTarget: { Workspace: 2, Global: 1 },
     ProgressLocation: { Notification: 15 },
     workspace: {
       workspaceFolders: [{ name: 'fixture', uri: Uri.file(root) }],
+      isTrusted: trusted,
       fs: {
         async stat(uri) {
-          try { return await fs.stat(uri.fsPath); }
+          try { const stat = await fs.stat(uri.fsPath); return { type: stat.isDirectory() ? 2 : 1, size: stat.size }; }
           catch (error) { if (error.code === 'ENOENT') error.code = 'FileNotFound'; throw error; }
         },
         createDirectory: uri => fs.mkdir(uri.fsPath, { recursive: true }),
@@ -166,7 +170,15 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       activeTextEditor: undefined,
       createStatusBarItem() { const status = { show() {}, dispose() {} }; statuses.push(status); return status; },
       createOutputChannel() { return { appendLine: line => output.push(line), dispose() {} }; },
-      createTreeView(id, options) { const tree = { id, options, dispose() {} }; trees.push(tree); return tree; },
+      createTreeView(id, options) {
+        let changed;
+        const tree = { id, options, visible: true, reveals: [], dispose() {},
+          onDidChangeVisibility(listener) { changed = listener; return disposable(); },
+          setVisible(visible) { this.visible = visible; if (changed) changed({visible}); },
+          async reveal(item, options) { this.reveals.push({item, options}); },
+        };
+        trees.push(tree); return tree;
+      },
       createWebviewPanel(type, title, column, options) {
         let onDispose;
         const panel = { type, title, options, webview: { html: '' },
@@ -185,6 +197,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       showInformationMessage: async (...args) => { information.push(args); return informationChoices.shift(); },
       showQuickPick: async items => items[0],
       showInputBox: async () => undefined,
+      showOpenDialog: async () => undefined,
       withProgress: async (_, action) => action(),
     },
     commands: {
@@ -204,7 +217,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     languages: { registerCodeLensProvider(selector, provider) { codeLens.push({ selector, provider }); return disposable(); } },
     extensions: { getExtension: id => id === 'vscode.markdown-language-features' ? markdownExtension : undefined },
     lm: { registerTool(name, tool) { tools.set(name, tool); return { dispose() { tools.delete(name); } }; } },
-    env: { openExternal: async () => true, clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
+    env: { uiKind: 1, remoteName: undefined, openExternal: async () => true, clipboard: { writeText: async value => { clipboardWrites.push(value); } } },
   };
 
   class BrowserBridge {
@@ -218,7 +231,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   class TensorTonicClient {
     async listProblems(planId) {
       calls.list.push(planId);
-      return [...fixtures.values()].map(problem => ({ ...problem.ref, title: problem.title, difficulty: 'Easy' }));
+      return [...fixtures.values()].map((problem,index) => ({ ...problem.ref, title: problem.title, difficulty: 'Easy', solved: index===0, studyPlanTitle:'PyTorch Sheet', section:{id:index===0?'foundations':'training',title:index===0?'Foundations':'Training',order:index+1} }));
     }
     async getProblem(ref) { calls.get.push(ref); return structuredClone(fixtures.get(ref.slug)); }
     async run(problem, code, cases) {
@@ -248,11 +261,22 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     Module._load = originalLoad;
   }
   const savedState = new Map();
-  const context = { subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
+  const globalValues = globalStateForRoot(root);
+  const globalState = { keys: () => [...globalValues.keys()], get: key => globalValues.get(key), update: async (key,value) => { if(value===undefined) globalValues.delete(key); else globalValues.set(key,value); } };
+  const context = { globalState, subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
   const api = extension.activate(context);
+  await api.studyWorkspaceReady;
   t.after(() => { for (const subscription of context.subscriptions.reverse()) subscription.dispose(); });
-  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites };
+  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues };
 }
+
+function problemRows(view) {
+  const provider = view.options.treeDataProvider;
+  const collect = node => provider.getChildren(node).flatMap(item => item.problemRef ? [item] : collect(item));
+  return collect(undefined);
+}
+
+const flushReveals = () => new Promise(resolve => setImmediate(resolve));
 
 test('a late previous-plan refresh cannot replace the current plan catalogue', async t => {
   const h = await harness(t);
@@ -267,7 +291,7 @@ test('a late previous-plan refresh cannot replace the current plan catalogue', a
   await oldRefresh;
   const tree = h.trees[0];
   assert.equal(tree.description, 'numpy-basics');
-  assert.deepEqual(tree.options.treeDataProvider.getChildren().map(item => item.label), ['New plan']);
+  assert.deepEqual(problemRows(tree).map(item => item.label), ['New plan']);
 });
 
 test('an older refresh finishing cannot clear a newer refresh loading state', async t => {
@@ -281,7 +305,7 @@ test('an older refresh finishing cannot clear a newer refresh loading state', as
   assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Loading problems…');
   completions[1]([{ ...SECOND_REF, title: 'Current' }]);
   await newer;
-  assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Current');
+  assert.equal(problemRows(h.trees[0])[0].label, 'Current');
 });
 
 test('disconnect invalidates an in-flight catalogue without stale rows or errors', async t => {
@@ -293,6 +317,7 @@ test('disconnect invalidates an in-flight catalogue without stale rows or errors
   rejectOld(new Error('Canceled old connection'));
   assert.deepEqual(await oldRefresh, []);
   h.api.bridge.connected = true;
+  h.trees[0].options.treeDataProvider.refresh();
   assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].label, 'Refresh problems');
   assert.equal(h.trees[0].description, undefined);
   assert.deepEqual(h.errors, []);
@@ -306,7 +331,7 @@ test('activation exposes the commands promised by the manifest and connection st
   assert.equal(h.trees[0].id, 'tensortonicProblems');
   assert.equal(h.codeLens.length, 1);
   await h.api.refresh();
-  const problems = h.trees[0].options.treeDataProvider.getChildren();
+  const problems = problemRows(h.trees[0]);
   assert.equal(problems.length, 2);
   assert.equal(problems[0].command.command, 'tensortonic.openProblem');
   assert.deepEqual(h.calls.list, ['pytorch-basics']);
@@ -958,4 +983,209 @@ test('study navigation prefers API identity over a reused browser slug', async t
   h.api.client.listProblems = async () => [{...DEFAULT_REF,apiId:'different-api-id'},SECOND_REF];
   assert.equal(await h.commands.get('tensortonic.nextProblem')(opened.uri),undefined);
   assert.match(h.information.at(-1)[0],/not found/);
+});
+
+test('Study plan tree exposes ordered sections, solved progress and clickable problems without Explorer changes', async t => {
+  const h = await harness(t);
+  await h.api.refresh();
+  const view = h.trees[0], tree = view.options.treeDataProvider;
+  const root = tree.getChildren()[0];
+  assert.equal(root.label, 'PyTorch Sheet');
+  assert.match(root.description, /1\s*\/\s*2/);
+  const sections = tree.getChildren(root);
+  assert.deepEqual(sections.map(item => item.label), ['Foundations', 'Training']);
+  assert.equal(tree.getParent(sections[0]), root);
+  const rows = problemRows(view);
+  assert.equal(rows[0].iconPath.id, 'pass-filled');
+  assert.equal(rows[1].iconPath.id, 'circle-outline');
+  const first = await h.commands.get(rows[0].command.command)(...rows[0].command.arguments);
+  const document = await h.vscode.workspace.openTextDocument(first.uri);
+  const tests = await h.vscode.workspace.openTextDocument(first.testsUri);
+  document.setText(document.getText()+'\n# Unsaved sidebar work\n');
+  tests.setText('[{"id":"mine","inputs":{"x":0}}]');
+  const code = document.getText(), cases = tests.getText();
+  await h.commands.get(rows[1].command.command)(...rows[1].command.arguments);
+  await h.commands.get(rows[0].command.command)(...rows[0].command.arguments);
+  assert.equal(document.getText(),code);assert.equal(tests.getText(),cases);
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('Current problem follows solution tabs and reveals only a visible Study plan view without stealing focus', async t => {
+  const h = await harness(t);
+  const view = h.trees[0], tree = view.options.treeDataProvider;
+  view.setVisible(false);
+  await h.api.refresh();
+  const first = await h.api.openProblem(DEFAULT_REF);
+  await flushReveals();
+  assert.equal(view.reveals.length,0,'hidden sidebar must not be forced open');
+  assert.match(tree.findProblem(DEFAULT_REF).description,/Current/);
+  const selectedEditor = h.vscode.window.activeTextEditor;
+  view.setVisible(true);
+  await flushReveals();
+  assert.equal(view.reveals.at(-1).item.problemRef.slug,DEFAULT_REF.slug);
+  assert.deepEqual(view.reveals.at(-1).options,{select:true,focus:false,expand:true});
+  assert.equal(h.vscode.window.activeTextEditor,selectedEditor);
+  await h.api.openProblem(SECOND_REF);
+  await flushReveals();
+  assert.match(tree.findProblem(SECOND_REF).description,/Current/);
+  assert.doesNotMatch(tree.findProblem(DEFAULT_REF).description,/Current/);
+  await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(first.uri));
+  await flushReveals();
+  assert.equal(view.reveals.at(-1).item.problemRef.slug,DEFAULT_REF.slug);
+  const revealCount = view.reveals.length;
+  const unrelated = await h.vscode.workspace.openTextDocument({language:'python',content:'# unrelated'});
+  await h.vscode.window.showTextDocument(unrelated);
+  await flushReveals();
+  assert.equal(view.reveals.length,revealCount);
+  assert.ok(!h.commandExecutions.some(call=>/focus|workbench\.view/.test(call.id)));
+});
+
+test('slow sidebar reveals finish on the newest selected problem and rejected reveals do not interrupt editing', async t => {
+  const h = await harness(t);
+  await h.api.refresh();
+  const view = h.trees[0];
+  let finishFirst;
+  view.reveal = async (item,options) => {
+    view.reveals.push({item,options});
+    if(view.reveals.length===1) await new Promise(resolve=>{finishFirst=resolve;});
+  };
+  await h.api.openProblem(DEFAULT_REF);
+  await h.api.openProblem(SECOND_REF);
+  assert.equal(view.reveals.length,1);
+  finishFirst();await flushReveals();
+  assert.equal(view.reveals.at(-1).item.problemRef.slug,SECOND_REF.slug);
+  view.reveal = async () => {throw new Error('view was closed');};
+  await h.api.openProblem(DEFAULT_REF);await flushReveals();
+  assert.deepEqual(h.errors,[]);
+  assert.equal(h.vscode.window.activeTextEditor.document.getText().includes(DEFAULT_REF.slug),true);
+});
+
+test('plan selection replaces the section tree and does not highlight another plan with the same slug', async t => {
+  const h = await harness(t);
+  await h.api.refresh();
+  await h.api.openProblem(DEFAULT_REF);
+  h.vscode.window.showInputBox = async () => 'numpy-basics';
+  h.api.client.listProblems = async planId => [{...DEFAULT_REF,planId,studyPlanTitle:'NumPy Sheet',section:{id:'arrays',title:'Arrays',order:1},title:'Another plan problem'}];
+  await h.commands.get('tensortonic.chooseStudyPlan')();
+  await flushReveals();
+  const tree = h.trees[0].options.treeDataProvider;
+  assert.equal(tree.getChildren()[0].label,'NumPy Sheet');
+  assert.equal(tree.getChildren(tree.getChildren()[0])[0].label,'Arrays');
+  assert.equal(tree.findProblem(DEFAULT_REF),undefined);
+  assert.doesNotMatch(problemRows(h.trees[0])[0].description,/Current/);
+  assert.equal(h.configuration.get('studyPlan'),'numpy-basics');
+  assert.equal(h.vscode.window.activeTextEditor.document.getText().includes(DEFAULT_REF.planId),true);
+});
+
+test('refresh loading and failure cannot leave clickable rows from an older sidebar snapshot', async t => {
+  const h = await harness(t);
+  await h.api.refresh();
+  const view = h.trees[0], tree = view.options.treeDataProvider;
+  const previousRoot = tree.getChildren()[0];
+  let fail;
+  h.api.client.listProblems = async () => new Promise((_,reject)=>{fail=reject;});
+  const refreshing = h.api.refresh();
+  const loading = tree.getChildren()[0];
+  assert.match(loading.label,/Loading/);assert.equal(loading.command,undefined);
+  assert.deepEqual(tree.getChildren(previousRoot),[]);
+  fail(new Error('Synthetic unavailable service'));
+  await assert.rejects(refreshing,/unavailable/);
+  assert.equal(problemRows(view).length,0);
+  assert.match(view.message,/Could not load/);
+  assert.equal(tree.getChildren()[0].command.command,'tensortonic.refresh');
+});
+
+
+test('only the explicit Show study plan command focuses its sidebar; Explorer settings remain unchanged', async t => {
+  const h = await harness(t,{externalCommands:['tensortonicProblems.focus']});
+  assert.equal(h.commandExecutions.length,0);
+  await h.commands.get('tensortonic.showStudyPlan')();
+  assert.equal(h.commandExecutions[0].id,'tensortonicProblems.focus');
+  assert.equal(h.calls.list.length,1);
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  h.api.bridge.connected=false;
+  await h.commands.get('tensortonic.showStudyPlan')();
+  assert.equal(h.calls.list.length,1,'disconnected sidebar shows connection action without an API request');
+});
+
+
+test('sidebar refresh updates solved progress while retaining the selected solution and unsaved content', async t => {
+  const h = await harness(t);
+  await h.api.refresh();
+  const opened = await h.api.openProblem(SECOND_REF);
+  const document = await h.vscode.workspace.openTextDocument(opened.uri);
+  document.setText(document.getText()+'\n# keep progress refresh unsaved\n');
+  const code = document.getText(), list = h.api.client.listProblems.bind(h.api.client);
+  h.api.client.listProblems = async planId => (await list(planId)).map(ref=>({...ref,solved:true}));
+  await h.api.refresh();await flushReveals();
+  const tree = h.trees[0].options.treeDataProvider;
+  assert.match(tree.getChildren()[0].description,/2\s*\/\s*2/);
+  assert.equal(tree.findProblem(SECOND_REF).iconPath.id,'pass-filled');
+  assert.match(tree.findProblem(SECOND_REF).description,/Current/);
+  assert.equal(document.getText(),code);assert.equal(document.isDirty,true);
+});
+
+
+test('Start studying opens a dedicated folder in a new window without redirecting existing project files', async t => {
+  const h = await harness(t,{externalCommands:['vscode.openFolder']});
+  const { STUDY_FOLDER_KEY } = require('../src/study-workspace');
+  const opened = await h.api.openProblem(DEFAULT_REF);
+  const document = await h.vscode.workspace.openTextDocument(opened.uri);
+  document.setText(document.getText()+'\n# Original project stays unsaved\n');
+  const code = document.getText(), editor = h.vscode.window.activeTextEditor;
+  const studyRoot = path.join(h.root,'dedicated-study');await fs.mkdir(studyRoot);
+  h.vscode.window.showOpenDialog = async options => {
+    assert.equal(options.canSelectFolders,true);assert.equal(options.canSelectFiles,false);
+    return [Uri.file(studyRoot)];
+  };
+  await h.commands.get('tensortonic.startStudying')();
+  const action = h.commandExecutions.find(call=>call.id==='vscode.openFolder');
+  assert.equal(action.args[0].fsPath,studyRoot);
+  assert.deepEqual(action.args[1],{forceNewWindow:true});
+  assert.equal(h.globalValues.get(STUDY_FOLDER_KEY),Uri.file(studyRoot).toString());
+  assert.equal(h.vscode.workspace.workspaceFolders[0].uri.fsPath,h.root);
+  assert.equal(h.vscode.window.activeTextEditor,editor);
+  assert.equal(document.getText(),code);assert.equal(document.isDirty,true);
+  assert.deepEqual(await fs.readdir(studyRoot),[],'Start must not create, move or copy problem files');
+  const next = await h.api.openProblem(SECOND_REF);
+  assert.equal(path.dirname(next.uri.fsPath),path.join(h.root,'tensortonic',DEFAULT_REF.planId));
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('canceling first study-folder selection leaves extension storage and the current workspace unchanged', async t => {
+  const h = await harness(t,{externalCommands:['vscode.openFolder']});
+  await h.commands.get('tensortonic.startStudying')();
+  assert.equal(h.globalValues.size,0);
+  assert.equal(h.commandExecutions.length,0);
+  assert.equal(h.vscode.workspace.workspaceFolders[0].uri.fsPath,h.root);
+  assert.deepEqual(await fs.readdir(h.root),[]);
+});
+
+test('remembered folder alone cannot trigger startup navigation; explicit Start reuses the current study folder', async t => {
+  const { STUDY_FOLDER_KEY } = require('../src/study-workspace');
+  const h = await harness(t,{externalCommands:['vscode.openFolder','tensortonicProblems.focus'],
+    globalStateForRoot:root=>new Map([[STUDY_FOLDER_KEY,Uri.file(root).toString()]])});
+  assert.equal(h.commandExecutions.length,0);
+  h.vscode.window.showOpenDialog = async () => {throw new Error('Remembered valid folder must not prompt again');};
+  await h.commands.get('tensortonic.startStudying')();
+  assert.ok(h.commandExecutions.some(call=>call.id==='tensortonicProblems.focus'));
+  assert.ok(!h.commandExecutions.some(call=>call.id==='vscode.openFolder'));
+  assert.equal(h.vscode.workspace.workspaceFolders[0].uri.fsPath,h.root);
+});
+
+test('a recent matching Start request restores only the new study sidebar, never opens another window', async t => {
+  const { STUDY_FOLDER_KEY, PENDING_STUDY_VIEW_KEY } = require('../src/study-workspace');
+  const nonce = require('node:crypto').randomUUID();
+  const h = await harness(t,{connected:false,externalCommands:['vscode.openFolder','tensortonicProblems.focus'],
+    globalStateForRoot:root=>new Map([
+      [STUDY_FOLDER_KEY,Uri.file(root).toString()],
+      [PENDING_STUDY_VIEW_KEY,{uri:Uri.file(root).toString(),createdAt:Date.now(),nonce}],
+    ])});
+  assert.equal(h.commandExecutions.filter(call=>call.id==='tensortonicProblems.focus').length,1);
+  assert.ok(!h.commandExecutions.some(call=>call.id==='vscode.openFolder'));
+  assert.equal(h.globalValues.get(PENDING_STUDY_VIEW_KEY).nonce,nonce,'startup must not erase shared handoff state');
+  assert.equal(h.api.bridge.starts,0,'restoring a view must not start authentication/pairing');
+  assert.equal(h.calls.list.length,0,'a fresh unpaired study window must not request account data');
 });

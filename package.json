@@ -2,7 +2,7 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "Browse and solve TensorTonic Python problems with a no-console browser companion; login cookies stay in your browser.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -24,7 +24,8 @@
   ],
   "activationEvents": [
     "onView:tensortonicProblems",
-    "onLanguageModelTool:tensortonic_current_problem"
+    "onLanguageModelTool:tensortonic_current_problem",
+    "onStartupFinished"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -56,7 +57,7 @@
       "tensortonic": [
         {
           "id": "tensortonicProblems",
-          "name": "Problems"
+          "name": "Study plan"
         }
       ]
     },
@@ -154,10 +155,33 @@
         "command": "tensortonic.discussWithCodex",
         "title": "Attach problem and solution to Codex",
         "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.showStudyPlan",
+        "title": "Show study plan sidebar",
+        "category": "TensorTonic",
+        "icon": "$(book)"
+      },
+      {
+        "command": "tensortonic.startStudying",
+        "title": "Start studying",
+        "category": "TensorTonic",
+        "icon": "$(new-window)"
+      },
+      {
+        "command": "tensortonic.changeStudyFolder",
+        "title": "Start studying in another folder\u2026",
+        "category": "TensorTonic",
+        "icon": "$(folder-opened)"
       }
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "tensortonic.startStudying",
+          "when": "view == tensortonicProblems",
+          "group": "navigation@0"
+        },
         {
           "command": "tensortonic.connect",
           "when": "view == tensortonicProblems && !tensortonic.connected",

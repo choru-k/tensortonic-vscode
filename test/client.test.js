@@ -43,9 +43,52 @@ test('study plans use section and problem sortOrder, retaining progress and API/
   });
   const result = await client.listProblems('pytorch-basics');
   assert.deepEqual(result.map(p => p.slug), ['first', 'second', 'last']);
-  assert.deepEqual(result[0], { slug: 'first', apiId: 'api-first', catalogSlug: 'first', source: 'python', technology: 'pytorch', planId: 'pytorch-basics', title: 'First', difficulty: '', solved: true });
+  assert.deepEqual(result[0], { slug: 'first', apiId: 'api-first', catalogSlug: 'first', source: 'python', technology: 'pytorch', planId: 'pytorch-basics', title: 'First', difficulty: '', solved: true,
+    studyPlanTitle: 'pytorch-basics', section: { id: 'index:1', title: 'Section 1', order: 1 } });
   assert.ok(calls.every(call => call.options.method === 'GET'));
   assert.equal(plan.sections[0].sortOrder, 2, 'ordering must not mutate the service response');
+});
+
+test('study-plan metadata preserves stable section identities and sanitizes display titles', async () => {
+  const catalogue = ['a', 'b', 'c'].map(slug => ({ slug, id: slug, source: 'python', planId: 'pytorch-basics', solved: slug === 'b' }));
+  const plan = planData([], { title: '# <span>PyTorch\n Sheet</span>\u202e', sections: [
+    { id: 'training', title: '<b>Repeated</b>\t title', sortOrder: 2, problems: [{ slug: 'c', type: 'python', sortOrder: 1 }] },
+    { id: 'foundations', title: '# Repeated\u0000 title', sortOrder: 1, problems: [{ slug: 'a', type: 'python', sortOrder: 1 }, { slug: 'b', type: 'python', sortOrder: 2 }] },
+  ] });
+  const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan));
+  const result = await client.listProblems('pytorch-basics');
+  assert.deepEqual(result.map(p => [p.slug, p.studyPlanTitle, p.section]), [
+    ['a', 'PyTorch Sheet', { id: 'foundations', title: 'Repeated title', order: 1 }],
+    ['b', 'PyTorch Sheet', { id: 'foundations', title: 'Repeated title', order: 1 }],
+    ['c', 'PyTorch Sheet', { id: 'training', title: 'Repeated title', order: 2 }],
+  ]);
+  assert.equal(result[1].solved, true);
+  assert.notStrictEqual(result[0].section, result[1].section, 'metadata must not share mutable objects between references');
+  assert.equal(plan.sections[0].title, '<b>Repeated</b>\t title', 'source metadata remains untouched');
+  plan.sections.reverse();
+  assert.deepEqual((await client.listProblems('pytorch-basics')).map(p => p.section.id), ['foundations', 'foundations', 'training']);
+});
+
+test('missing or unsafe section metadata uses deterministic distinct fallbacks and bounded plain labels', async () => {
+  const catalogue = ['a', 'b', 'c'].map(slug => ({ slug, id: slug, source: 'python', planId: 'pytorch-basics' }));
+  const plan = planData([], { title: {}, sections: [
+    { id: '../unsafe', title: null, sortOrder: 2, problems: [{ slug: 'b', type: 'python', sortOrder: 1 }] },
+    { title: '<span></span>\n', sortOrder: 1, problems: [{ slug: 'a', type: 'python', sortOrder: 1 }] },
+    { id: 'section-1', title: '📚'.repeat(300), sortOrder: 3, problems: [{ slug: 'c', type: 'python', sortOrder: 1 }] },
+  ] });
+  const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan));
+  const result = await client.listProblems('pytorch-basics');
+  assert.ok(result.every(p => p.studyPlanTitle === 'pytorch-basics'));
+  assert.deepEqual(result.slice(0, 2).map(p => p.section), [{ id: 'index:1', title: 'Section 1', order: 1 }, { id: 'index:0', title: 'Section 2', order: 2 }]);
+  assert.equal(Array.from(result[2].section.title).length, 240);
+  assert.equal(result[2].section.id, 'section-1');
+});
+
+test('duplicate service section IDs fail instead of merging different curriculum sections', async () => {
+  const catalogue = ['a', 'b'].map(slug => ({ slug, id: slug, source: 'python', planId: 'pytorch-basics' }));
+  const plan = planData([], { sections: ['a', 'b'].map((slug, index) => ({ id: 'duplicate', title: 'Title', sortOrder: index + 1, problems: [{ slug, type: 'python', sortOrder: 1 }] })) });
+  const client = new TensorTonicClient(async path => ok(path.startsWith('/api/problems/list?') ? { problems: catalogue } : plan));
+  await assert.rejects(client.listProblems('pytorch-basics'), /duplicate study-plan section/);
 });
 
 test('study-plan stable ties and repeated entries preserve service sequence without duplicates', async () => {
@@ -94,7 +137,10 @@ test('free catalog does not accidentally mix premium study-plan problems', async
     { slug: 'free-problem', id: 'free-problem', source: 'free', category: 'numpy', title: 'Free' },
     { slug: 'plan-problem', id: 'plan-problem', source: 'python', planId: 'pytorch-basics', category: 'pytorch' },
   ], pagination: { hasMore: false } }));
-  assert.deepEqual((await client.listProblems()).map(p => p.slug), ['free-problem']);
+  const result = await client.listProblems();
+  assert.deepEqual(result.map(p => p.slug), ['free-problem']);
+  assert.equal('studyPlanTitle' in result[0], false);
+  assert.equal('section' in result[0], false);
 });
 
 test('detail includes requirements and constraints, omits private cases and answer material', async () => {

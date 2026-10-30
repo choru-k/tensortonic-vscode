@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.2
+
+- Add Start studying with an explicitly chosen, remembered local folder and a separate VS Code window; reuse the current single-folder study window and preserve development workspaces/unsaved edits.
+- Add Start studying in another folder without migrating files or changing existing operations in other windows. A short-lived, best-effort startup handoff can focus the study sidebar but never opens windows by itself.
+- Organize the TensorTonic sidebar as study plan → original sections → clickable problems, with solved counts and checkmarks.
+- Mark the selected solution as Current and reveal it only in an already-visible sidebar without stealing editor/Agent focus. Serialize overlapping reveals and ignore stale tree snapshots.
+- Add an explicit Show study plan sidebar command; preserve Explorer, existing files, unsaved edits, and layout settings.
+- Retain sanitized plan/section names and stable section IDs from verified plan metadata; keep free problems available without invented sections.
+- Cover section structure, completion, identity collisions, selection/refresh races, unavailable/loading/empty states, and navigation preservation with regression tests.
+
 ## 0.3.1
 
 - Follow the website's study-plan section/problem sort order, joining catalogue progress and API identifiers without hardcoded curricula.

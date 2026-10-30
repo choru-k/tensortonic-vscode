@@ -8,6 +8,11 @@ function plainTitle(value, fallback) {
   return (typeof value === 'string' ? value.replace(/<[^>]*>/g, '').replace(/^#+\s*/, '').trim() : '') || fallback;
 }
 
+function metadataTitle(value, fallback) {
+  const text = plainTitle(value, '').replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim();
+  return text ? Array.from(text).slice(0, 240).join('') : fallback;
+}
+
 function slug(value, field) {
   if (typeof value !== 'string' || !SLUG.test(value)) throw new Error(`Invalid TensorTonic ${field}.`);
   return value;
@@ -50,6 +55,9 @@ function studyPlanOrder(plan, catalogue, planId) {
   }
   const ordered = [];
   const used = new Set();
+  const sectionIds = new Set();
+  const studyPlanTitle = metadataTitle(plan.title, planId);
+  const sourceSectionIndexes = new Map(plan.sections.map((section, index) => [section, index]));
   const sortItems = items => {
     if (items.some(item => !item || typeof item !== 'object' || !Number.isFinite(item.sortOrder))) {
       throw new Error('TensorTonic returned an invalid study-plan sort order.');
@@ -57,8 +65,13 @@ function studyPlanOrder(plan, catalogue, planId) {
     // Stable ties retain the service's array order. Never use the catalogue's global sortOrder.
     return [...items].sort((a, b) => a.sortOrder - b.sortOrder);
   };
-  for (const section of sortItems(plan.sections)) {
+  for (const [position, section] of sortItems(plan.sections).entries()) {
     if (!Array.isArray(section.problems)) throw new Error('TensorTonic returned an unexpected study-plan section.');
+    // Service IDs survive reordering; opaque index fallbacks keep older metadata usable.
+    const sectionId = typeof section.id === 'string' && SLUG.test(section.id) ? section.id : `index:${sourceSectionIndexes.get(section)}`;
+    if (sectionIds.has(sectionId)) throw new Error('TensorTonic returned duplicate study-plan section identifiers.');
+    sectionIds.add(sectionId);
+    const sectionMetadata = { id: sectionId, title: metadataTitle(section.title, `Section ${position + 1}`), order: section.sortOrder };
     for (const problem of sortItems(section.problems)) {
       if (!SUPPORTED_SOURCES.has(problem.type)) continue;
       const id = slug(problem.slug, 'study-plan problem slug');
@@ -67,7 +80,10 @@ function studyPlanOrder(plan, catalogue, planId) {
       if (!matches.length) matches = catalogue.filter(ref => ref.slug === id);
       if (matches.length !== 1) throw new Error('TensorTonic catalogue and study-plan order do not match. Refresh the problem list and try again.');
       const ref = matches[0];
-      if (!used.has(ref)) { ordered.push(ref); used.add(ref); }
+      if (!used.has(ref)) {
+        ordered.push({ ...ref, studyPlanTitle, section: { ...sectionMetadata } });
+        used.add(ref);
+      }
     }
   }
   if (used.size !== catalogue.length) {

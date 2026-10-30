@@ -6,11 +6,13 @@ const { TensorTonicClient } = require('./client');
 const { BrowserBridge } = require('./bridge');
 const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = require('./context');
 const { renderResult } = require('./results');
+const { ProblemTreeProvider } = require('./tree');
+const { StudyWorkspace } = require('./study-workspace');
 
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
   'description', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
-  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem',
+  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
@@ -120,43 +122,6 @@ a{color:var(--vscode-textLink-foreground)}pre{white-space:pre-wrap;overflow-wrap
 </style></head><body>${body}</body></html>`;
 }
 
-class ProblemTreeProvider {
-  constructor(state) {
-    this.state = state;
-    this.emitter = new vscode.EventEmitter();
-    this.onDidChangeTreeData = this.emitter.event;
-  }
-  dispose() { this.emitter.dispose(); }
-  refresh() { this.emitter.fire(undefined); }
-  getTreeItem(element) { return element; }
-  getChildren(element) {
-    if (element) return [];
-    if (!this.state.bridge.connected) {
-      const item = new vscode.TreeItem('Connect your TensorTonic browser companion');
-      item.command = { command: 'tensortonic.connect', title: 'Connect browser' };
-      item.iconPath = new vscode.ThemeIcon('plug');
-      return [item];
-    }
-    if (!this.state.problems.length) {
-      const item = new vscode.TreeItem(this.state.loading ? 'Loading problems…' : 'Refresh problems');
-      item.command = { command: 'tensortonic.refresh', title: 'Refresh problems' };
-      item.iconPath = new vscode.ThemeIcon('refresh');
-      return [item];
-    }
-    return this.state.problems.map(problem => {
-      const item = new vscode.TreeItem(problem.title || problem.slug, vscode.TreeItemCollapsibleState.None);
-      item.problemRef = problem;
-      item.id = `${problem.planId || ''}/${problem.slug}`;
-      item.description = [problem.difficulty, problem.technology].filter(Boolean).join(' · ');
-      item.tooltip = [problem.title || problem.slug, problem.planId ? `Study plan: ${problem.planId}` : '', problem.difficulty || ''].filter(Boolean).join('\n');
-      item.contextValue = 'tensortonicProblem';
-      item.iconPath = new vscode.ThemeIcon(problem.solved ? 'pass-filled' : 'circle-outline');
-      item.command = { command: 'tensortonic.openProblem', title: 'Open problem', arguments: [problem] };
-      return item;
-    });
-  }
-}
-
 class SolutionCodeLensProvider {
   provideCodeLenses(document) {
     let ref;
@@ -204,14 +169,42 @@ async function createTextFile(uri, content) {
 function activate(context) {
   const bridge = new BrowserBridge();
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
-  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined };
-  const tree = new ProblemTreeProvider(state);
+  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
+  const tree = new ProblemTreeProvider(vscode, state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'tensortonic.connect';
   status.show();
   const output = vscode.window.createOutputChannel('TensorTonic');
-  const treeView = vscode.window.createTreeView(VIEW_ID, { treeDataProvider: tree, showCollapseAll: false });
+  const treeView = vscode.window.createTreeView(VIEW_ID, { treeDataProvider: tree, showCollapseAll: true });
   context.subscriptions.push(tree, status, output, treeView);
+  let disposed = false;
+  let revealPending = false;
+  let revealRunning = false;
+  // Do not open this view or move keyboard focus away from code/Agent. Serialize
+  // reveals so a slow older reveal is followed by the newest selected solution.
+  function revealCurrentProblem() {
+    revealPending = true;
+    if (revealRunning || disposed) return;
+    revealRunning = true;
+    void Promise.resolve().then(async () => {
+      while (revealPending && !disposed) {
+        revealPending = false;
+        if (!treeView.visible || !bridge.connected || state.loading) continue;
+        const item = tree.findProblem(state.activeRef);
+        if (!item) continue;
+        try { await treeView.reveal(item, { select: true, focus: false, expand: true }); }
+        catch (_) { /* A hidden/disposed view must not interrupt editing. */ }
+      }
+    }).finally(() => {
+      revealRunning = false;
+      if (revealPending && !disposed) revealCurrentProblem();
+    });
+  }
+  context.subscriptions.push(treeView.onDidChangeVisibility(event => {
+    if (event.visible) revealCurrentProblem();
+  }));
+  context.subscriptions.push({ dispose() { disposed = true; revealPending = false; } });
+
 
   function getPlanId() {
     const value = vscode.workspace.getConfiguration('tensortonic').get('studyPlan', 'pytorch-basics');
@@ -263,7 +256,10 @@ function activate(context) {
     const connection = bridge.token;
     const isCurrent = () => generation === state.refreshGeneration && bridge.connected &&
       bridge.token === connection && getPlanId() === planId;
+    state.selectedPlanId = planId;
+    state.problems = [];
     state.loading = true;
+    treeView.message = undefined;
     tree.refresh();
     try {
       const problems = await client.listProblems(planId);
@@ -279,13 +275,22 @@ function activate(context) {
       return state.problems;
     } catch (error) {
       if (!isCurrent()) return state.problems;
+      treeView.message = 'Could not load problems. Refresh to try again.';
       throw error;
     } finally {
       if (generation === state.refreshGeneration) {
         state.loading = false;
         tree.refresh();
+        revealCurrentProblem();
       }
     }
+  }
+
+  async function showStudyPlan() {
+    // Only this explicit user command opens the sidebar; automatic selection
+    // synchronization never replaces Explorer or another currently visible view.
+    await vscode.commands.executeCommand(`${VIEW_ID}.focus`);
+    if (bridge.connected && !state.loading) await refresh();
   }
 
   async function chooseStudyPlan() {
@@ -714,9 +719,14 @@ function activate(context) {
     return result;
   }
 
+  const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan });
+
   const handlers = {
     connect, disconnect, openProblem, search, refresh, description, openTests, openInBrowser,
-    chooseStudyPlan, run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
+    chooseStudyPlan, showStudyPlan,
+    startStudying: () => studyWorkspace.start(),
+    changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),
+    run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
     openAgentContext, discussWithAgent, discussWithCodex,
     previousProblem: input => navigateProblem(-1, input), nextProblem: input => navigateProblem(1, input),
   };
@@ -730,8 +740,10 @@ function activate(context) {
   function rememberSelectedSolution(editor) {
     if (!editor || editor.document.uri.scheme !== 'file') return;
     try {
-      readRef(editor.document.getText());
+      state.activeRef = readRef(editor.document.getText());
       state.lastSolutionUri = editor.document.uri;
+      tree.refresh();
+      revealCurrentProblem();
     } catch (_) { /* Description, tests and chat must not replace the selection. */ }
   }
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(rememberSelectedSolution));
@@ -755,7 +767,13 @@ function activate(context) {
     }));
   }
 
-  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, commands: COMMANDS.slice() };
+  // Startup may consume a recent explicit Start Studying request for this exact
+  // local folder. It never opens a window or redirects existing solution files.
+  const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().catch(() => {
+    output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
+    return false;
+  });
+  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {}

@@ -6,13 +6,26 @@ This is not an official TensorTonic extension. It currently supports free Python
 
 ## Installation
 
-Requires VS Code 1.95 or later. Download [TensorTonic 0.3.1 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.3.1.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
+Requires VS Code 1.95 or later. Download [TensorTonic 0.3.2 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.3.2.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.3.1.vsix
+code --install-extension releases/tensortonic-vscode-0.3.2.vsix
 ```
 
-Open a local folder for your solutions in VS Code, then select the TensorTonic activity-bar icon.
+For a separate study space, use **TensorTonic: Start studying** from the Command Palette or the Study plan toolbar. You can still use the extension in an ordinary existing workspace if you prefer.
+
+## Start studying without disturbing your development workspace
+
+1. Run **TensorTonic: Start studying**. The first time, choose a dedicated local folder, such as `TensorTonic Study`. Canceling the picker changes nothing.
+2. VS Code opens that folder in a **new window**; your development window, workspace, tabs and unsaved code stay in place. The extension remembers the chosen folder on this computer. Running Start studying while already in that single-folder study window reuses it instead of opening another one.
+3. The study window opens the **Study plan** sidebar when its short-lived launch handoff is available. Connect the browser companion in this window, choose a plan, and open a problem. Browser pairing is not automatically transferred from another VS Code window.
+4. Next time, run Start studying again. To choose a different destination, use **TensorTonic: Start studying in another folder…**. Existing study files are not moved or copied.
+
+Default files are stored under `<study folder>/tensortonic/<plan>/`: your `.py` solution, editable `.tests.json`, and generated `.problem.md` statement. An existing `tensortonic.solutionDirectory` setting can change the relative `tensortonic` subfolder. Python/tests are not overwritten on reopening; personal edits to generated Markdown are protected. Earlier test-workspace files remain where they were—this command does not import or delete them.
+
+The remembered study folder does **not** redirect problem operations in other windows. If you open a problem in an ordinary project window, files still go into that project's configured solution folder. Multi-root or saved `.code-workspace` windows are preserved by requesting a separate folder window; the command does not remove/add workspace roots or change Explorer, layout, configuration, or trust settings. Remote/browser workspaces are not supported. Review any normal VS Code folder-trust prompt yourself.
+
+Only an explicit Start command requests a new window. Normal startup never opens one. A recent matching handoff may focus the study sidebar once; this is best-effort because extension storage is not an atomic cross-window database. If it does not appear, run **TensorTonic: Show study plan sidebar**. Simultaneous Start requests from different windows can supersede a handoff; no automatic retry occurs. The command does not locate/focus another already-open study window from a different window.
 
 ## Connect your browser — no console required
 
@@ -29,7 +42,9 @@ Use **Disconnect browser** in VS Code or **Disconnect** in the companion to end 
 
 ## Solve problems
 
-- Select a problem in the sidebar to open its description and solution file side by side. Study-plan lists follow the website's section and problem ordering rather than the general catalogue order.
+- Open the **TensorTonic** activity-bar icon or run **TensorTonic: Show study plan sidebar**. The dedicated **Study plan** view shows the plan name, its original ordered sections, and clickable problems—no need to navigate solution files in Explorer.
+- Expand a section and select a problem to open its description and solution side by side. Plan/section headers show solved counts; checkmarks mark completed problems and **Current** marks the selected solution. Switching solution tabs selects its row only when the TensorTonic view is already visible, without moving keyboard focus or switching the chosen plan.
+- Use **Choose study plan** in the view toolbar to switch plans, and **Refresh problems** to update progress. The file Explorer remains available: no files are hidden/deleted and no Explorer or layout settings are changed.
 - Use the **Run**, **Submit**, **Description**, and **Test cases** buttons above the solution.
 - For a study-plan solution, use **Previous problem** and **Next problem** above the code or in the command palette. Navigation uses that solution's plan, even if the sidebar is showing another plan; it stops at the first/last problem without wrapping and preserves existing files and unsaved edits.
 - **Run** uses the adjacent `.tests.json` file. You can edit it, but keep it as a JSON array.
@@ -68,7 +83,9 @@ Official VS Code on the assistant's Linux VM was used to check the real extensio
 
 The user's manual 0.3.0 screenshots subsequently confirmed companion-connected problem browsing, Run success, Submit **43/43** with **1006 ms**, and an Agent response using the three attached files. Those are user-driven observations, not automated cloud tests. The managed cloud browser still blocks companion installation, and no alternate installation route was used.
 
-The 0.3.1 preview, results, and study-navigation changes have separate [patch validation notes](docs/preview-validation.md). A new real Linux VS Code launch exited before the host tests could run, so its native rendering assertions are not yet fresh passing evidence for this patch.
+The 0.3.1 preview, results, and study-navigation changes have separate [patch validation notes](docs/preview-validation.md). Later user screenshots confirmed formatted equations/headings, readable Run **3/3, 3 ms**, and Submit **43/43, 688 ms**; the user also confirmed ordering and Next navigation. These remain manual observations, not automated cloud tests.
+
+The 0.3.2 dedicated study-window workflow and section sidebar have their own [validation notes](docs/sidebar-validation.md). Native desktop verification of the new window workflow and view remains pending; cloud tests do not claim a rendered VS Code sidebar check. Interactive website cards are still not included; use the original-problem link for those controls.
 
 ## Development and packaging
 
