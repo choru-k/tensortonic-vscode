@@ -27,7 +27,7 @@ Dirty local solutions, existing tests, protected notes, and dedicated Python env
 
 The native transport needs a debugger session to communicate with its own page. Version 0.9.0 keeps that capability enabled while configuring **only the launch it owns**:
 
-- `sourceMaps: false` and `pauseForSourceMap: false` avoid source-map processing/pauses for the TensorTonic session.
+- `sourceMaps: false` and `pauseForSourceMap: false` disable source-mapped stepping/pauses. `resolveSourceMapLocations: ['!**']` additionally excludes normal file/URL source-map loading for the owned session; the debugger may retain internal exceptions. This avoids treating stepping suppression alone as a guarantee that no map metadata will be loaded.
 - `internalConsoleOptions: 'neverOpen'` requests that its Debug Console not open automatically.
 - Root-launch options request suppression of the debug toolbar, debug status bar, and debug view, and suppress save-before-start so unsaved work is not forced to disk. These presentation requests are best-effort: the host does not propagate every root option to its child JavaScript debug session, so a child toolbar or status indication can remain. This release does not promise that all debugger chrome is hidden.
 

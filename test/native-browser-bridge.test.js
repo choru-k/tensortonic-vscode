@@ -230,6 +230,7 @@ test('native launch quiets only its own debug UI and source maps without disabli
   await h.bridge.start();
   assert.equal(h.config.sourceMaps, false);
   assert.equal(h.config.pauseForSourceMap, false);
+  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
   assert.equal(h.config.internalConsoleOptions, 'neverOpen');
   assert.equal(Object.hasOwn(h.config, 'noDebug'), false);
   assert.equal(Object.hasOwn(h.settings, 'noDebug'), false);
@@ -240,4 +241,17 @@ test('unsupported and declined launch explain the native-only desktop capability
   await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /native-only/.test(error.message) && /Integrated Browser/.test(error.message));
   h.vscode.env.uiKind = 2;
   await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /local VS Code desktop/.test(error.message) && /remote/.test(error.message));
+});
+
+test('map resolution exclusion stays scoped to each owned launch and never registers a child interceptor', async t => {
+  const h = harness(t);
+  h.vscode.debug.registerDebugConfigurationProvider = () => { throw new Error('must not intercept other debug launches'); };
+  const unrelated = { id: 'user-map-debug', name: 'User browser', type: 'pwa-editor-browser', configuration: { sourceMaps: true, resolveSourceMapLocations: ['**'] } };
+  h.started.fire(unrelated);
+  await h.bridge.start();
+  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
+  assert.deepEqual(unrelated.configuration, { sourceMaps: true, resolveSourceMapLocations: ['**'] });
+  await h.bridge.stop(); await h.bridge.start();
+  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
+  assert.equal(h.stops.includes(unrelated.id), false);
 });

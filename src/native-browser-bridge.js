@@ -141,6 +141,9 @@ class NativeBrowserBridge {
       const launch = v.debug.startDebugging(undefined, {
         type: 'editor-browser', request: 'launch', name, url: 'https://www.tensortonic.com/',
         sourceMaps: false, pauseForSourceMap: false, internalConsoleOptions: 'neverOpen',
+        // sourceMaps controls stepping; deny map resolution separately. Empty
+        // arrays mean unrestricted in js-debug, so use its explicit exclusion.
+        resolveSourceMapLocations: ['!**'],
       }, {
         suppressSaveBeforeStart: true, suppressDebugToolbar: true,
         suppressDebugStatusbar: true, suppressDebugView: true,
