@@ -1,12 +1,12 @@
 {
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
-  "description": "Solve TensorTonic problems through VS Code\u2019s built-in browser. Login stays in the browser.",
-  "version": "0.9.0",
+  "description": "Personal experimental TensorTonic study extension using VS Code\u2019s proposed browser API without a debug session.",
+  "version": "0.10.0",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.109.0"
+    "vscode": "^1.144.0"
   },
   "categories": [
     "Education",
@@ -318,5 +318,8 @@
   "bugs": {
     "url": "https://github.com/choru-k/tensortonic-vscode/issues"
   },
-  "homepage": "https://github.com/choru-k/tensortonic-vscode#readme"
+  "homepage": "https://github.com/choru-k/tensortonic-vscode#readme",
+  "enabledApiProposals": [
+    "browser"
+  ]
 }

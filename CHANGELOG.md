@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 (personal experimental)
+
+- Replace the JavaScript debug-adapter transport with the explicitly opted-in proposed browser API and a CDP session scoped to a newly owned browser tab. No VS Code DebugSession is started.
+- Require per-extension browser API opt-in; fail clearly when unavailable without changing settings, product allowlists, or security policies.
+- Retain bounded allowlisted requests, normal website login, no automatic grading retry, owned-tab cleanup, Markdown/Web study navigation, and dedicated Python setup.
+
 ## 0.9.0
 
 - Use only the built-in browser connection. Remove legacy connection selection, pairing, loopback server, companion source and new companion distribution. Existing stored secrets are not accessed or removed.

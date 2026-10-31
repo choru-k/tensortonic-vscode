@@ -1435,3 +1435,18 @@ test('canceling native connection progress before startup never launches the own
   assert.deepEqual(h.secretCalls, []);
   assert.deepEqual(h.errors, []);
 });
+
+test('personal browser API release declares only its explicit proposal and explains owned page control', async t => {
+  const manifest = JSON.parse(await fs.readFile(path.resolve(__dirname, '../package.json'), 'utf8'));
+  assert.deepEqual(manifest.enabledApiProposals, ['browser']);
+  assert.equal(`${manifest.publisher}.${manifest.name}`, 'choru-local.tensortonic-vscode');
+  assert.equal(manifest.contributes.configuration.properties['tensortonic.connectionMode'], undefined);
+  const h = await harness(t, { connected: false });
+  h.informationChoices.push('Connect built-in browser');
+  await h.commands.get('tensortonic.connect')();
+  const consent = JSON.stringify(h.information);
+  assert.match(consent, /experimental browser API/);
+  assert.match(consent, /without starting a VS Code debug session/);
+  assert.match(consent, /owned page/);
+  assert.deepEqual(h.secretCalls, []);
+});

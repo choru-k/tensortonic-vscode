@@ -6,15 +6,25 @@ This unofficial extension currently supports free Python problems and Python stu
 
 ## Installation
 
-Download [TensorTonic 0.9.0 for VS Code](releases/tensortonic-vscode-0.9.0.vsix) or the [0.9.0 install bundle](releases/tensortonic-native-browser-0.9.0.zip). In the Extensions view, choose **… → Install from VSIX…**, select the package, and reload the window if prompted. From a repository checkout:
+Download [TensorTonic 0.10.0 personal build for VS Code](releases/tensortonic-vscode-0.10.0.vsix) or the [0.10.0 personal install bundle](releases/tensortonic-native-browser-0.10.0.zip). In the Extensions view, choose **… → Install from VSIX…**, select the package, and reload the window if prompted. From a repository checkout:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.9.0.vsix
+code --install-extension releases/tensortonic-vscode-0.10.0.vsix
 ```
 
-**0.9.0 is native-only.** It requires a trusted local VS Code desktop window with supported **Integrated Browser** and the built-in **JavaScript debugger** enabled. Native operation was validated on VS Code **1.144.0**; an older host merely accepting installation does not establish runtime compatibility. If Connect reports that the route is unavailable, update VS Code and enable its built-in debugger normally. VS Code for the Web, remote workspaces, and alternative editors without these APIs are not supported. Do not bypass organizational restrictions.
+**0.10.0 is a personal experimental, native-only build.** It uses VS Code's **proposed `browser` API** directly, rather than launching a debug adapter. Installing the VSIX alone is not sufficient: the host must expose that proposal and you must explicitly opt in **only this extension**. Proposed APIs are unstable; this is not a standard Marketplace release or a promise of compatibility with every stable VS Code version. See [Microsoft's proposed-API guidance](https://code.visualstudio.com/api/advanced-topics/using-proposed-api).
 
-No Chrome/Helium browser companion, pairing code, or separate browser-extension permission is needed. This release does not include a companion or a Legacy connection selector. Earlier release files and implementation history remain in Git history rather than the current release tree. An existing browser companion is not automatically uninstalled by this package.
+After installing, save your work and fully quit VS Code normally. On a host verified to support this proposal, relaunch your study folder with the extension-specific opt-in:
+
+```sh
+code --enable-proposed-api choru-local.tensortonic-vscode "/path/to/TensorTonic Study"
+```
+
+Use the CLI for the actual supporting installation, such as `code-insiders` if appropriate. A window reload or a CLI command forwarded to an already-running process may not apply a new startup opt-in. The CLI flag applies to that launch. For a deliberate persistent opt-in, use **Preferences: Configure Runtime Arguments** and add only this extension ID to the existing `enable-proposed-api` array, preserving other entries; see the [manual opt-in and reversal steps](docs/native-browser.md#optional-persistent-opt-in). The extension never edits that file automatically. The manifest declares `enabledApiProposals: ["browser"]`; that declaration is not permission by itself.
+
+The startup flag was verified with the direct-browser prototype on VS Code **1.144.0 stable**; this does not establish support on every stable build or validate the integrated 0.10 candidate. Use a **trusted local desktop** study window. If Connect reports that the API is absent or disabled, verify the extension ID/opt-in, fully restart, and use a VS Code build that supports the proposal. Do not edit `product.json`, spoof a built-in extension, add blanket proposed-API/global security flags, or bypass organizational restrictions. Browser/remote workspaces and alternative editors without the proposal are unsupported.
+
+No Chrome/Helium browser companion, pairing code, Legacy selector, or debugger connection is included. Existing companions are not automatically uninstalled. This change avoids the debugger-session transport, but VS Code may still show a **browser automation indicator**. Earlier artifacts remain in Git history rather than the current release tree. See [setup and validation limits](docs/native-browser.md).
 
 ## Start studying without disturbing your development workspace
 
@@ -32,15 +42,15 @@ Only an explicit Start command requests a new window. Ordinary activation does n
 ## Connect the built-in browser
 
 1. Run **TensorTonic: Connect browser** in the trusted local study window.
-2. Review **Connect built-in browser**. The extension opens a dedicated TensorTonic page in VS Code's Integrated Browser and uses only its own debug-session tree.
+2. Review **Connect built-in browser**. The extension opens and controls only its own dedicated TensorTonic page through the opted-in browser API. It does not start a debugger or attach to an existing user tab.
 3. Sign in normally in that page, including any GitHub sign-in or 2FA. Confirm the intended account. Passwords, cookies, browser storage values, session tokens, and Authorization headers are not extracted or copied.
 4. Use **Refresh problems** or Connect again after login. Connected transport does not guarantee that website login, subscription access, or every API request has succeeded.
 
 After restarting VS Code, use Connect again; the extension does not attach or launch on ordinary startup. Website login lifetime follows the website and VS Code's existing browser-storage configuration—there is no fixed 30-day login promise. No browser storage, authentication, or global debug setting is changed.
 
-**Disconnect browser** stops the owned connection, not unrelated user debug sessions. It does not sign you out or erase cookies. If cleanup is unconfirmed, follow the reported instruction and use the owned session's normal Stop control; do not silently reuse an uncertain connection.
+**Disconnect browser** releases the owned connection without touching unrelated user tabs or debug sessions. It does not sign you out or erase cookies. If cleanup is unconfirmed, follow the reported instruction and close the owned browser page normally; do not silently reuse an uncertain connection.
 
-See [native connection, scoped debugger behavior, privacy, and validation boundaries](docs/native-browser.md).
+See [direct native connection, opt-in, privacy, and validation boundaries](docs/native-browser.md).
 
 ## Solve problems
 
@@ -62,7 +72,7 @@ Use **TensorTonic: Choose problem view (Markdown / Web)** in the command palette
 
 **Web** opens the original TensorTonic problem and interactive cards in the owned Integrated Browser beside the preserved Python editor when you explicitly open a problem or use Previous/Next. Only the expected TensorTonic study surface is reused; login, account, and manually navigated external pages are not hijacked. Native connection works with either presentation mode. **Show problem description** remains an explicit Markdown option, and dirty solution files remain protected.
 
-If Web presentation cannot be opened safely, the local Markdown description remains available. This does not provide an alternative connection for an unsupported host: update to a supported local VS Code rather than installing a legacy transport.
+If Web presentation cannot be opened safely, the local Markdown description remains available. This does not provide an alternative connection for an unsupported host: enable the proposal for this extension in a supporting local VS Code build rather than installing a legacy transport.
 
 ## Original interactive explanations
 
@@ -106,7 +116,7 @@ These are illustrative mathematical experiments, not TensorTonic's original card
 
 Native **0.8.0** was validated on the user's Mac with VS Code **1.144.0**: connection, a 30-problem list, full JSON retrieval, Markdown, dirty temporary-solution preservation, Web navigation, cancellation, and reconnect. One explicitly approved already-solved solution was run once and submitted once. These observations belong to that version and scope; they are not blanket proof for every host or subsequent change.
 
-**0.9.0** removes the legacy transport and adds debugger presentation settings scoped to its owned session. Its current code has automated regression coverage; the new session-presentation behavior awaits the separately coordinated read-only native UI check. No additional live grading is implied. Dedicated Python installation and every platform combination are not established by the earlier native validation. See [current validation scope](docs/native-browser.md#validation).
+The direct-browser **prototype** demonstrated operation without a debug session; that is not proof of the complete **0.10.0** candidate. This candidate integrates the proposed API into the extension, and its actual native read-only/visual check is pending separate coordination. No fresh live grading, dedicated Python installation, or all-platform compatibility is implied. The 0.9 work was an unpublished candidate; the published baseline before this candidate was 0.8.1. See [current validation scope](docs/native-browser.md#validation).
 
 ## Development and packaging
 
@@ -118,7 +128,7 @@ npm run test:transport
 python3 scripts/package.py
 ```
 
-`test:transport` exercises the native bridge and request policy with simulated debug-adapter/page behavior. Automated tests do not authenticate a real account or authorize live grading. The VSIX is built from an explicit source allowlist; do not package credentials, browser data, user solutions, or runtime logs.
+`test:transport` exercises the native bridge and request policy with a simulated proposed-browser API and page behavior. Automated tests do not authenticate a real account or authorize live grading. The VSIX is built from an explicit source allowlist; do not package credentials, browser data, user solutions, or runtime logs.
 
 For a permitted local host check, use a separate review workspace and a fresh profile as appropriate. `test/vscode-native-readonly-validation.js` is an optional actual-host runner gated by `TENSORTONIC_TEST_ALLOW_REAL_READ=1`; it requires explicit authorization, uses fixed read endpoints, and does not contain Run/Submit. Real grading tests require separate approval for the exact existing solution and action. Never rerun an uncertain Submit automatically.
 

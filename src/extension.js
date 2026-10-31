@@ -340,7 +340,7 @@ function activate(context) {
       if (!bridge.connected) {
         const choice = await vscode.window.showInformationMessage('Connect TensorTonic in VS Code’s built-in browser?', {
           modal: true,
-          detail: 'Open a dedicated TensorTonic browser page and attach only this extension’s own browser debug session. Sign in normally in that page. Problem access and explicit Run/Submit use the website session without copying cookies, passwords, or tokens. Disconnect stops only this owned connection.',
+          detail: 'Open a dedicated TensorTonic browser page using the experimental browser API you enabled for this extension. The extension can control only its owned page through a browser protocol session, without starting a VS Code debug session. Sign in normally there. Explicit problem requests and Run/Submit use the website session without copying cookies, passwords, or tokens. Disconnect closes only this owned connection.',
         }, 'Connect built-in browser');
         if (choice !== 'Connect built-in browser') return;
       }

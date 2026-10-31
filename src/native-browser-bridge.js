@@ -26,9 +26,8 @@ function bounded(promise, ms, message, signal) {
   });
 }
 
-// DAP display strings are not transport-safe JSON. Only a bounded base64 alphabet
-// is accepted, and the exact chunk length is verified before decoding. Truncated
-// display output causes a smaller READ retry, never another HTTP dispatch.
+// Accept only bounded base64 chunks with their exact requested length.
+// Retrying a chunk read never repeats the upstream HTTP operation.
 function displayedBase64(result, length) {
   if (typeof result !== 'string') return undefined;
   let value = result;
@@ -36,83 +35,141 @@ function displayedBase64(result, length) {
   return value.length === length && /^[A-Za-z0-9+/=]*$/.test(value) ? value : undefined;
 }
 
+function canonical(value) { try { return ORIGINS.has(new URL(value).origin); } catch (_) { return false; } }
+
 class NativeBrowserBridge {
-  constructor(vscode, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)),
-    discoverTimeout = 15000, evaluationTimeout = 5000, requestTimeout = 180000, maxResponseBytes = MAX_RESPONSE, launchTimeout = 20000, cleanupTimeout = 5000 } = {}) {
-    this.vscode = vscode; this.now = now; this.pause = pause;
-    this.discoverTimeout = discoverTimeout; this.evaluationTimeout = evaluationTimeout;
-    this.launchTimeout = launchTimeout; this.cleanupTimeout = cleanupTimeout;
-    this.requestTimeout = requestTimeout; this.maxResponseBytes = Math.min(MAX_RESPONSE, maxResponseBytes);
-    this.connected = false; this.token = undefined; this.onDidChange = undefined;
-    this.sessions = new Map(); this.ownerNames = new Set(); this.ownerGenerations = new Map(); this.generation = 0;
-    this.target = undefined; this.pending = undefined; this.starting = undefined; this.launching = undefined;
-    this.stopping = undefined; this.disposed = false; this.cleanupPending = false;
-    this.listeners = [];
-    if (vscode.debug && vscode.debug.onDidStartDebugSession && vscode.debug.onDidTerminateDebugSession) {
-      this.listeners.push(vscode.debug.onDidStartDebugSession(session => {
-        if (this._owns(session)) {
-          this.sessions.set(session.id, session);
-          let root = session; while (root.parentSession) root = root.parentSession;
-          if (this.disposed || this.stopping || this.ownerGenerations.get(root.name) !== this.generation) {
-            Promise.resolve(vscode.debug.stopDebugging(session)).catch(() => {});
-          }
-        }
-      }));
-      this.listeners.push(vscode.debug.onDidTerminateDebugSession(session => {
-        if (!this.sessions.has(session.id)) return;
-        this.sessions.delete(session.id);
-        if (this.target && this.target.id === session.id) { this.target = undefined; if (!this.navigating) this._setConnected(false); }
-        if (!session.parentSession) { this.token = undefined; this._setConnected(false); }
-        if (this.sessions.size === 0) this.cleanupPending = false;
-      }));
-    }
+  constructor(vscode, { now = Date.now, pause = ms => new Promise(resolve => setTimeout(resolve, ms)), discoverTimeout = 15000, evaluationTimeout = 5000, requestTimeout = 180000, maxResponseBytes = MAX_RESPONSE, launchTimeout = 20000, cleanupTimeout = 5000 } = {}) {
+    Object.assign(this, { vscode, now, pause, discoverTimeout, evaluationTimeout, requestTimeout, launchTimeout, cleanupTimeout });
+    this.maxResponseBytes = Math.min(MAX_RESPONSE, maxResponseBytes);
+    this.resources = new Set(); this.generation = 0; this.connected = false; this.cleanupPending = false; this.disposed = false;
+    this.nextId = 0; this.listeners = [];
   }
-  _owns(session) {
-    let current = session;
-    for (let depth = 0; current && depth < 16; depth++, current = current.parentSession) {
-      if (!current.parentSession && this.ownerNames.has(current.name) &&
-          ['editor-browser', 'pwa-editor-browser'].includes(current.type)) return true;
-    }
-    return false;
+  _listenTabs(w) {
+    if (this.listeners.length) return;
+    if (w && w.onDidCloseBrowserTab) this.listeners.push(w.onDidCloseBrowserTab(tab => {
+      for (const r of this.resources) if (r.tab === tab) { r.tabClosed = true; this.token = undefined; this._invalidate(r); }
+    }));
+    if (w && w.onDidChangeBrowserTabState) this.listeners.push(w.onDidChangeBrowserTabState(tab => {
+      for (const r of this.resources) if (r.tab === tab && !canonical(tab.url)) this._invalidate(r);
+    }));
   }
+  get hasOwnedResources() { return this.resources.size > 0 || !!this.launching; }
   _setConnected(value) { if (this.connected !== value) { this.connected = value; if (this.onDidChange) this.onDidChange(); } }
-  _check(generation, session, signal) {
-    if (this.disposed || this.stopping || generation !== this.generation || this.vscode.workspace.isTrusted !== true || (signal && signal.aborted)) throw fault('Native browser connection changed or was canceled. No request was replayed.', 'CANCELED');
-    if (session && (!this.sessions.has(session.id) || !this._owns(session))) throw fault('The owned TensorTonic browser session ended. Connect again.', 'DISCONNECTED');
+  _invalidate(r, sessionId) {
+    for (const target of r.targets.values()) if (!sessionId || target.sessionId === sessionId) { target.epoch++; target.contexts.clear(); }
+    if (this.target && this.target.resource === r && (!sessionId || this.target.sessionId === sessionId)) {
+      this.target = undefined; if (!this.navigating) this._setConnected(false);
+      if (this.pending) this.pending.controller.abort();
+    }
   }
-  async _eval(session, expression, generation, signal) {
-    this._check(generation, session, signal);
-    const reply = await bounded(session.customRequest('evaluate', { expression, context: 'watch' }), this.evaluationTimeout,
-      'Native browser evaluation did not complete. A dispatched Run or Submit may have completed; check the website before retrying.', signal);
-    this._check(generation, session, signal);
-    if (!reply || typeof reply.result !== 'string') throw fault('Native browser returned an unsupported response.', 'INVALID_RESPONSE');
-    return reply.result;
+  _check(generation, target, signal) {
+    if (this.disposed || this.stopping || generation !== this.generation || this.vscode.workspace?.isTrusted !== true || signal?.aborted) throw fault('Native browser connection changed or was canceled. No request was replayed.', 'CANCELED');
+    if (target) {
+      const r = target.resource, live = r.targets.get(target.sessionId);
+      if (!this.resources.has(r) || r.closed || r.tabClosed || !canonical(r.tab.url) || !live || r.targets.size !== 1 || live.epoch !== target.epoch || live.contexts.get(target.context.id) !== target.context) throw fault('The owned TensorTonic browser page changed. Connect again; no request was replayed.', 'PAGE_CHANGED');
+    }
   }
-  async _number(session, expression, generation, signal) {
-    const value = await this._eval(session, expression, generation, signal);
-    if (!/^-?\d+$/.test(value)) throw fault('Native browser returned an invalid numeric response.', 'INVALID_RESPONSE');
-    const number = Number(value);
-    if (!Number.isSafeInteger(number)) throw fault('Native browser returned an invalid numeric response.', 'INVALID_RESPONSE');
-    return number;
+  _onMessage(r, message) {
+    if (!message || typeof message !== 'object') return;
+    if (Number.isSafeInteger(message.id)) {
+      const entry = r.requests.get(message.id);
+      if (!entry || message.sessionId !== entry.sessionId) return;
+      if (message.error) entry.reject(fault('Owned browser protocol request failed.', 'TRANSPORT_ERROR'));
+      else entry.resolve(message.result);
+      return;
+    }
+    const p = message.params;
+    if (message.method === 'Target.attachedToTarget' && !message.sessionId && p?.targetInfo?.type === 'page' && typeof p.sessionId === 'string' && typeof p.targetInfo.vscodeBrowserViewId === 'string') {
+      // This CDP group was obtained solely from the newly opened BrowserTab.
+      // Never attach a global target, nested page, worker, or iframe.
+      if (!r.targets.has(p.sessionId)) {
+        r.targets.set(p.sessionId, { sessionId: p.sessionId, epoch: 0, contexts: new Map(), initialized: false });
+        if (r.targets.size > 1) this._invalidate(r);
+      }
+    } else if (message.method === 'Target.detachedFromTarget' && !message.sessionId) {
+      this._invalidate(r, p?.sessionId); r.targets.delete(p?.sessionId);
+    } else {
+      const target = r.targets.get(message.sessionId); if (!target) return;
+      if (message.method === 'Runtime.executionContextsCleared') this._invalidate(r, message.sessionId);
+      else if (message.method === 'Runtime.executionContextDestroyed') {
+        if (target.contexts.has(p?.executionContextId)) this._invalidate(r, message.sessionId);
+      } else if (message.method === 'Runtime.executionContextCreated') {
+        const c = p?.context;
+        if (Number.isSafeInteger(c?.id) && c.auxData?.isDefault === true && typeof c.auxData.frameId === 'string' && ORIGINS.has(c.origin)) {
+          if (target.contexts.has(c.id)) this._invalidate(r, message.sessionId);
+          target.contexts.set(c.id, { id: c.id, uniqueId: typeof c.uniqueId === 'string' ? c.uniqueId : undefined, frameId: c.auxData.frameId });
+        }
+      }
+    }
+  }
+  async _cdp(r, method, params, sessionId, signal) {
+    if (!r.group || r.closed || signal?.aborted) throw fault('Owned browser transport is closed or canceled.', 'CANCELED');
+    if (method === 'Target.setAutoAttach') {
+      if (sessionId || params.flatten !== true || params.waitForDebuggerOnStart !== false || typeof params.autoAttach !== 'boolean') throw fault('Invalid owned attachment request.', 'UNSUPPORTED');
+    } else if (!['Runtime.enable', 'Runtime.evaluate', 'Page.getFrameTree'].includes(method) || !r.targets.has(sessionId)) throw fault('CDP operation is outside the owned page.', 'UNSUPPORTED');
+    const id = ++this.nextId;
+    let resolve, reject;
+    const reply = new Promise((yes, no) => { resolve = yes; reject = no; }); reply.catch(() => {});
+    r.requests.set(id, { resolve, reject, sessionId });
+    try {
+      // Dispatch once only, including when sendMessage resolves late or rejects.
+      await bounded(r.group.sendMessage({ id, method, params, ...(sessionId ? { sessionId } : {}) }), this.evaluationTimeout, 'Owned browser send did not complete.', signal);
+      return await bounded(reply, this.evaluationTimeout, 'Owned browser response did not complete.', signal);
+    } finally { r.requests.delete(id); }
+  }
+  async _evaluate(target, expression, generation, signal, navigation = false) {
+    this._check(generation, target, signal);
+    const context = target.context;
+    const reply = await this._cdp(target.resource, 'Runtime.evaluate', {
+      expression, returnByValue: true, awaitPromise: false, silent: true, timeout: this.evaluationTimeout,
+      ...(context.uniqueId ? { uniqueContextId: context.uniqueId } : { contextId: context.id }),
+    }, target.sessionId, signal);
+    this._check(generation, navigation ? undefined : target, signal);
+    if (reply?.exceptionDetails || !['number', 'string', 'boolean'].includes(typeof reply?.result?.value)) throw fault('Owned browser returned an invalid evaluation response.', 'INVALID_RESPONSE');
+    return reply.result.value;
+  }
+  async _eval(target, expression, generation, signal) {
+    const value = await this._evaluate(target, expression, generation, signal);
+    return typeof value === 'string' ? value : String(value);
+  }
+  async _number(target, expression, generation, signal) {
+    const value = await this._evaluate(target, expression, generation, signal);
+    if (!Number.isSafeInteger(value)) throw fault('Owned browser returned an invalid numeric response.', 'INVALID_RESPONSE');
+    return value;
   }
   async _discover(generation, signal) {
     const deadline = this.now() + this.discoverTimeout;
     do {
       this._check(generation, undefined, signal);
-      const owned = [...this.sessions.values()].filter(session => this._owns(session));
-      const leaves = owned.filter(session => !owned.some(other => other.parentSession && other.parentSession.id === session.id));
       const matches = [];
-      for (const session of leaves) {
-        try { if (await this._number(session, `(${PAGE_GUARD})?1:0`, generation, signal) === 1) matches.push(session); }
-        catch (error) { this._check(generation, undefined, signal); if (error.code === 'CANCELED') throw error; }
+      for (const r of this.resources) {
+        if (r.closed || r.tabClosed || !r.group || !canonical(r.tab.url)) continue;
+        // Multiple root pages in one owned group are ambiguous, not permission
+        // to choose the active tab or the first target that happens to match.
+        if (r.targets.size > 1) throw fault('Owned browser page is ambiguous. Disconnect and reconnect.', 'AMBIGUOUS_TARGET');
+        for (const live of r.targets.values()) {
+          if (!live.initialized) {
+            await this._cdp(r, 'Runtime.enable', {}, live.sessionId, signal); this._check(generation, undefined, signal);
+            live.initialized = true;
+          }
+          const tree = await this._cdp(r, 'Page.getFrameTree', {}, live.sessionId, signal); this._check(generation, undefined, signal);
+          const frameId = tree?.frameTree?.frame?.id;
+          if (typeof frameId !== 'string') continue;
+          for (const context of live.contexts.values()) {
+            if (context.frameId !== frameId) continue;
+            const target = { resource: r, sessionId: live.sessionId, context, epoch: live.epoch };
+            try { if (await this._number(target, `(${PAGE_GUARD})?1:0`, generation, signal) === 1) matches.push(target); }
+            catch (_) { this._check(generation, undefined, signal); }
+          }
+        }
       }
       this._check(generation, undefined, signal);
-      if (matches.length > 1) throw fault('More than one owned TensorTonic page matched. Disconnect and connect a single browser page.', 'AMBIGUOUS_TARGET');
+      if (matches.length > 1) throw fault('Owned browser context is ambiguous. Disconnect and reconnect.', 'AMBIGUOUS_TARGET');
       if (matches.length === 1) { this.target = matches[0]; if (!this.token) this.token = crypto.randomUUID(); this._setConnected(true); return true; }
-      await this.pause(100); this._check(generation, undefined, signal);
+      await this.pause(100);
     } while (this.now() < deadline);
     this._setConnected(false);
-    throw fault('No owned TensorTonic browser page is ready. Finish normal login in the opened browser, then choose Connect again. Do not change security policies.', 'LOGIN_OR_PAGE_REQUIRED');
+    throw fault('Finish normal login in the owned TensorTonic browser, then choose Connect again. No login information was copied.', 'LOGIN_OR_PAGE_REQUIRED');
   }
   connect(options) { return this.start(options); }
   confirmConnection(options) { return this.start(options); }
@@ -120,94 +177,91 @@ class NativeBrowserBridge {
   async start({ signal } = {}) {
     if (this.stopping) await this.stopping;
     if (this.starting) return this.starting;
-    const generation = this.generation;
-    const task = this._start(generation, signal); this.starting = task;
+    const task = this._start(this.generation, signal); this.starting = task;
     try { return await task; } finally { if (this.starting === task) this.starting = undefined; }
+  }
+  async _acquire(r, key, create, generation, signal) {
+    // Keep late resources owned: cancel/timeout never abandons a tab or group.
+    const raw = Promise.resolve().then(create).then(async value => {
+      r[key] = value;
+      if (this.disposed || this.stopping || this.generation !== generation) await this._closeResource(r);
+      return value;
+    });
+    r.opening = raw; this.launching = raw;
+    const settled = () => { if (r.opening === raw) r.opening = undefined; if (this.launching === raw) this.launching = undefined; };
+    raw.then(settled, settled);
+    try { const value = await bounded(raw, this.launchTimeout, 'Owned browser launch did not complete. If the browser proposal is not enabled, launch VS Code with --enable-proposed-api choru-local.tensortonic-vscode and fully restart it.', signal); this._check(generation, undefined, signal); return value; }
+    catch (error) { if (this.generation === generation) this.generation++; this.cleanupPending = this.resources.size > 0; throw error; }
   }
   async _start(generation, signal) {
     this._check(generation, undefined, signal);
     const v = this.vscode;
-    if (this.cleanupPending) throw fault('Previous owned browser cleanup is still pending. Disconnect again before opening another native connection.', 'CLEANUP_PENDING');
-    if (!v.debug || !v.debug.startDebugging || !v.debug.stopDebugging ||
-        !v.workspace || v.workspace.isTrusted !== true || (v.env && (v.env.remoteName || v.env.uiKind === 2))) {
-      throw fault('TensorTonic is native-only and requires a trusted local VS Code desktop with supported Integrated Browser and its built-in JavaScript debugger. Update VS Code and enable the built-in JavaScript debugger; web and remote workspaces are not supported.', 'UNAVAILABLE');
-    }
+    if (this.cleanupPending) throw fault('Owned browser cleanup is pending. Disconnect again before connecting.', 'CLEANUP_PENDING');
     if (this.pending) throw fault('Wait for the current TensorTonic operation before reconnecting.', 'BUSY');
-    if (![...this.sessions.values()].some(session => this._owns(session))) {
-      const name = 'TensorTonic native ' + crypto.randomBytes(16).toString('hex');
-      this.ownerNames.add(name); this.ownerGenerations.set(name, generation);
-      // Session-scoped presentation only: keep debugging enabled for evaluate,
-      // without changing any global debug settings or unrelated sessions.
-      const launch = v.debug.startDebugging(undefined, {
-        type: 'editor-browser', request: 'launch', name, url: 'https://www.tensortonic.com/',
-        sourceMaps: false, pauseForSourceMap: false, internalConsoleOptions: 'neverOpen',
-        // sourceMaps controls stepping; deny map resolution separately. Empty
-        // arrays mean unrestricted in js-debug, so use its explicit exclusion.
-        resolveSourceMapLocations: ['!**'],
-      }, {
-        suppressSaveBeforeStart: true, suppressDebugToolbar: true,
-        suppressDebugStatusbar: true, suppressDebugView: true,
-      });
-      this.launching = launch;
-      const settled = () => { if (this.launching === launch) this.launching = undefined; if (this.sessions.size === 0 && !this.launching) this.cleanupPending = false; };
-      Promise.resolve(launch).then(settled, settled);
-      let accepted;
+    let browser;
+    try {
+      browser = v.window;
+      if (typeof browser?.openBrowserTab !== 'function' || v.env?.remoteName || v.env?.uiKind === 2) throw Error();
+      this._listenTabs(browser);
+    } catch (_) {
+      for (const listener of this.listeners) listener.dispose(); this.listeners = [];
+      throw fault('TensorTonic requires a supported local VS Code desktop and the experimental browser API enabled for this extension only. Launch VS Code with --enable-proposed-api choru-local.tensortonic-vscode and fully restart it; do not change product.json or global security policies.', 'UNAVAILABLE');
+    }
+    for (const r of [...this.resources]) if (r.closed || r.tabClosed) await this._closeResource(r);
+    this._check(generation, undefined, signal);
+    if (!this.resources.size) {
+      this.token = undefined;
+      const r = { targets: new Map(), requests: new Map(), listeners: [], closed: false, tabClosed: false }; this.resources.add(r);
       try {
-        accepted = await bounded(launch, this.launchTimeout, 'The native browser did not launch. Use a VS Code version with Integrated Browser; no security policy was changed.', signal);
+        await this._acquire(r, 'tab', () => v.window.openBrowserTab('https://www.tensortonic.com/', { viewColumn: v.ViewColumn?.Beside ?? -2, preserveFocus: true, background: false }), generation, signal);
+        if (typeof r.tab?.startCDPSession !== 'function') throw fault('The experimental browser API is unavailable. Launch with --enable-proposed-api choru-local.tensortonic-vscode and fully restart VS Code; this opt-in applies to this extension only.', 'UNAVAILABLE');
+        await this._acquire(r, 'group', () => r.tab.startCDPSession(), generation, signal);
+        r.listeners.push(r.group.onDidReceiveMessage(message => this._onMessage(r, message)));
+        r.listeners.push(r.group.onDidClose(() => {
+          r.closed = true; this.token = undefined; this._invalidate(r);
+          for (const entry of r.requests.values()) entry.reject(fault('Owned browser transport closed.', 'DISCONNECTED'));
+          r.requests.clear();
+        }));
+        await this._cdp(r, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false });
+        this._check(generation, undefined, signal);
       } catch (error) {
-        // Canceling this method alone invalidates the launch, even when callers
-        // do not separately invoke stop(). Late owned events are stopped by ID.
-        if (this.generation === generation) this.generation++;
-        this.cleanupPending = !!this.launching || this.sessions.size > 0;
-        this._setConnected(false); this.token = undefined;
-        for (const candidate of this.sessions.values()) if (this._owns(candidate)) Promise.resolve(v.debug.stopDebugging(candidate)).catch(() => {});
+        this._setConnected(false);
+        if (!r.opening) await this._closeResource(r).catch(() => {});
         throw error;
       }
-      this._check(generation, undefined, signal);
-      if (!accepted) throw fault('The native browser launch was declined or unavailable. TensorTonic is native-only: use a supported local VS Code desktop with Integrated Browser and the built-in JavaScript debugger enabled.', 'UNAVAILABLE');
     }
-    return this._discover(generation, signal);
+    try { return await this._discover(generation, signal); }
+    catch (error) {
+      // Login/page-not-ready retains the visible tab, but an explicitly canceled
+      // Connect must not leave its acquired browser resources running.
+      if (error.code === 'CANCELED' && this.generation === generation) await this.stop().catch(() => {});
+      throw error;
+    }
   }
-
   async openProblemPage(value, { signal } = {}) {
     const url = problemUrl(value); if (!url) throw fault('Only canonical TensorTonic problem pages can be opened.', 'UNSUPPORTED');
-    if (this.pending || this.navigating) throw fault('Wait for the current TensorTonic operation before navigating its browser.', 'BUSY');
+    if (this.pending || this.navigating) throw fault('Wait for the current operation before navigating.', 'BUSY');
     this.navigating = true;
     try {
-    await this.start({ signal });
-    const generation = this.generation, session = this.target;
-    // Do not take over an owned page that the user manually navigated to account,
-    // billing, or an in-progress login flow. Only the study surface may navigate.
-    const study = `(${PAGE_GUARD}) && /^\\/(?:$|problems(?:\\/[a-zA-Z0-9-]+)?\\/?$)/.test(location.pathname)`;
-    this._check(generation, session, signal);
-    let result;
-    try {
-      // Navigation can destroy the old debug context BEFORE evaluate replies.
-      // Do not require that child to survive, and never reissue location.assign.
-      const reply = await bounded(session.customRequest('evaluate', {
-        expression: `(()=>{if(!(${study}))return 0;location.assign(${JSON.stringify(url)});return 1})()`, context: 'watch',
-      }), this.evaluationTimeout, 'The owned browser navigation did not confirm completion.', signal);
-      this._check(generation, undefined, signal);
-      result = reply && reply.result;
-      if (result !== '1') throw fault('The owned browser is on another page or login flow. Finish that flow, then reconnect; it was not redirected.', 'PAGE_CHANGED');
-    } catch (error) {
-      this._check(generation, undefined, signal);
-      if (!['TRANSPORT_ERROR', 'TIMEOUT'].includes(error.code)) throw error;
-      // A lost evaluation reply is uncertain, not permission to navigate again.
-      // Confirm the exact intended page in the replacement owned context below.
-    }
-    const expected = new URL(url); const deadline = this.now() + this.discoverTimeout;
-    do {
-      await this.pause(100); this._check(generation, undefined, signal);
-      await this._discover(generation, signal);
-      const exact = `(${PAGE_GUARD}) && location.origin===${JSON.stringify(expected.origin)} && location.pathname===${JSON.stringify(expected.pathname)} && location.search===${JSON.stringify(expected.search)}`;
-      try { if (await this._number(this.target, `(${exact})?1:0`, generation, signal) === 1) return { requested: true, target: 'native-owned' }; }
-      catch (_) { this._check(generation, undefined, signal); }
-    } while (this.now() < deadline);
-    throw fault('The owned browser did not reach the requested problem page. It was not navigated a second time.', 'PAGE_CHANGED');
+      await this.start({ signal });
+      const generation = this.generation, target = this.target;
+      const study = `(${PAGE_GUARD}) && /^\\/(?:$|problems(?:\\/[a-zA-Z0-9-]+)?\\/?$)/.test(location.pathname)`;
+      try {
+        const result = await this._evaluate(target, `(()=>{if(!(${study}))return 0;location.assign(${JSON.stringify(url)});return 1})()`, generation, signal, true);
+        if (result !== 1) throw fault('Finish the current login or account flow before opening another problem. It was not redirected.', 'PAGE_CHANGED');
+      } catch (error) {
+        this._check(generation, undefined, signal);
+        if (!['TRANSPORT_ERROR', 'TIMEOUT'].includes(error.code)) throw error;
+      }
+      const expected = new URL(url), deadline = this.now() + this.discoverTimeout;
+      do {
+        await this.pause(100); await this._discover(generation, signal);
+        const exact = `(${PAGE_GUARD}) && location.origin===${JSON.stringify(expected.origin)} && location.pathname===${JSON.stringify(expected.pathname)} && location.search===${JSON.stringify(expected.search)}`;
+        if (await this._number(this.target, `(${exact})?1:0`, generation, signal) === 1) return { requested: true, target: 'native-owned' };
+      } while (this.now() < deadline);
+      throw fault('Owned browser did not reach the requested page. Navigation was not repeated.', 'PAGE_CHANGED');
     } finally { this.navigating = false; if (!this.target) this._setConnected(false); }
   }
-
   request(apiPath, options = {}) {
     const method = options.method || 'GET';
     if (!isAllowedRequest(apiPath, method) || (method === 'POST' && !validateBody(options.body, apiPath))) return Promise.reject(fault('Unsupported TensorTonic request.', 'UNSUPPORTED'));
@@ -239,7 +293,7 @@ class NativeBrowserBridge {
     const deadline = this.now() + this.requestTimeout;
     let dispatched = false;
     try {
-      // Never retry this evaluation: it may have dispatched even if DAP times out.
+      // Never retry this evaluation: it may have dispatched even if CDP times out.
       this._check(generation, session, signal);
       dispatched = true;
       const started = await this._number(session, start, generation, signal);
@@ -264,7 +318,7 @@ class NativeBrowserBridge {
         const chunk = await this._eval(session, `(${safeSlot})?${slot}.data.slice(${encoded.length},${encoded.length + wanted}):''`, generation, signal);
         const decoded = displayedBase64(chunk, wanted);
         if (decoded === undefined) {
-          if (chunkSize <= 64) throw fault('Debugger response was truncated or invalid; no upstream request was repeated.', 'INVALID_RESPONSE');
+          if (chunkSize <= 64) throw fault('Browser response was truncated or invalid; no upstream request was repeated.', 'INVALID_RESPONSE');
           chunkSize = Math.max(64, Math.floor(chunkSize / 2)); continue;
         }
         encoded += decoded;
@@ -282,28 +336,45 @@ class NativeBrowserBridge {
     } finally {
       // Cleanup is scoped to the random operation slot and document only. Ignore
       // its result; never evaluate another request to compensate for lost output.
-      if (this.sessions.has(session.id) && this._owns(session)) {
-        await bounded(session.customRequest('evaluate', { expression: `(()=>{if(!${guard})return 0;const s=${slot};if(s&&s.document===document){clearTimeout(s.timer);s.c.abort();delete ${slot}}return 1})()`, context: 'watch' }), this.evaluationTimeout, 'Native request cleanup failed.').catch(() => {});
-      }
+      try {
+        this._check(generation, session);
+        await this._evaluate(session, `(()=>{if(!${guard})return 0;const s=${slot};if(s&&s.document===document){clearTimeout(s.timer);s.c.abort();delete ${slot}}return 1})()`, generation);
+      } catch (_) { /* Document changed or transport closed: never reuse stale context IDs. */ }
     }
+  }
+  async _closeResource(r) {
+    if (r.closing) return r.closing;
+    const work = (async () => {
+      let failed = false;
+      if (r.group && !r.closed) {
+        if (r.listeners.length) await this._cdp(r, 'Target.setAutoAttach', { autoAttach: false, flatten: true, waitForDebuggerOnStart: false }).catch(() => {});
+        try { await bounded(r.group.close(), this.cleanupTimeout, 'Owned browser session cleanup pending.'); r.closed = true; }
+        catch (_) { failed = true; }
+      }
+      if (r.tab && !r.tabClosed) {
+        try { await bounded(r.tab.close(), this.cleanupTimeout, 'Owned browser tab cleanup pending.'); r.tabClosed = true; }
+        catch (_) { failed = true; }
+      }
+      if (failed) { this.cleanupPending = true; throw fault('Owned browser cleanup is pending. Disconnect again; unrelated tabs were not touched.', 'CLEANUP_PENDING'); }
+      for (const entry of r.requests.values()) entry.reject(fault('Owned browser transport closed.', 'DISCONNECTED'));
+      r.requests.clear(); r.targets.clear();
+      for (const listener of r.listeners) listener.dispose(); r.listeners = [];
+      this.resources.delete(r); this.cleanupPending = this.resources.size > 0;
+    })();
+    r.closing = work;
+    try { await work; } finally { if (r.closing === work) r.closing = undefined; }
   }
   stop() {
     if (this.stopping) return this.stopping;
-    this.generation++; if (this.pending) this.pending.controller.abort();
+    this.generation++; this.pending?.controller.abort();
     this.target = undefined; this.token = undefined; this._setConnected(false);
     const work = (async () => {
-      if (this.launching) await bounded(this.launching, this.launchTimeout, 'Native launch cleanup pending.').catch(() => {});
-      if (this.launching) { this.cleanupPending = true; throw fault('Native launch is still settling. Cleanup will stop only its late owned sessions; do not start another connection yet.', 'CLEANUP_PENDING'); }
-      // Roots first; exact descendant identity is retained for children surviving
-      // root termination. Never use the active user debugger or stop-all command.
-      const owned = [...this.sessions.values()].filter(session => this._owns(session));
-      for (const session of owned.sort((a, b) => Number(!!a.parentSession) - Number(!!b.parentSession))) {
-        if (this.sessions.has(session.id) && this._owns(session)) await bounded(this.vscode.debug.stopDebugging(session), this.cleanupTimeout, 'Owned native session cleanup failed.').catch(() => {});
+      for (const r of [...this.resources]) {
+        if (r.opening) await bounded(r.opening, this.launchTimeout, 'Owned browser launch is still settling.').catch(() => {});
+        if (r.opening) { this.cleanupPending = true; throw fault('Owned browser launch cleanup is pending. Late resources will be closed without touching other tabs.', 'CLEANUP_PENDING'); }
+        await this._closeResource(r);
       }
-      const deadline = this.now() + this.cleanupTimeout;
-      while ([...this.sessions.values()].some(session => this._owns(session)) && this.now() < deadline) await this.pause(50);
-      if ([...this.sessions.values()].some(session => this._owns(session))) { this.cleanupPending = true; throw fault('An owned TensorTonic debugger session did not stop. Use its normal Stop control; unrelated debuggers were not touched.', 'CLEANUP_PENDING'); }
-      this.cleanupPending = false;
+      this.cleanupPending = this.resources.size > 0;
     })();
     this.stopping = work;
     return work.finally(() => { if (this.stopping === work) this.stopping = undefined; });
@@ -313,8 +384,7 @@ class NativeBrowserBridge {
   async dispose() {
     try { await this.stop(); } finally {
       this.disposed = true;
-      const clear = () => { for (const listener of this.listeners) listener.dispose(); this.listeners = []; };
-      if (this.launching) Promise.resolve(this.launching).then(clear, clear); else clear();
+      for (const listener of this.listeners) listener.dispose(); this.listeners = [];
     }
   }
 }

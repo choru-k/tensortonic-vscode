@@ -3,255 +3,228 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { NativeBrowserBridge, displayedBase64, problemUrl } = require('../src/native-browser-bridge');
-function emitter() { const handlers = new Set(); return { event: fn => { handlers.add(fn); return { dispose: () => handlers.delete(fn) }; }, fire: value => { for (const fn of handlers) fn(value); } }; }
+function emitter() { const handlers = new Set(); return { event: fn => { handlers.add(fn); return { dispose: () => handlers.delete(fn) }; }, fire: value => { for (const fn of [...handlers]) fn(value); } }; }
 function harness(t, options = {}) {
-  const started = emitter(), ended = emitter(); const calls = [], stops = [], requests = [];
-  const h = { calls, stops, requests, status: 200, data: { ok: true }, chunkLimit: Infinity, sessions: [], timers: new Set() };
-  const location = { origin: 'https://www.tensortonic.com', pathname: '/', search: '', assign(value) { const u = new URL(value); this.origin = u.origin; this.pathname = u.pathname; this.search = u.search; h.navigations.push(value); } };
-  h.navigations = [];
+  const messages = emitter(), closed = emitter(), tabClosed = emitter(), tabState = emitter();
+  const h = { requests: [], calls: [], timers: new Set(), data: { ok: true }, status: 200, opens: 0, groupCloses: 0, tabCloses: 0, sid: 'owned-page', cid: 7, uid: 'context-7', navigations: [] };
+  const location = { origin: 'https://www.tensortonic.com', pathname: '/', search: '', assign(value) { const u = new URL(value); Object.assign(this, { origin: u.origin, pathname: u.pathname, search: u.search }); h.tab.url = u.href; h.navigations.push(value); h.newDocument(); } };
   const sandbox = { location, document: {}, AbortController, Uint8Array, btoa: s => Buffer.from(s, 'binary').toString('base64'),
-    clearTimeout(timer) { clearTimeout(timer); h.timers.delete(timer); },
     setTimeout(fn, ms) { const timer = setTimeout(fn, ms); timer.unref(); h.timers.add(timer); return timer; },
-    fetch: async (url, init) => { requests.push({ url, init }); if (h.fetch) return h.fetch(url, init); return new Response(JSON.stringify(h.data), { status: h.status }); },
+    clearTimeout(timer) { clearTimeout(timer); h.timers.delete(timer); },
+    fetch: async (url, init) => { h.requests.push({ url, init }); if (h.fetch) return h.fetch(url, init); return new Response(JSON.stringify(h.data), { status: h.status }); },
   }; sandbox.window = sandbox; sandbox.top = sandbox; sandbox.globalThis = sandbox; vm.createContext(sandbox); h.sandbox = sandbox;
-  h.evaluate = async expression => {
-    calls.push(expression);
-    if (h.beforeEval) await h.beforeEval(expression);
-    const value = vm.runInContext(expression, sandbox);
-    let result = typeof value === 'number' ? String(value) : JSON.stringify(value);
-    if (typeof value === 'string' && value.length > h.chunkLimit) result = JSON.stringify(value.slice(0, h.chunkLimit)) + '…';
-    return { result };
-  };
-  const vscode = { workspace: { isTrusted: true }, env: {}, debug: {
-    onDidStartDebugSession: started.event, onDidTerminateDebugSession: ended.event,
-    async startDebugging(_folder, config, settings) {
-      h.launches = (h.launches || 0) + 1; h.config = config; h.settings = settings;
-      if (h.launch) return h.launch(config);
-      h.addTree(config); return true;
-    },
-    async stopDebugging(session) { stops.push(session.id); for (const candidate of [...h.sessions]) if (candidate === session || candidate.parentSession === session) ended.fire(candidate); },
+  h.context = (overrides = {}) => messages.fire({ method: 'Runtime.executionContextCreated', sessionId: h.sid, params: { context: { id: h.cid, uniqueId: h.uid, origin: location.origin, auxData: { isDefault: true, frameId: 'top-frame' }, ...overrides } } });
+  h.attach = (id = h.sid, info = {}, outer) => messages.fire({ method: 'Target.attachedToTarget', ...(outer ? { sessionId: outer } : {}), params: { sessionId: id, targetInfo: { type: 'page', url: h.tab.url, vscodeBrowserViewId: 'owned-browser', ...info } } });
+  h.newDocument = () => { messages.fire({ method: 'Runtime.executionContextsCleared', sessionId: h.sid }); sandbox.document = {}; h.uid += '-next'; h.context(); };
+  h.group = { onDidReceiveMessage: messages.event, onDidClose: closed.event, async close() { h.groupCloses++; if (h.failGroupClose) throw Error('failed'); closed.fire(); }, async sendMessage(message) {
+    h.calls.push(message); if (h.beforeSend && await h.beforeSend(message) === false) return;
+    let result;
+    if (message.method === 'Target.setAutoAttach') { if (message.params.autoAttach) h.attach(); result = {}; }
+    else if (message.method === 'Runtime.enable') { h.context(); result = {}; }
+    else if (message.method === 'Page.getFrameTree') result = { frameTree: { frame: { id: 'top-frame' } } };
+    else if (message.method === 'Runtime.evaluate') {
+      assert.equal(message.sessionId, h.sid);
+      if (message.params.uniqueContextId) assert.equal(message.params.uniqueContextId, h.uid);
+      else assert.equal(message.params.contextId, h.cid);
+      const value = vm.runInContext(message.params.expression, sandbox);
+      result = { result: { value } };
+      if (h.afterEval) await h.afterEval(message);
+    } else throw Error('unexpected method');
+    messages.fire({ id: message.id, ...(message.sessionId ? { sessionId: message.sessionId } : {}), result });
   } };
-  h.addTree = config => {
-    const root = { id: 'root-' + h.sessions.length, name: config.name, type: 'editor-browser', customRequest: async () => { throw new Error('root not evaluable'); } };
-    const child = { id: 'child-' + h.sessions.length, name: 'TensorTonic', type: 'pwa-editor-browser', parentSession: root, customRequest: async (command, args) => { assert.equal(command, 'evaluate'); assert.equal(args.context, 'watch'); return h.evaluate(args.expression); } };
-    h.sessions.push(root, child); started.fire(root); started.fire(child); return { root, child };
-  };
-  h.started = started; h.ended = ended; h.vscode = vscode;
-  h.bridge = new NativeBrowserBridge(vscode, { discoverTimeout: 30, evaluationTimeout: 100, requestTimeout: 1000, pause: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 2))), ...options });
-  t.after(async () => { for (const timer of h.timers) clearTimeout(timer); await h.bridge.dispose(); });
+  h.tab = { url: 'https://www.tensortonic.com/', async startCDPSession() { if (h.openGroup) return h.openGroup(); return h.group; }, async close() { h.tabCloses++; if (h.failTabClose) throw Error('failed'); tabClosed.fire(h.tab); } };
+  h.vscode = { workspace: { isTrusted: true }, env: {}, ViewColumn: { Beside: -2 }, debug: new Proxy({}, { get() { throw Error('debug API forbidden'); } }), window: {
+    onDidCloseBrowserTab: tabClosed.event, onDidChangeBrowserTabState: tabState.event,
+    async openBrowserTab(url, opts) { h.opens++; h.openOptions = opts; assert.equal(url, 'https://www.tensortonic.com/'); if (h.openTab) return h.openTab(); return h.tab; },
+  } };
+  h.messages = messages; h.closed = closed; h.tabClosed = tabClosed; h.tabState = tabState;
+  h.bridge = new NativeBrowserBridge(h.vscode, { discoverTimeout: 30, evaluationTimeout: 30, launchTimeout: 30, cleanupTimeout: 30, requestTimeout: 1000, pause: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 1))), ...options });
+  t.after(async () => { h.failGroupClose = false; h.failTabClose = false; h.beforeSend = undefined; for (const timer of h.timers) clearTimeout(timer); await h.bridge.dispose().catch(() => {}); });
   return h;
 }
-test('constructor is inert and tolerates missing optional debug APIs', () => {
+test('constructor and restore never launch; missing proposed browser API explains scoped opt-in', async () => {
   const b = new NativeBrowserBridge({ workspace: { isTrusted: true } });
-  assert.equal(b.connected, false); assert.equal(b.sessions.size, 0);
-  return assert.rejects(b.start(), { code: 'UNAVAILABLE' });
+  assert.equal(b.hasOwnedResources, false); assert.equal(await b.restore(), false);
+  await assert.rejects(b.start(), e => e.code === 'UNAVAILABLE' && /--enable-proposed-api choru-local.tensortonic-vscode/.test(e.message)); await b.dispose();
 });
-test('explicit launch selects one owned top-level TensorTonic child without unrelated debugger access', async t => {
-  const h = harness(t); h.started.fire({ id: 'user', name: 'User debugger', type: 'pwa-node', customRequest() { throw new Error('must not inspect'); } });
-  await h.bridge.start(); assert.equal(h.bridge.connected, true); assert.equal(h.launches, 1);
-  assert.equal(h.config.type, 'editor-browser'); assert.deepEqual(h.settings, { suppressSaveBeforeStart: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
-  const token = h.bridge.token; await h.bridge.start(); assert.equal(h.launches, 1); assert.equal(h.bridge.token, token);
-  await h.bridge.stop(); assert.ok(!h.stops.includes('user')); assert.equal(h.bridge.connected, false);
+test('explicit direct launch owns one tab, reuses it, and never accesses debugger APIs', async t => {
+  const h = harness(t); await h.bridge.start(); const token = h.bridge.token;
+  assert.equal(h.bridge.connected, true); assert.equal(h.bridge.hasOwnedResources, true);
+  assert.deepEqual(h.openOptions, { viewColumn: -2, preserveFocus: true, background: false });
+  await h.bridge.start(); assert.equal(h.opens, 1); assert.equal(h.bridge.token, token);
+  await h.bridge.stop(); assert.equal(h.groupCloses, 1); assert.equal(h.tabCloses, 1); assert.equal(h.bridge.hasOwnedResources, false);
 });
-test('allowlist and body limits reject before evaluation or fetch', async t => {
+test('allowed JSON fetch uses normal browser authentication without extracting credentials', async t => {
+  const h = harness(t); await h.bridge.start(); h.data = { title: '한글', data: [1, 2] };
+  assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data);
+  assert.equal(h.requests[0].init.credentials, 'include'); assert.equal(h.requests[0].init.redirect, 'error');
+  assert.equal(h.requests[0].init.headers, undefined);
+  assert.equal(Object.keys(h.sandbox).some(k => k.startsWith('__tt_native_')), false); assert.equal(h.timers.size, 0);
+  assert.ok(h.calls.every(c => ['Target.setAutoAttach', 'Runtime.enable', 'Page.getFrameTree', 'Runtime.evaluate'].includes(c.method)));
+});
+test('route and body policy reject before protocol evaluation', async t => {
   const h = harness(t); await h.bridge.start(); const count = h.calls.length;
-  for (const [route, opts] of [['/api/me', {}], ['https://evil.example/x', {}], ['/api/problems/x/submit', { method: 'POST', body: { code: 'pass', cookie: 'no' } }], ['/api/problems/x/submit', { method: 'POST', body: { code: 'x'.repeat(600000) } }]]) {
-    await assert.rejects(h.bridge.request(route, opts), { code: 'UNSUPPORTED' });
-  }
-  assert.equal(h.calls.length, count); assert.equal(h.requests.length, 0);
+  for (const [route, options] of [['/api/me', {}], ['https://evil/x', {}], ['/api/problems/x/submit', { method: 'POST', body: { code: 'pass', cookie: 'no' } }], ['/api/problems/x/submit', { method: 'POST', body: { code: 'a'.repeat(600000) } }]]) await assert.rejects(h.bridge.request(route, options), { code: 'UNSUPPORTED' });
+  assert.equal(h.calls.length, count);
 });
-test('normal authenticated fetch returns JSON without reading credentials or custom authorization', async t => {
-  const h = harness(t); await h.bridge.start(); h.data = { data: { title: '안녕', examples: [1, 2] } };
-  assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data);
-  assert.equal(h.requests.length, 1); const init = h.requests[0].init;
-  assert.equal(init.credentials, 'include'); assert.equal(init.redirect, 'error'); assert.equal(init.headers, undefined);
-  assert.ok(h.calls.every(x => !/document\.cookie|localStorage|sessionStorage|Authorization|storage\.get/.test(x)));
-  assert.equal(Object.keys(h.sandbox).filter(x => x.startsWith('__tt_native_')).length, 0);
+test('large Unicode JSON is bounded and reconstructed without repeating fetch', async t => {
+  const h = harness(t); await h.bridge.start(); h.data = { text: '한글🍀'.repeat(30000) };
+  assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data); assert.equal(h.requests.length, 1);
 });
-test('large Unicode JSON is reconstructed despite DAP display truncation without upstream retry', async t => {
-  const h = harness(t, { requestTimeout: 5000 }); await h.bridge.start(); h.data = { text: '🙂 한글 "\\\n'.repeat(3000) }; h.chunkLimit = 600;
-  assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data);
-  assert.equal(h.requests.length, 1); assert.ok(h.calls.some(x => /data.slice/.test(x)));
-});
-test('401 and 403 retain the owned transport for normal login and explicit manual retry', async t => {
-  const h = harness(t); await h.bridge.start();
-  for (const status of [401, 403]) { h.status = status; await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'AUTH_REQUIRED' }); assert.equal(h.bridge.connected, true); }
-  h.status = 200; await h.bridge.start(); assert.equal(h.launches, 1); assert.deepEqual(await h.bridge.request('/api/problems/x'), { ok: true });
-});
-test('POST is dispatched once with JSON-encoded code and never retried after response failure', async t => {
-  const h = harness(t); await h.bridge.start(); h.fetch = async () => { throw new Error('hidden raw transport info'); };
-  const code = '";globalThis.injected=true;//\n';
-  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code } }), { code: 'UNCERTAIN_RESULT' });
-  assert.equal(h.requests.length, 1); assert.equal(h.sandbox.injected, undefined);
-  assert.deepEqual(JSON.parse(h.requests[0].init.body), { code });
-});
-test('response size is bounded before JSON parse and no retry occurs', async t => {
-  const h = harness(t, { maxResponseBytes: 20 }); await h.bridge.start(); h.data = { text: 'x'.repeat(200) };
+test('stream limit fails closed before decoding', async t => {
+  const h = harness(t, { maxResponseBytes: 32 }); await h.bridge.start(); h.data = { text: 'x'.repeat(100) };
   await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'TOO_LARGE' }); assert.equal(h.requests.length, 1);
 });
-test('same-origin and top-frame checks fail closed before dispatch', async t => {
-  const h = harness(t); await h.bridge.start(); h.sandbox.location.origin = 'https://evil.example';
+test('401 and403 preserve owned login tab and retry requires explicit request', async t => {
+  const h = harness(t); await h.bridge.start();
+  for (const status of [401, 403]) { h.status = status; await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'AUTH_REQUIRED' }); }
+  assert.equal(h.bridge.connected, true); assert.equal(h.opens, 1); h.status = 200;
+  await h.bridge.start(); assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data); assert.equal(h.requests.length, 3);
+});
+test('synthetic POST dispatches once with injection-safe body', async t => {
+  const h = harness(t); await h.bridge.start(); const code = "x='\"});globalThis.injected=1;//'";
+  await h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code } });
+  assert.equal(h.requests.length, 1); assert.deepEqual(JSON.parse(h.requests[0].init.body), { code }); assert.equal(h.sandbox.injected, undefined);
+});
+test('already canceled POST dispatches nothing', async t => {
+  const h = harness(t); await h.bridge.start(); const controller = new AbortController(); controller.abort();
+  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' }, signal: controller.signal }), { code: 'CANCELED' }); assert.equal(h.requests.length, 0);
+});
+test('cancellation after POST dispatch reports uncertain and never retries', async t => {
+  const h = harness(t); await h.bridge.start(); const controller = new AbortController();
+  h.fetch = async (_url, init) => new Promise((_, reject) => { controller.abort(); init.signal.addEventListener('abort', () => reject(Error('aborted'))); });
+  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' }, signal: controller.signal }), { code: 'UNCERTAIN_RESULT' });
+  assert.equal(h.requests.length, 1); assert.equal(h.timers.size, 0);
+});
+test('wrong-session CDP reply cannot satisfy an owned request', async t => {
+  const h = harness(t); await h.bridge.start();
+  h.beforeSend = async m => { if (m.method === 'Runtime.evaluate') { h.messages.fire({ id: m.id, sessionId: 'foreign', result: { result: { value: 1 } } }); return false; } };
+  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'TIMEOUT' }); assert.equal(h.requests.length, 0);
+});
+test('iframe and worker attachments/default contexts cannot become top-frame target', async t => {
+  const h = harness(t); await h.bridge.start();
+  h.attach('iframe', { type: 'iframe' }); h.attach('worker', { type: 'worker' }); h.attach('nested', {}, h.sid);
+  h.context({ id: 99, uniqueId: 'iframe-context', auxData: { isDefault: true, frameId: 'iframe' } });
+  await h.bridge.start(); assert.equal(h.bridge.target.context.id, 7); assert.equal([...h.bridge.resources][0].targets.size, 1);
+});
+test('multiple root page targets fail closed instead of taking over another target', async t => {
+  const h = harness(t); await h.bridge.start(); h.attach('second-page');
+  await assert.rejects(h.bridge.start(), { code: 'AMBIGUOUS_TARGET' });
+});
+test('context replacement reusing numeric id invalidates in-flight grading', async t => {
+  const h = harness(t); await h.bridge.start();
+  h.fetch = async () => { h.newDocument(); return new Response('{"ok":true}'); };
+  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' } }), { code: 'UNCERTAIN_RESULT' });
+  assert.equal(h.requests.length, 1); assert.equal(h.bridge.connected, false);
+});
+test('navigation is one-shot, rebinds new document, and preserves logical token', async t => {
+  const h = harness(t); await h.bridge.start(); const token = h.bridge.token;
+  assert.deepEqual(await h.bridge.openProblemPage('https://www.tensortonic.com/problems/x?studyPlan=pytorch'), { requested: true, target: 'native-owned' });
+  assert.equal(h.navigations.length, 1); assert.equal(h.bridge.token, token); assert.equal(h.bridge.target.context.uniqueId, h.uid);
+});
+test('manual account/login and foreign pages are not redirected or read', async t => {
+  const h = harness(t); await h.bridge.start(); h.sandbox.location.pathname = '/account';
+  await assert.rejects(h.bridge.openProblemPage('https://www.tensortonic.com/problems/x'), { code: 'PAGE_CHANGED' }); assert.equal(h.navigations.length, 0);
+  h.tab.url = 'https://foreign.example'; h.tabState.fire(h.tab);
+  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'DISCONNECTED' }); assert.equal(h.requests.length, 0);
+});
+test('page guards prevent fetch when page origin changes before notification', async t => {
+  const h = harness(t); await h.bridge.start(); h.sandbox.location.origin = 'https://foreign.example';
   await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'PAGE_CHANGED' }); assert.equal(h.requests.length, 0);
 });
-test('cancellation aborts only the transient operation; dispatched POST is uncertain and not replayed', async t => {
-  const h = harness(t); await h.bridge.start(); let dispatch;
-  const seen = new Promise(resolve => { dispatch = resolve; });
-  h.fetch = (_url, init) => new Promise((resolve, reject) => { dispatch(); init.signal.addEventListener('abort', () => reject(new Error('aborted'))); });
-  const controller = new AbortController(); const pending = h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' }, signal: controller.signal });
-  await seen; controller.abort(); await assert.rejects(pending, { code: 'UNCERTAIN_RESULT' });
-  assert.equal(h.requests.length, 1); assert.equal(Object.keys(h.sandbox).filter(x => x.startsWith('__tt_native_')).length, 0);
+test('navigation and grading share synchronous exclusion latch', async t => {
+  const h = harness(t); await h.bridge.start(); const navigating = h.bridge.openProblemPage('https://www.tensortonic.com/problems/x');
+  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'BUSY' }); await navigating;
+  let release; h.fetch = () => new Promise(resolve => { release = () => resolve(new Response('{}')); });
+  const grading = h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' } });
+  await assert.rejects(h.bridge.openProblemPage('https://www.tensortonic.com/problems/y'), { code: 'BUSY' });
+  await assert.rejects(h.bridge.start(), { code: 'BUSY' }); release(); await grading;
 });
-test('navigation and requests share a synchronous latch and preserve token for intentional problem navigation', async t => {
-  const h = harness(t); await h.bridge.start(); const token = h.bridge.token;
-  const nav = h.bridge.openProblemPage('https://www.tensortonic.com/problems/a?studyPlan=pytorch-basics');
-  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'BUSY' }); await nav;
-  assert.equal(h.bridge.token, token); assert.equal(h.navigations.length, 1);
-  h.sandbox.location.pathname = '/account';
-  await assert.rejects(h.bridge.openProblemPage('https://www.tensortonic.com/problems/b'), { code: 'PAGE_CHANGED' });
-  assert.equal(h.navigations.length, 1);
+test('group close rejects all inflight protocol promises', async t => {
+  const h = harness(t); await h.bridge.start(); h.beforeSend = async m => { if (m.method === 'Runtime.evaluate') { h.closed.fire(); return false; } };
+  await assert.rejects(h.bridge.request('/api/problems/x')); assert.equal(h.bridge.connected, false); assert.equal([...h.bridge.resources][0].requests.size, 0);
 });
-test('pending grading prevents navigation, reconnect, and a second grading dispatch', async t => {
-  const h = harness(t); await h.bridge.start(); let dispatch; const seen = new Promise(r => { dispatch = r; });
-  h.fetch = () => { dispatch(); return new Promise(() => {}); };
-  const controller = new AbortController(); const pending = h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' }, signal: controller.signal });
-  await seen;
-  await assert.rejects(h.bridge.openProblemPage('https://www.tensortonic.com/problems/b'), { code: 'BUSY' });
-  await assert.rejects(h.bridge.start(), { code: 'BUSY' });
-  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' } }), { code: 'BUSY' });
-  controller.abort(); await assert.rejects(pending); assert.equal(h.requests.length, 1);
+test('cancel during slow tab open retains ownership and closes late tab only', async t => {
+  const h = harness(t); let release; h.openTab = () => new Promise(resolve => { release = () => resolve(h.tab); });
+  const c = new AbortController(); const starting = h.bridge.start({ signal: c.signal }); await new Promise(resolve => setImmediate(resolve)); c.abort();
+  await assert.rejects(starting, { code: 'CANCELED' }); release(); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(h.tabCloses, 1); assert.equal(h.bridge.hasOwnedResources, false);
 });
-test('disconnect during pending launch cleans only late owned sessions', async t => {
-  const h = harness(t); let resolveLaunch; h.launch = config => new Promise(resolve => { resolveLaunch = () => { h.addTree(config); resolve(true); }; });
-  const connecting = h.bridge.start(); const rejected = assert.rejects(connecting, { code: 'CANCELED' });
-  const stopping = h.bridge.stop(); resolveLaunch(); await Promise.all([stopping, rejected]);
-  assert.equal(h.bridge.connected, false); assert.ok(h.stops.length >= 1); assert.equal(h.bridge.sessions.size, 0);
+test('late group acquisition after disconnect closes both owned resources', async t => {
+  const h = harness(t); let release; h.openGroup = () => new Promise(resolve => { release = () => resolve(h.group); });
+  const starting = h.bridge.start(); starting.catch(() => {}); await new Promise(resolve => setTimeout(resolve, 2));
+  const stopping = h.bridge.stop(); release(); await stopping; await assert.rejects(starting);
+  assert.equal(h.groupCloses, 1); assert.equal(h.tabCloses, 1); assert.equal(h.bridge.hasOwnedResources, false);
 });
-test('strict display and canonical URL parsing rejects truncation, injected escapes, foreign pages and extra query keys', () => {
-  assert.equal(displayedBase64('"YWJj"', 4), 'YWJj'); assert.equal(displayedBase64("'YWJj'", 4), 'YWJj');
-  for (const value of ['"YWJj…"', '"\\u0059WJj"', 'YWJj + evil()', 'abc']) assert.equal(displayedBase64(value, 4), undefined);
-  assert.ok(problemUrl('https://www.tensortonic.com/problems/x?studyPlan=abc'));
-  for (const value of ['https://evil.example/problems/x', 'https://www.tensortonic.com/account', 'https://www.tensortonic.com/problems/x?token=secret', 'https://www.tensortonic.com/problems/x#x']) assert.equal(problemUrl(value), undefined);
+test('failed resource close retains ownership and cleanup can be retried', async t => {
+  const h = harness(t); await h.bridge.start(); h.failTabClose = true;
+  await assert.rejects(h.bridge.stop(), { code: 'CLEANUP_PENDING' }); assert.equal(h.bridge.hasOwnedResources, true);
+  await assert.rejects(h.bridge.start(), { code: 'CLEANUP_PENDING' }); h.failTabClose = false; await h.bridge.stop(); assert.equal(h.bridge.hasOwnedResources, false);
 });
-
-test('already canceled POST is never dispatched and is reported as canceled, not retried', async t => {
-  const h = harness(t); await h.bridge.start(); const signal = AbortSignal.abort();
-  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' }, signal }), { code: 'CANCELED' });
-  assert.equal(h.requests.length, 0);
+test('trust revocation fails closed and web/remote hosts cannot open', async t => {
+  const h = harness(t); h.vscode.env.uiKind = 2; await assert.rejects(h.bridge.start(), { code: 'UNAVAILABLE' });
+  h.vscode.env.uiKind = 1; h.vscode.env.remoteName = 'ssh'; await assert.rejects(h.bridge.start(), { code: 'UNAVAILABLE' });
+  delete h.vscode.env.remoteName; await h.bridge.start(); h.vscode.workspace.isTrusted = false;
+  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'CANCELED' }); assert.equal(h.requests.length, 0);
 });
-test('ambiguous owned leaves fail closed while a foreign origin leaf is never chosen', async t => {
-  const h = harness(t); h.launch = config => {
-    const { root } = h.addTree(config);
-    const another = { id: 'ambiguous', name: 'child', type: 'pwa-editor-browser', parentSession: root, customRequest: async (_command, args) => h.evaluate(args.expression) };
-    h.sessions.push(another); h.started.fire(another); return true;
-  };
-  await assert.rejects(h.bridge.start(), { code: 'AMBIGUOUS_TARGET' }); assert.equal(h.bridge.connected, false); assert.equal(h.requests.length, 0);
+test('strict chunk and canonical problem URL validation', () => {
+  assert.equal(displayedBase64('"YWJj"', 4), 'YWJj'); assert.equal(displayedBase64('YW…', 4), undefined);
+  assert.equal(problemUrl('https://www.tensortonic.com/problems/x?studyPlan=y'), 'https://www.tensortonic.com/problems/x?studyPlan=y');
+  for (const url of ['https://evil/problems/x', 'https://www.tensortonic.com/problems/x#hash', 'https://www.tensortonic.com/problems/x?foo=bar']) assert.equal(problemUrl(url), undefined);
 });
-test('trust revoked during response polling prevents further extraction and cleans only its slot', async t => {
-  const h = harness(t); await h.bridge.start(); h.beforeEval = expression => { if (expression.includes('.state:-2')) h.vscode.workspace.isTrusted = false; };
-  await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'CANCELED' });
-  assert.equal(h.requests.length, 1); assert.ok(!h.calls.some(x => x.includes('data.slice')));
+test('proposal getters may throw without breaking activation and give exact opt-in guidance on Start', async () => {
+  const window = {}; Object.defineProperty(window, 'openBrowserTab', { get() { throw Error('proposal denied'); } });
+  const b = new NativeBrowserBridge({ workspace: { isTrusted: true }, window });
+  await assert.rejects(b.start(), e => e.code === 'UNAVAILABLE' && /--enable-proposed-api choru-local.tensortonic-vscode/.test(e.message));
+  assert.equal(b.hasOwnedResources, false); await b.dispose();
 });
-test('an owned child ending invalidates a pending POST without replaying it or stopping user sessions', async t => {
-  const h = harness(t); await h.bridge.start(); let dispatch; const seen = new Promise(r => { dispatch = r; });
-  h.fetch = () => { dispatch(); return new Promise(() => {}); };
-  const pending = h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' } }); await seen;
-  h.ended.fire(h.sessions[1]); await assert.rejects(pending, { code: 'UNCERTAIN_RESULT' }); assert.equal(h.requests.length, 1);
+test('proposed event getter denial is also explicit and cannot create a tab', async t => {
+  const h = harness(t); Object.defineProperty(h.vscode.window, 'onDidCloseBrowserTab', { get() { throw Error('proposal denied'); } });
+  await assert.rejects(h.bridge.start(), { code: 'UNAVAILABLE' }); assert.equal(h.opens, 0);
 });
-test('failed owned stop retains identity for cleanup retry and blocks a new launch', async t => {
-  let clock = 1000; const h = harness(t, { now: () => clock, pause: async () => { clock += 1000; } });
-  await h.bridge.start(); const stop = h.vscode.debug.stopDebugging;
-  h.vscode.debug.stopDebugging = async () => { throw new Error('Synthetic stop failed'); };
-  await assert.rejects(h.bridge.stop(), { code: 'CLEANUP_PENDING' }); assert.ok(h.bridge.sessions.size > 0);
-  await assert.rejects(h.bridge.start(), { code: 'CLEANUP_PENDING' }); assert.equal(h.launches, 1);
-  h.vscode.debug.stopDebugging = stop; await h.bridge.stop(); assert.equal(h.bridge.sessions.size, 0);
+test('explicit reconnect after closed group cleans its tab before opening a new owned group', async t => {
+  const h = harness(t); await h.bridge.start(); const token = h.bridge.token; h.closed.fire();
+  await h.bridge.start(); assert.equal(h.opens, 2); assert.equal(h.tabCloses, 1); assert.equal(h.bridge.connected, true);
+  // A new transport root has a distinct logical identity.
+  assert.notEqual(h.bridge.token, token);
 });
-test('manual OAuth or account navigation is not taken over by problem presentation', async t => {
+test('root target detach invalidates transport and does not auto-replay', async t => {
+  const h = harness(t); await h.bridge.start(); h.messages.fire({ method: 'Target.detachedFromTarget', params: { sessionId: h.sid } });
+  assert.equal(h.bridge.connected, false); await assert.rejects(h.bridge.request('/api/problems/x'), { code: 'DISCONNECTED' }); assert.equal(h.requests.length, 0);
+});
+test('lost POST dispatch acknowledgment is uncertain and the fetch is never resent', async t => {
   const h = harness(t); await h.bridge.start();
-  h.sandbox.location.pathname = '/auth'; await assert.rejects(h.bridge.openProblemPage('https://www.tensortonic.com/problems/x'), { code: 'PAGE_CHANGED' });
-  assert.deepEqual(h.navigations, []); assert.equal(h.requests.length, 0);
+  h.afterEval = async m => { if (m.params.expression.includes('await fetch(')) throw Error('lost acknowledgement'); };
+  await assert.rejects(h.bridge.request('/api/problems/x/submit', { method: 'POST', body: { code: 'pass' } }), { code: 'UNCERTAIN_RESULT' });
+  assert.equal(h.requests.length, 1);
 });
-test('web and remote workspaces refuse native launch without changing policy', async t => {
-  const h = harness(t); h.vscode.env.uiKind = 2;
-  await assert.rejects(h.bridge.start(), { code: 'UNAVAILABLE' }); assert.equal(h.launches, undefined);
-  h.vscode.env.uiKind = 1; h.vscode.env.remoteName = 'ssh';
-  await assert.rejects(h.bridge.start(), { code: 'UNAVAILABLE' }); assert.equal(h.launches, undefined);
+test('lost navigation reply verifies exact new owned document without navigating twice', async t => {
+  const h = harness(t); await h.bridge.start();
+  h.afterEval = async m => { if (m.params.expression.includes('location.assign(')) throw Error('context destroyed'); };
+  await h.bridge.openProblemPage('https://www.tensortonic.com/problems/next'); assert.equal(h.navigations.length, 1);
 });
-
-test('intentional navigation can replace its child session without losing owned root or logical token', async t => {
-  const h = harness(t); await h.bridge.start(); const token = h.bridge.token; let replaced = false;
-  h.bridge.pause = async () => {
-    if (replaced || !h.navigations.length) return; replaced = true;
-    const old = h.bridge.target, root = old.parentSession; h.ended.fire(old);
-    const child = { id: 'replacement', name: 'new page', type: 'pwa-editor-browser', parentSession: root, customRequest: async (_command, args) => h.evaluate(args.expression) };
-    h.sessions.push(child); h.started.fire(child);
-  };
-  assert.equal((await h.bridge.openProblemPage('https://www.tensortonic.com/problems/new')).requested, true);
-  assert.equal(h.bridge.target.id, 'replacement'); assert.equal(h.bridge.token, token); assert.equal(h.bridge.connected, true);
-});
-test('aborted start alone obsoletes its generation and immediately stops a late owned tree', async t => {
-  const h = harness(t); let release;
-  h.launch = config => new Promise(resolve => { release = () => { h.addTree(config); resolve(true); }; });
-  const controller = new AbortController(); const pending = h.bridge.start({ signal: controller.signal });
-  controller.abort(); await assert.rejects(pending, { code: 'CANCELED' });
-  assert.equal(h.bridge.cleanupPending, true); release(); await new Promise(setImmediate);
-  assert.equal(h.bridge.sessions.size, 0); assert.ok(h.stops.length > 0); assert.equal(h.bridge.connected, false);
-});
-test('timed out unresolved launch reports cleanup pending until the original launch really settles', async t => {
-  const h = harness(t, { launchTimeout: 10 }); let release;
-  h.launch = config => new Promise(resolve => { release = () => { h.addTree(config); resolve(true); }; });
+test('unresolved timed-out opening reports pending cleanup and closes eventual tab', async t => {
+  const h = harness(t, { launchTimeout: 5 }); let release;
+  h.openTab = () => new Promise(resolve => { release = () => resolve(h.tab); });
   await assert.rejects(h.bridge.start(), { code: 'TIMEOUT' });
-  await assert.rejects(h.bridge.stop(), { code: 'CLEANUP_PENDING' }); assert.equal(h.bridge.cleanupPending, true);
-  release(); await new Promise(setImmediate); assert.equal(h.bridge.sessions.size, 0); assert.ok(h.stops.length > 0);
+  await assert.rejects(h.bridge.stop(), { code: 'CLEANUP_PENDING' });
+  release(); await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(h.tabCloses, 1); assert.equal(h.bridge.hasOwnedResources, false);
 });
-test('successful request clears its transient page cleanup timer as well as data slot', async t => {
-  const h = harness(t); await h.bridge.start(); await h.bridge.request('/api/problems/x');
-  assert.equal(h.timers.size, 0); assert.equal(Object.keys(h.sandbox).filter(x => x.startsWith('__tt_native_')).length, 0);
-});
-
-test('navigation verifies replacement page when old child dies before its evaluate response returns', async t => {
-  const h = harness(t); await h.bridge.start(); const original = h.evaluate; let replaced = false;
-  h.evaluate = async expression => {
-    const result = await original(expression);
-    if (!replaced && expression.includes('location.assign')) {
-      replaced = true; const old = h.bridge.target; h.ended.fire(old);
-      const child = { id: 'early-replacement', name: 'new page', type: 'pwa-editor-browser', parentSession: old.parentSession, customRequest: async (_command, args) => h.evaluate(args.expression) };
-      h.sessions.push(child); h.started.fire(child);
-      throw new Error('Old context destroyed after navigation dispatch');
-    }
-    return result;
+test('non-default or wrong-frame contexts never get evaluated', async t => {
+  const h = harness(t); h.context = () => {
+    h.messages.fire({ method: 'Runtime.executionContextCreated', sessionId: h.sid, params: { context: { id: 8, origin: 'https://www.tensortonic.com', auxData: { isDefault: false, frameId: 'top-frame' } } } });
+    h.messages.fire({ method: 'Runtime.executionContextCreated', sessionId: h.sid, params: { context: { id: 9, origin: 'https://www.tensortonic.com', auxData: { isDefault: true, frameId: 'iframe' } } } });
   };
-  assert.equal((await h.bridge.openProblemPage('https://www.tensortonic.com/problems/new?studyPlan=pytorch-basics')).requested, true);
-  assert.equal(h.bridge.target.id, 'early-replacement'); assert.equal(h.navigations.length, 1);
+  await assert.rejects(h.bridge.start(), { code: 'LOGIN_OR_PAGE_REQUIRED' }); assert.equal(h.calls.filter(m => m.method === 'Runtime.evaluate').length, 0);
 });
-
-test('native launch quiets only its own debug UI and source maps without disabling evaluation', async t => {
-  const h = harness(t);
-  h.vscode.workspace.getConfiguration = () => { throw new Error('must not change global settings'); };
-  await h.bridge.start();
-  assert.equal(h.config.sourceMaps, false);
-  assert.equal(h.config.pauseForSourceMap, false);
-  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
-  assert.equal(h.config.internalConsoleOptions, 'neverOpen');
-  assert.equal(Object.hasOwn(h.config, 'noDebug'), false);
-  assert.equal(Object.hasOwn(h.settings, 'noDebug'), false);
-  assert.deepEqual(await h.bridge.request('/api/problems/x'), { ok: true });
+test('without uniqueContextId the explicit numeric context is still epoch guarded', async t => {
+  const h = harness(t); h.uid = undefined; await h.bridge.start();
+  assert.deepEqual(await h.bridge.request('/api/problems/x'), h.data);
+  assert.ok(h.calls.filter(m => m.method === 'Runtime.evaluate').every(m => m.params.contextId === 7));
 });
-test('unsupported and declined launch explain the native-only desktop capability requirement', async t => {
-  const h = harness(t); h.launch = async () => false;
-  await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /native-only/.test(error.message) && /Integrated Browser/.test(error.message));
-  h.vscode.env.uiKind = 2;
-  await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /local VS Code desktop/.test(error.message) && /remote/.test(error.message));
-});
-
-test('map resolution exclusion stays scoped to each owned launch and never registers a child interceptor', async t => {
-  const h = harness(t);
-  h.vscode.debug.registerDebugConfigurationProvider = () => { throw new Error('must not intercept other debug launches'); };
-  const unrelated = { id: 'user-map-debug', name: 'User browser', type: 'pwa-editor-browser', configuration: { sourceMaps: true, resolveSourceMapLocations: ['**'] } };
-  h.started.fire(unrelated);
-  await h.bridge.start();
-  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
-  assert.deepEqual(unrelated.configuration, { sourceMaps: true, resolveSourceMapLocations: ['**'] });
-  await h.bridge.stop(); await h.bridge.start();
-  assert.deepEqual(h.config.resolveSourceMapLocations, ['!**']);
-  assert.equal(h.stops.includes(unrelated.id), false);
+test('cancel during discovery cleans already-acquired owned tab and group without separate Stop', async t => {
+  const h = harness(t); const controller = new AbortController();
+  h.beforeSend = async m => { if (m.method === 'Page.getFrameTree') controller.abort(); };
+  await assert.rejects(h.bridge.start({ signal: controller.signal }), { code: 'CANCELED' });
+  assert.equal(h.tabCloses, 1); assert.equal(h.groupCloses, 1); assert.equal(h.bridge.hasOwnedResources, false);
 });

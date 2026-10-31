@@ -11,14 +11,16 @@ exports.run = async function run() {
   const report = { version: vscode.version, startedAt: new Date().toISOString(), status: 'NOT VERIFIED',
     realSiteReads: 0, runSubmitCalls: 0, authMaterialRead: false, checks: [] };
   let bridge; let ownsConnection = false;
+  let debugSessionStarts = 0;
+  const debugSubscription = vscode.debug.onDidStartDebugSession(() => { debugSessionStarts++; });
   try {
     const extension = vscode.extensions.getExtension('choru-local.tensortonic-vscode');
     if (!extension) throw new Error('Candidate extension is not installed.');
     report.extensionVersion = extension.packageJSON.version;
-    if (report.extensionVersion !== '0.9.0') throw new Error('Expected release 0.9.0.');
+    if (report.extensionVersion !== '0.10.0') throw new Error('Expected release 0.10.0.');
     const api = await extension.activate(); bridge = api.bridge;
     const native = bridge;
-    if (bridge.connected || !native || native.sessions.size || native.launching || native.starting || native.pending || native.navigating || native.cleanupPending) throw new Error('An existing native connection lifecycle is present; this runner will not take it over.');
+    if (bridge.connected || !native || native.hasOwnedResources || native.starting || native.pending || native.navigating || native.cleanupPending) throw new Error('An existing native connection lifecycle is present; this runner will not take it over.');
     ownsConnection = true;
     await bridge.start();
     report.checks.push('Dedicated owned native browser session connected');
@@ -32,6 +34,7 @@ exports.run = async function run() {
       report.checks.push({ route, bytes: Buffer.byteLength(text), sha256: crypto.createHash('sha256').update(text).digest('hex'),
         jsonType: Array.isArray(result) ? 'array' : typeof result });
     }
+    if (debugSessionStarts !== 0) throw new Error('Unexpected debug session during direct-browser validation');
     report.status = 'PASS';
   } catch (error) {
     // Never serialize debugger errors, payloads, page globals, or auth data.
@@ -41,6 +44,8 @@ exports.run = async function run() {
       try { await bridge.stop(); report.ownedCleanup = 'requested'; }
       catch (_) { report.ownedCleanup = 'unconfirmed'; report.status = 'NOT VERIFIED'; }
     }
+    report.debugSessionStarts = debugSessionStarts;
+    debugSubscription.dispose();
     report.finishedAt = new Date().toISOString();
     fs.mkdirSync(path.dirname(output), { recursive: true });
     fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
