@@ -15,10 +15,9 @@ exports.run = async function run() {
     const extension = vscode.extensions.getExtension('choru-local.tensortonic-vscode');
     if (!extension) throw new Error('Candidate extension is not installed.');
     report.extensionVersion = extension.packageJSON.version;
-    if (report.extensionVersion !== '0.8.1') throw new Error('Expected release 0.8.1.');
+    if (report.extensionVersion !== '0.9.0') throw new Error('Expected release 0.9.0.');
     const api = await extension.activate(); bridge = api.bridge;
-    if (bridge.mode !== 'native') throw new Error('Select native connection mode in this validation workspace first.');
-    const native = bridge.native;
+    const native = bridge;
     if (bridge.connected || !native || native.sessions.size || native.launching || native.starting || native.pending || native.navigating || native.cleanupPending) throw new Error('An existing native connection lifecycle is present; this runner will not take it over.');
     ownsConnection = true;
     await bridge.start();

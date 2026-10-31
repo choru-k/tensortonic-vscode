@@ -1,7 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const { isAllowedRequest, validateBody, ORIGINS } = require('./bridge');
+const { isAllowedRequest, validateBody, ORIGINS } = require('./request-policy');
 const MAX_RESPONSE = 8 * 1024 * 1024;
 const MAX_BODY = 1024 * 1024;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
@@ -130,13 +130,21 @@ class NativeBrowserBridge {
     if (this.cleanupPending) throw fault('Previous owned browser cleanup is still pending. Disconnect again before opening another native connection.', 'CLEANUP_PENDING');
     if (!v.debug || !v.debug.startDebugging || !v.debug.stopDebugging ||
         !v.workspace || v.workspace.isTrusted !== true || (v.env && (v.env.remoteName || v.env.uiKind === 2))) {
-      throw fault('Native TensorTonic connection requires a trusted local VS Code desktop with the built-in JavaScript debugger.', 'UNAVAILABLE');
+      throw fault('TensorTonic is native-only and requires a trusted local VS Code desktop with supported Integrated Browser and its built-in JavaScript debugger. Update VS Code and enable the built-in JavaScript debugger; web and remote workspaces are not supported.', 'UNAVAILABLE');
     }
     if (this.pending) throw fault('Wait for the current TensorTonic operation before reconnecting.', 'BUSY');
     if (![...this.sessions.values()].some(session => this._owns(session))) {
       const name = 'TensorTonic native ' + crypto.randomBytes(16).toString('hex');
       this.ownerNames.add(name); this.ownerGenerations.set(name, generation);
-      const launch = v.debug.startDebugging(undefined, { type: 'editor-browser', request: 'launch', name, url: 'https://www.tensortonic.com/' }, { suppressSaveBeforeStart: true });
+      // Session-scoped presentation only: keep debugging enabled for evaluate,
+      // without changing any global debug settings or unrelated sessions.
+      const launch = v.debug.startDebugging(undefined, {
+        type: 'editor-browser', request: 'launch', name, url: 'https://www.tensortonic.com/',
+        sourceMaps: false, pauseForSourceMap: false, internalConsoleOptions: 'neverOpen',
+      }, {
+        suppressSaveBeforeStart: true, suppressDebugToolbar: true,
+        suppressDebugStatusbar: true, suppressDebugView: true,
+      });
       this.launching = launch;
       const settled = () => { if (this.launching === launch) this.launching = undefined; if (this.sessions.size === 0 && !this.launching) this.cleanupPending = false; };
       Promise.resolve(launch).then(settled, settled);
@@ -153,7 +161,7 @@ class NativeBrowserBridge {
         throw error;
       }
       this._check(generation, undefined, signal);
-      if (!accepted) throw fault('The native browser launch was declined or unavailable.', 'UNAVAILABLE');
+      if (!accepted) throw fault('The native browser launch was declined or unavailable. TensorTonic is native-only: use a supported local VS Code desktop with Integrated Browser and the built-in JavaScript debugger enabled.', 'UNAVAILABLE');
     }
     return this._discover(generation, signal);
   }

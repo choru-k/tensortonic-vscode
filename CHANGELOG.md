@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.0
+
+- Use only the built-in browser connection. Remove legacy connection selection, pairing, loopback server, companion source and new companion distribution. Existing stored secrets are not accessed or removed.
+- Disable website source-map loading and automatic debug-console opening for the owned connection; request public session-scoped quiet UI options without changing global debugger settings. Child toolbar visibility depends on the host debugger.
+- Keep current source, documentation, and release artifacts on main; prior versions remain in Git history.
+- Preserve explicit login, bounded requests, no grading replay, dedicated Python setup, Markdown/Web choice, and dirty solutions.
+
 ## 0.8.1
 
 - Send native connection guidance to the TensorTonic output channel instead of a notification that can pause the integrated browser during login. Keep pre-launch consent, cancellable progress, and existing status-bar feedback.

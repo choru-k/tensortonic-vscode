@@ -1,12 +1,12 @@
 {
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
-  "description": "Solve TensorTonic problems through VS Code’s built-in browser, with an explicit legacy companion fallback. Login stays in the browser.",
-  "version": "0.8.1",
+  "description": "Solve TensorTonic problems through VS Code\u2019s built-in browser. Login stays in the browser.",
+  "version": "0.9.0",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
-    "vscode": "^1.95.0"
+    "vscode": "^1.109.0"
   },
   "categories": [
     "Education",
@@ -40,8 +40,7 @@
   "scripts": {
     "test": "node --test test/*.test.js",
     "package": "python3 scripts/package.py",
-    "test:transport": "node --test test/*.integration.js",
-    "package:companion": "python3 scripts/package_companion.py"
+    "test:transport": "node --test test/native-browser-bridge.test.js test/request-policy.test.js"
   },
   "contributes": {
     "viewsContainers": {
@@ -170,7 +169,7 @@
       },
       {
         "command": "tensortonic.changeStudyFolder",
-        "title": "Start studying in another folder…",
+        "title": "Start studying in another folder\u2026",
         "category": "TensorTonic",
         "icon": "$(folder-opened)"
       },
@@ -207,11 +206,6 @@
         "title": "Choose problem view (Markdown / Web)",
         "category": "TensorTonic",
         "icon": "$(browser)"
-      },
-      {
-        "command": "tensortonic.chooseConnectionMode",
-        "title": "Choose connection mode (Native / Legacy)",
-        "category": "TensorTonic"
       }
     ],
     "menus": {
@@ -298,16 +292,6 @@
           ],
           "description": "Default presentation for explicit problem opens, sidebar selection, and Previous/Next. Choose problem view command changes this workspace only when one is open. Description always opens Markdown.",
           "scope": "window"
-        },
-        "tensortonic.connectionMode": {
-          "type": "string",
-          "enum": [
-            "native",
-            "browserCompanion"
-          ],
-          "default": "native",
-          "scope": "window",
-          "markdownDescription": "Use the built-in browser (native release candidate) or explicitly select the legacy Chrome/Helium companion. Mode changes disconnect owned sessions; requests are never replayed."
         }
       }
     },

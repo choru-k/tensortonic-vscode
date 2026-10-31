@@ -3,10 +3,7 @@
 const vscode = require('vscode');
 const crypto = require('node:crypto');
 const { TensorTonicClient } = require('./client');
-const { BrowserBridge } = require('./bridge');
 const { NativeBrowserBridge } = require('./native-browser-bridge');
-const { ConnectionManager } = require('./connection-manager');
-const { rememberedOptions } = require('./remembered-pairing');
 const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = require('./context');
 const { renderResult } = require('./results');
 const { ProblemTreeProvider } = require('./tree');
@@ -18,7 +15,7 @@ const { buildCardHtml } = require('./cards/webview');
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
   'description', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
-  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'repairStudyEnvironment', 'chooseConnectionMode', 'chooseProblemView',
+  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'repairStudyEnvironment', 'chooseProblemView',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
@@ -173,9 +170,7 @@ async function createTextFile(uri, content) {
 }
 
 function activate(context) {
-  const nativeBridge = new NativeBrowserBridge(vscode);
-  const legacyBridge = new BrowserBridge(rememberedOptions(vscode, context));
-  const bridge = new ConnectionManager({ native: nativeBridge, legacy: legacyBridge, mode: vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native') });
+  const bridge = new NativeBrowserBridge(vscode);
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
   const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, cardGeneration: 0, cardPanel: undefined, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
   const tree = new ProblemTreeProvider(vscode, state);
@@ -225,7 +220,7 @@ function activate(context) {
 
   function updateConnection() {
     status.text = bridge.connected ? '$(check) TensorTonic' : '$(plug) TensorTonic';
-    status.tooltip = bridge.connected ? `TensorTonic ${bridge.mode === 'native' ? 'built-in browser' : 'legacy companion'} connected; website login may still be required` : 'Connect the built-in TensorTonic browser (or choose the legacy companion)';
+    status.tooltip = bridge.connected ? 'TensorTonic built-in browser connected; website login may still be required' : 'Connect the built-in TensorTonic browser';
     status.command = bridge.connected ? 'tensortonic.search' : 'tensortonic.connect';
     tree.refresh();
     vscode.commands.executeCommand('setContext', 'tensortonic.connected', bridge.connected);
@@ -234,7 +229,6 @@ function activate(context) {
   bridge.onDidChange = () => {
     if (!bridge.connected) invalidateProblems();
     updateConnection();
-    if (bridge.connected && bridge.mode === 'browserCompanion') refresh().catch(showError);
   };
 
   function showError(error) {
@@ -337,81 +331,33 @@ function activate(context) {
     if (bridge.connected) await refresh();
   }
 
-  async function companionGuide() {
-    const uri = vscode.Uri.joinPath(context.extensionUri, 'docs', 'browser-companion.md');
-    return vscode.window.showTextDocument(await vscode.workspace.openTextDocument(uri), { preview: false });
-  }
-
-  let pairingPromptInProgress = false;
+  let connectPromptInProgress = false;
   async function connect() {
-    if (pairingPromptInProgress) return undefined;
-    pairingPromptInProgress = true;
+    if (connectPromptInProgress) return undefined;
+    connectPromptInProgress = true;
     try {
-      await bridge.setMode(vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native'));
-      if (bridge.mode === 'native') {
-        if (vscode.workspace.isTrusted !== true || vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) throw new Error('The native connection requires a trusted local VS Code desktop window.');
-        if (!bridge.connected) {
-          const choice = await vscode.window.showInformationMessage('Connect TensorTonic in VS Code’s built-in browser?', {
-            modal: true,
-            detail: 'Open a dedicated TensorTonic browser page and attach only this extension’s own browser debug session. Sign in normally in that page. Problem access and explicit Run/Submit use the website session without copying cookies, passwords, or tokens. No pairing code or Chrome/Helium companion is needed. Disconnect stops only this owned connection. Native connection is a release candidate; the legacy companion remains available as an explicit fallback.',
-          }, 'Connect built-in browser', 'Choose connection mode');
-          if (choice === 'Choose connection mode') return chooseConnectionMode();
-          if (choice !== 'Connect built-in browser') return;
-        }
-        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Connecting the TensorTonic built-in browser', cancellable: true }, async (_progress, token) => {
-          const cancel = token.onCancellationRequested(() => { void nativeBridge.stop().catch(() => {}); });
-          try { if (token.isCancellationRequested) return; await bridge.start(); }
-          finally { cancel.dispose(); }
-        });
-        if (!bridge.connected) return;
-        try { await refresh(); } catch (error) { if (error.code !== 'AUTH_REQUIRED') throw error; }
-        // Notifications can pause the integrated browser while the user signs in.
-        // Keep guidance discoverable without showing a toast or moving focus.
-        output.appendLine('TensorTonic browser connected. Sign in normally on the dedicated page if needed, then use Refresh problems or Connect again. No companion pairing code is required.');
-        return { nativeConnected: true };
+      if (vscode.workspace.isTrusted !== true || vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) throw new Error('Connect requires a trusted local VS Code desktop with Integrated Browser. Update VS Code if unavailable.');
+      if (!bridge.connected) {
+        const choice = await vscode.window.showInformationMessage('Connect TensorTonic in VS Code’s built-in browser?', {
+          modal: true,
+          detail: 'Open a dedicated TensorTonic browser page and attach only this extension’s own browser debug session. Sign in normally in that page. Problem access and explicit Run/Submit use the website session without copying cookies, passwords, or tokens. Disconnect stops only this owned connection.',
+        }, 'Connect built-in browser');
+        if (choice !== 'Connect built-in browser') return;
       }
-      if (bridge.connected) {
-        await refresh();
-        return vscode.window.showInformationMessage('TensorTonic browser is already connected. Disconnect before pairing another tab or account.');
-      }
-      const chosen = await vscode.window.showInformationMessage('Connect with the TensorTonic browser companion', {
-        modal: true,
-        detail: 'Sign in normally on TensorTonic on this computer. Pairing will be remembered for 30 days in VS Code SecretStorage and the browser companion, with automatic reconnection. No passwords or website cookies are stored. Disconnect revokes remembered access. Copy the one-use code and paste it into the companion within two minutes; approve its TensorTonic-only permission if you agree.',
-      }, 'Copy pairing code', 'Companion setup');
-      if (chosen === 'Companion setup') return companionGuide();
-      if (chosen !== 'Copy pairing code') return undefined;
-      if (vscode.workspace.isTrusted === false) throw new Error('Review workspace trust before connecting TensorTonic.');
-      await rememberedConnectionReady;
-      await bridge.start();
-      if (bridge.connected) return vscode.window.showInformationMessage('TensorTonic browser is already connected.');
-      // Clipboard writes happen only after the explicit Copy action. Never
-      // put the ticket or longer-lived capability in a document, log or URL.
-      const ticket = bridge.pairingCode();
-      await vscode.env.clipboard.writeText(ticket);
-      const next = await vscode.window.showInformationMessage('Pairing code copied. Paste it into companion 0.2.0 or newer within two minutes. The connection can be remembered for 30 days.', 'Open TensorTonic', 'Companion setup');
-      if (next === 'Open TensorTonic') await vscode.env.openExternal(vscode.Uri.parse('https://www.tensortonic.com/'));
-      if (next === 'Companion setup') await companionGuide();
-      return { pairingRequested: true };
-    } finally {
-      pairingPromptInProgress = false;
-    }
-  }
-
-  async function chooseConnectionMode() {
-    const selected = await vscode.window.showQuickPick([
-      { label: 'Built-in browser', description: 'Native connection — no browser companion or pairing code', mode: 'native' },
-      { label: 'Legacy browser companion', description: 'Existing Chrome/Helium companion and remembered pairing', mode: 'browserCompanion' },
-    ], { title: 'TensorTonic connection mode', placeHolder: 'Changing mode disconnects the current owned connection; requests are never replayed.' });
-    if (!selected || !['native', 'browserCompanion'].includes(selected.mode)) return;
-    await bridge.setMode(selected.mode);
-    const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-    await vscode.workspace.getConfiguration('tensortonic').update('connectionMode', selected.mode, target);
-    invalidateProblems(); updateConnection();
-    await vscode.window.showInformationMessage(`TensorTonic now uses ${selected.mode === 'native' ? 'the built-in browser' : 'the legacy browser companion'}. Run Connect browser when ready. No request was replayed.`);
+      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Connecting the TensorTonic built-in browser', cancellable: true }, async (_progress, token) => {
+        const cancel = token.onCancellationRequested(() => { void bridge.stop().catch(() => {}); });
+        try { if (token.isCancellationRequested) return; await bridge.start(); }
+        finally { cancel.dispose(); }
+      });
+      if (!bridge.connected) return;
+      try { await refresh(); } catch (error) { if (error.code !== 'AUTH_REQUIRED') throw error; }
+      // Notifications can pause the integrated browser during normal login.
+      output.appendLine('TensorTonic browser connected. Sign in normally on the dedicated page if needed, then use Refresh problems or Connect again.');
+      return { nativeConnected: true };
+    } finally { connectPromptInProgress = false; }
   }
 
   async function disconnect() {
-    await rememberedConnectionReady;
     invalidateProblems();
     if (typeof bridge.revoke === 'function') await bridge.revoke();
     else await bridge.stop();
@@ -677,9 +623,18 @@ function activate(context) {
     catch (error) { if (!isCurrent()) return; throw error; }
     if (!isCurrent()) return;
     const url = problemUrl(ref);
-    if (bridge.mode === 'native' && bridge.connected) {
-      await bridge.openProblemPage(url);
-      return isCurrent() ? { ref, target: 'owned-native', requested: true } : undefined;
+    if (bridge.connected) {
+      try {
+        await bridge.openProblemPage(url);
+        return isCurrent() ? { ref, target: 'owned-native', requested: true } : undefined;
+      } catch (error) {
+        if (!isCurrent()) return;
+        if (!studyNavigation) throw error;
+        // Keep the existing owned page and dirty editor untouched. Never open a
+        // second browser or retry navigation after an uncertain/busy result.
+        output.appendLine('Web navigation was unavailable. Showing Markdown; the owned browser and Web preference are unchanged.');
+        return { ref, target: 'none', requested: false };
+      }
     }
     let available;
     try { available = await vscode.commands.getCommands(true); }
@@ -880,7 +835,6 @@ function activate(context) {
     chooseStudyPlan, chooseProblemView, showStudyPlan,
     startStudying: () => studyWorkspace.start(),
     changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),
-    chooseConnectionMode,
     setupStudyEnvironment: () => studyEnvironment.setup(),
     repairStudyEnvironment: () => studyEnvironment.repair(),
     run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
@@ -907,11 +861,8 @@ function activate(context) {
   }
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(rememberSelectedSolution));
   rememberSelectedSolution(vscode.window.activeTextEditor);
-  context.subscriptions.push({ dispose() { (typeof bridge.shutdown === 'function' ? bridge.shutdown() : bridge.stop()).catch(() => {}); } });
+  context.subscriptions.push({ dispose() { bridge.dispose().catch(() => {}); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
-    if (event.affectsConfiguration('tensortonic.connectionMode')) {
-      void bridge.setMode(vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native')).then(() => { invalidateProblems(); updateConnection(); }).catch(showError);
-    }
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
       invalidateProblems();
     }
@@ -931,16 +882,11 @@ function activate(context) {
 
   // Startup may consume a recent explicit Start Studying request for this exact
   // local folder. It never opens a window or redirects existing solution files.
-  const rememberedConnectionReady = vscode.workspace.isTrusted !== false && typeof bridge.restore === 'function'
-    ? bridge.restore().catch(() => {
-      output.appendLine('Remembered connection could not be restored. Another window may own its local port, or secure storage may be unavailable. Use the original study window; never change security settings to bypass this.');
-      return false;
-    }) : Promise.resolve(false);
   const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().catch(() => {
     output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
     return false;
   });
-  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, rememberedConnectionReady, commands: COMMANDS.slice() };
+  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {}

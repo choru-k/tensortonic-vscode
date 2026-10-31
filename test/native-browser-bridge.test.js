@@ -49,7 +49,7 @@ test('constructor is inert and tolerates missing optional debug APIs', () => {
 test('explicit launch selects one owned top-level TensorTonic child without unrelated debugger access', async t => {
   const h = harness(t); h.started.fire({ id: 'user', name: 'User debugger', type: 'pwa-node', customRequest() { throw new Error('must not inspect'); } });
   await h.bridge.start(); assert.equal(h.bridge.connected, true); assert.equal(h.launches, 1);
-  assert.equal(h.config.type, 'editor-browser'); assert.deepEqual(h.settings, { suppressSaveBeforeStart: true });
+  assert.equal(h.config.type, 'editor-browser'); assert.deepEqual(h.settings, { suppressSaveBeforeStart: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
   const token = h.bridge.token; await h.bridge.start(); assert.equal(h.launches, 1); assert.equal(h.bridge.token, token);
   await h.bridge.stop(); assert.ok(!h.stops.includes('user')); assert.equal(h.bridge.connected, false);
 });
@@ -222,4 +222,22 @@ test('navigation verifies replacement page when old child dies before its evalua
   };
   assert.equal((await h.bridge.openProblemPage('https://www.tensortonic.com/problems/new?studyPlan=pytorch-basics')).requested, true);
   assert.equal(h.bridge.target.id, 'early-replacement'); assert.equal(h.navigations.length, 1);
+});
+
+test('native launch quiets only its own debug UI and source maps without disabling evaluation', async t => {
+  const h = harness(t);
+  h.vscode.workspace.getConfiguration = () => { throw new Error('must not change global settings'); };
+  await h.bridge.start();
+  assert.equal(h.config.sourceMaps, false);
+  assert.equal(h.config.pauseForSourceMap, false);
+  assert.equal(h.config.internalConsoleOptions, 'neverOpen');
+  assert.equal(Object.hasOwn(h.config, 'noDebug'), false);
+  assert.equal(Object.hasOwn(h.settings, 'noDebug'), false);
+  assert.deepEqual(await h.bridge.request('/api/problems/x'), { ok: true });
+});
+test('unsupported and declined launch explain the native-only desktop capability requirement', async t => {
+  const h = harness(t); h.launch = async () => false;
+  await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /native-only/.test(error.message) && /Integrated Browser/.test(error.message));
+  h.vscode.env.uiKind = 2;
+  await assert.rejects(h.bridge.start(), error => error.code === 'UNAVAILABLE' && /local VS Code desktop/.test(error.message) && /remote/.test(error.message));
 });

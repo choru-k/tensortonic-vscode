@@ -23,7 +23,7 @@ class Uri {
 
 function disposable() { return { dispose() {} }; }
 
-async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, connectionMode = 'browserCompanion', nativeTransport } = {}) {
+async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, nativeTransport } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tensortonic-ui-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const documents = new Map();
@@ -138,7 +138,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         createDirectory: uri => fs.mkdir(uri.fsPath, { recursive: true }),
       },
       openTextDocument: openDocument,
-      getConfiguration: () => ({ get: (key, fallback) => configuration.has(key) ? configuration.get(key) : key === 'connectionMode' ? connectionMode : fallback, update: async (key, value) => { configuration.set(key, value); fireConfiguration(key); } }),
+      getConfiguration: () => ({ get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback, update: async (key, value) => { configuration.set(key, value); fireConfiguration(key); } }),
       onDidChangeConfiguration: listener => { configurationListeners.push(listener); return disposable(); },
       async applyEdit(edit) {
         try {
@@ -222,14 +222,13 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
 
   vscode.window.withProgress = async (_options, callback) => callback({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return disposable(); } });
 
-  class BrowserBridge {
-    constructor() { this.connected = connected; this.starts = 0; this.pairings = 0; }
-    async start() { this.starts++; }
-    async stop() { this.connected = false; }
-    connectionCode() { return '/* local connection fixture */'; }
-    pairingCode() { this.pairings++; return 'TT1:43210:' + 'a'.repeat(32); }
-    request() { throw new Error('The UI should use the injected client in this test.'); }
-  }
+  const transport = nativeTransport || nativeUiFixture(connected);
+  transport.pageCalls = [];
+  const openOwnedPage = transport.openProblemPage.bind(transport);
+  transport.openProblemPage = async url => {
+    transport.pageCalls.push({ url, activeDocument: vscode.window.activeTextEditor?.document });
+    return openOwnedPage(url);
+  };
   class TensorTonicClient {
     async listProblems(planId) {
       calls.list.push(planId);
@@ -249,8 +248,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     Module._load = function load(request, parent, ...args) {
       if (parent && parent.filename === EXTENSION_PATH) {
         if (request === 'vscode') return vscode;
-        if (request === './bridge') return { BrowserBridge };
-        if (request === './native-browser-bridge' && nativeTransport) return { NativeBrowserBridge: class { constructor() { return nativeTransport; } } };
+        if (request === './native-browser-bridge') return { NativeBrowserBridge: class { constructor() { return transport; } } };
         if (request === './client') return { TensorTonicClient };
       }
       return originalLoad.call(this, request, parent, ...args);
@@ -266,11 +264,18 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   const savedState = new Map();
   const globalValues = globalStateForRoot(root);
   const globalState = { keys: () => [...globalValues.keys()], get: key => globalValues.get(key), update: async (key,value) => { if(value===undefined) globalValues.delete(key); else globalValues.set(key,value); } };
-  const context = { globalState, subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
+  const secretCalls = [];
+  const legacySecrets = new Map([['tensortonic.remembered.fixture', 'OLD_SECRET_SENTINEL']]);
+  const secrets = {
+    async get(key) { secretCalls.push(['get', key]); return legacySecrets.get(key); },
+    async store(key, value) { secretCalls.push(['store', key]); legacySecrets.set(key, value); },
+    async delete(key) { secretCalls.push(['delete', key]); legacySecrets.delete(key); },
+  };
+  const context = { secrets, globalState, subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
   const api = extension.activate(context);
   await api.studyWorkspaceReady;
   t.after(() => { for (const subscription of context.subscriptions.reverse()) subscription.dispose(); });
-  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues };
+  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues, secretCalls, legacySecrets };
 }
 
 function problemRows(view) {
@@ -838,48 +843,19 @@ test('reconnecting while a grading command reads inputs cannot send code to a ne
   assert.match(h.errors.at(-1), /browser connection changed/);
 });
 
-test('companion connection writes a ticket only after explicit Copy and never creates a secret document', async t => {
-  const h = await harness(t, { connected: false });
-  assert.equal(await h.commands.get('tensortonic.connect')(), undefined);
-  assert.equal(h.api.bridge.starts, 0);
-  assert.deepEqual(h.clipboardWrites, []);
-  h.informationChoices.push('Copy pairing code', undefined);
-  assert.deepEqual(await h.commands.get('tensortonic.connect')(), { pairingRequested: true });
-  assert.equal(h.api.bridge.starts, 1);
-  assert.equal(h.api.bridge.pairings, 1);
-  assert.deepEqual(h.clipboardWrites, ['TT1:43210:' + 'a'.repeat(32)]);
-  assert.equal(h.documents.size, 0);
-  assert.equal(h.output.some(line => /TT1:/.test(line)), false);
-  assert.equal(h.information.some(args => args.some(value => typeof value === 'string' && value.includes('TT1:'))), false);
-  assert.deepEqual(h.errors, []);
-});
-
-test('already connected and overlapping Connect gestures cannot rotate pairing or overwrite clipboard', async t => {
-  const connected = await harness(t);
-  await connected.commands.get('tensortonic.connect')();
-  assert.equal(connected.api.bridge.pairings, 0);
-  assert.deepEqual(connected.clipboardWrites, []);
-  assert.match(connected.information[0][0], /already connected/);
+test('overlapping native Connect gestures launch only once without clipboard or secret documents', async t => {
   const h = await harness(t, { connected: false });
   let choose;
   h.informationChoices.push(new Promise(resolve => { choose = resolve; }));
   const first = h.commands.get('tensortonic.connect')();
   assert.equal(await h.commands.get('tensortonic.connect')(), undefined);
   assert.equal(h.information.length, 1);
-  choose('Copy pairing code');
+  choose('Connect built-in browser');
   await first;
-  assert.equal(h.api.bridge.pairings, 1);
-  assert.equal(h.clipboardWrites.length, 1);
-});
-
-test('companion setup guide is nonsecret and does not start pairing', async t => {
-  const h = await harness(t, { connected: false });
-  h.informationChoices.push('Companion setup');
-  await h.commands.get('tensortonic.connect')();
-  assert.equal(h.api.bridge.starts, 0);
+  assert.equal(h.api.bridge.starts, 1);
   assert.deepEqual(h.clipboardWrites, []);
-  assert.match(h.vscode.window.activeTextEditor.document.getText(), /no-console connection/);
-  assert.deepEqual(h.errors, []);
+  assert.equal(h.documents.size, 0);
+  assert.deepEqual(h.secretCalls, []);
 });
 
 test('Previous and Next follow the active solution plan and preserve unsaved work', async t => {
@@ -1247,7 +1223,7 @@ test('primary explanation opens the live original page via native browser only a
  assert.equal(h.commandExecutions[1].args[0].reuseUrlFilter,h.commandExecutions[1].args[0].url);
 });
 test('native URL/filter never accept arbitrary destinations, glob metacharacters or downloaded fields',async t=>{
- const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');
+ const native='workbench.action.browser.open';const h=await harness(t,{connected:false,externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');
  for(const ref of [{slug:'https://evil.example'},{slug:'../auth'},{slug:'problem*'},{slug:'valid',planId:'x?redirect=evil'}])await command(ref);
  assert.equal(h.commandExecutions.length,0);assert.equal(h.errors.length,4);
  await command({...DEFAULT_REF,url:'https://evil.example',reuseUrlFilter:'**',visualizationComponent:'evil'});
@@ -1260,12 +1236,12 @@ test('missing native browser offers an explicit external choice; cancel never la
  assert.deepEqual(opened,['https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics']);assert.equal(h.webviews.length,0);
 });
 test('failed native dispatch is not replayed and requires a user choice for external fallback',async t=>{
- const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const execute=h.vscode.commands.executeCommand;let attempts=0,external=0;
+ const native='workbench.action.browser.open';const h=await harness(t,{connected:false,externalCommands:[native]});const execute=h.vscode.commands.executeCommand;let attempts=0,external=0;
  h.vscode.commands.executeCommand=async(id,...args)=>{if(id===native){attempts++;throw new Error('unavailable');}return execute(id,...args);};h.vscode.env.openExternal=async()=>{external++;return true;};
  const result=await h.commands.get('tensortonic.interactiveExplanation')(DEFAULT_REF);assert.equal(result.target,'none');assert.equal(attempts,1);assert.equal(external,0);assert.deepEqual(h.errors,[]);
 });
 test('newer native request supersedes older command discovery; disconnect cancels stale fallback',async t=>{
- const native='workbench.action.browser.open';const h=await harness(t,{externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');const get=h.vscode.commands.getCommands;
+ const native='workbench.action.browser.open';const h=await harness(t,{connected:false,externalCommands:[native]});const command=h.commands.get('tensortonic.interactiveExplanation');const get=h.vscode.commands.getCommands;
  let finish,started;const waiting=new Promise(r=>{started=r;});h.vscode.commands.getCommands=async()=>{started();await new Promise(r=>{finish=r;});return[native];};
  const pending=command(DEFAULT_REF);await waiting;h.vscode.commands.getCommands=get;await command({slug:'second',planId:'pytorch-basics'});finish();await pending;
  assert.equal(h.commandExecutions.filter(c=>c.id===native).length,1);assert.match(h.commandExecutions.find(c=>c.id===native).args[0].url,/\/second\?/);
@@ -1278,7 +1254,7 @@ test('ordinary problem opening and next navigation never open original pages aut
  const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.equal(manifest.contributes.commands.find(c=>c.command==='tensortonic.offlineExploration').title,'Offline learning exploration');
 });
 
-test('Web preference opens canonical page beside existing solution and reuses only the previous study URL', async t => {
+test('Web preference opens canonical pages in the owned browser and preserves dirty solutions', async t => {
   const native = 'workbench.action.browser.open';
   const h = await harness(t, { externalCommands: [native] });
   h.configuration.set('problemView', 'web');
@@ -1287,15 +1263,15 @@ test('Web preference opens canonical page beside existing solution and reuses on
   const document = await h.vscode.workspace.openTextDocument(first.uri);
   document.setText(document.getText().replace('    pass', '    return x # UNSAVED_STUDY'));
   const dirty = document.getText();
-  const firstCall = h.commandExecutions.find(call => call.id === native);
+  const firstCall = h.api.bridge.pageCalls[0];
   const firstUrl = 'https://www.tensortonic.com/problems/pytorch-dropout?studyPlan=pytorch-basics';
-  assert.deepEqual(firstCall.args[0], { url: firstUrl, openToSide: true, reuseUrlFilter: firstUrl });
+  assert.equal(firstCall.url, firstUrl);
   assert.strictEqual(firstCall.activeDocument, document);
   await h.commands.get('tensortonic.previousProblem')();
-  const pages = h.commandExecutions.filter(call => call.id === native);
+  const pages = h.api.bridge.pageCalls;
   assert.equal(pages.length, 2);
-  assert.equal(pages[1].args[0].url, 'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics');
-  assert.equal(pages[1].args[0].reuseUrlFilter, firstUrl);
+  assert.equal(pages[1].url, 'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics');
+  assert.equal(h.commandExecutions.some(call => call.id === native), false);
   assert.equal(document.getText(), dirty);
   assert.equal(document.isDirty, true);
   assert.equal(h.webviews.some(panel => panel.type === 'tensortonic.description'), false);
@@ -1304,12 +1280,14 @@ test('Web preference opens canonical page beside existing solution and reuses on
 
 test('Web preference falls back locally to Markdown when native browser is unavailable without external launch', async t => {
   const h = await harness(t, { externalCommands: [] });
+  h.api.bridge.openProblemPage = async () => { throw new Error('Owned browser unavailable'); };
   h.configuration.set('problemView', 'web');
   let external = 0; h.vscode.env.openExternal = async () => { external++; return true; };
   const result = await h.api.openProblem(DEFAULT_REF);
   assert.ok(result.uri);
   assert.equal(h.webviews.filter(panel => panel.type === 'tensortonic.description').length, 1);
-  assert.match(h.information.at(-1)[0], /Showing Markdown instead/);
+  assert.ok(h.output.some(line => /Showing Markdown/.test(line)));
+  assert.equal(h.information.length, 0, 'Web fallback must not show a notification that pauses browser login');
   assert.equal(h.configuration.get('problemView'), 'web');
   assert.equal(external, 0);
 });
@@ -1321,10 +1299,10 @@ test('Web preference keeps explicit Description as Markdown and returning to Mar
   const first = await h.api.openProblem(DEFAULT_REF);
   await h.commands.get('tensortonic.description')(first.uri);
   assert.ok(h.webviews.some(panel => panel.type === 'tensortonic.description'));
-  assert.equal(h.commandExecutions.filter(call => call.id === native).length, 1);
+  assert.equal(h.api.bridge.pages.length, 1);
   h.configuration.set('problemView', 'markdown');
   await h.commands.get('tensortonic.nextProblem')();
-  assert.equal(h.commandExecutions.filter(call => call.id === native).length, 1);
+  assert.equal(h.api.bridge.pages.length, 1);
 });
 
 test('Choose problem view saves only requested preference and does not reopen or rewrite dirty solutions', async t => {
@@ -1349,16 +1327,18 @@ test('Choose problem view saves only requested preference and does not reopen or
   await h.commands.get('tensortonic.chooseProblemView')(); assert.equal(updates.length, 1);
 });
 
-test('Web preference never dispatches a stale page after mode changes during native command discovery', async t => {
-  const native = 'workbench.action.browser.open';
-  const h = await harness(t, { externalCommands: [native] });
+test('Web preference ignores an owned-page completion after view mode changes', async t => {
+  const h = await harness(t);
   h.configuration.set('problemView', 'web');
   let release, announce;
   const started = new Promise(resolve => { announce = resolve; });
-  h.vscode.commands.getCommands = async () => { announce(); await new Promise(resolve => { release = resolve; }); return [native]; };
+  let pages = 0;
+  h.api.bridge.openProblemPage = async () => { pages++; announce(); await new Promise(resolve => { release = resolve; }); };
   const opening = h.api.openProblem(DEFAULT_REF); await started;
   h.configuration.set('problemView', 'markdown'); release(); await opening;
-  assert.equal(h.commandExecutions.filter(call => call.id === native).length, 0);
+  assert.equal(pages, 1);
+  assert.equal(h.commandExecutions.some(call => call.id === 'workbench.action.browser.open'), false);
+  assert.equal(h.webviews.some(panel => panel.type === 'tensortonic.description'), false);
 });
 
 test('problem view setting is discoverable, bounded, Markdown by default, and cannot inject URLs', async t => {
@@ -1374,25 +1354,25 @@ test('problem view setting is discoverable, bounded, Markdown by default, and ca
   assert.ok(h.webviews.some(panel => panel.type === 'tensortonic.description'));
 });
 
-function nativeUiFixture() {
-  return { connected: false, token: undefined, starts: 0, pages: [], stops: 0,
+function nativeUiFixture(connected = false) {
+  return { connected, token: connected ? 'owned-native-fixture' : undefined, starts: 0, pages: [], stops: 0,
     async start() { this.starts++; this.connected = true; this.token = 'owned-native-fixture'; this.onDidChange?.(); },
     async stop() { this.stops++; this.connected = false; this.token = undefined; this.onDidChange?.(); },
-    async shutdown() { return this.stop(); }, async revoke() { return this.stop(); },
+    async dispose() { await this.stop(); },
     async openProblemPage(url) { this.pages.push(url); }, async request() { throw new Error('Unexpected direct transport request'); },
   };
 }
 test('native mode is inert on activation and explicit Connect never creates/copies companion pairing code', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { connectionMode: 'native', nativeTransport: native });
+  const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   assert.equal(native.starts, 0); assert.deepEqual(h.clipboardWrites, []);
   h.informationChoices.push('Connect built-in browser');
   await h.commands.get('tensortonic.connect')();
-  assert.equal(native.starts, 1); assert.equal(h.api.bridge.mode, 'native'); assert.equal(h.api.bridge.connected, true);
+  assert.equal(native.starts, 1); assert.equal(h.api.bridge.connected, true);
   assert.deepEqual(h.clipboardWrites, []); assert.ok(h.calls.list.length > 0);
-  assert.ok(h.information.some(x => JSON.stringify(x).includes('No pairing code')));
+  assert.ok(h.information.some(x => JSON.stringify(x).includes('without copying cookies, passwords, or tokens')));
 });
 test('native Connect and reconnect log guidance without a post-launch notification that pauses login', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { connectionMode: 'native', nativeTransport: native });
+  const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   h.informationChoices.push('Connect built-in browser');
   await h.commands.get('tensortonic.connect')();
   assert.equal(h.information.length, 1, 'only the pre-launch consent is shown');
@@ -1401,22 +1381,57 @@ test('native Connect and reconnect log guidance without a post-launch notificati
   assert.equal(h.information.length, 1, 'reconnect must not pause the browser with another notification');
   assert.equal(h.output.filter(line => line.includes('TensorTonic browser connected.')).length, 2);
 });
-test('canceling native Connect does not launch a browser or affect an unrelated legacy transport', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { connectionMode: 'native', nativeTransport: native });
+test('canceling native Connect does not launch a browser or access stored credentials', async t => {
+  const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   await h.commands.get('tensortonic.connect')(); assert.equal(native.starts, 0);
   assert.deepEqual(h.clipboardWrites, []); assert.deepEqual(h.errors, []);
 });
 test('native Web mode uses the owned browser page and never dispatches a broad browser open command', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { connectionMode: 'native', nativeTransport: native });
+  const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   await native.start(); h.configuration.set('problemView', 'web');
   const opened = await h.api.openProblem(DEFAULT_REF); assert.ok(opened.uri);
   assert.equal(native.pages.length, 1); assert.match(native.pages[0], /^https:\/\/www\.tensortonic\.com\/problems\//);
   assert.ok(!h.commandExecutions.some(x => x.id === 'workbench.action.browser.open'));
 });
-test('native connection selection is explicit and does not automatically start chosen legacy connection', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { connectionMode: 'native', nativeTransport: native });
-  await native.start(); h.vscode.window.showQuickPick = async () => ({ mode: 'browserCompanion' });
-  await h.commands.get('tensortonic.chooseConnectionMode')();
-  assert.equal(h.api.bridge.mode, 'browserCompanion'); assert.ok(native.stops > 0);
-  assert.equal(h.api.bridge.starts, 0); assert.deepEqual(h.clipboardWrites, []);
+test('native-only activation ignores obsolete connection settings and never reads or deletes legacy secrets', async t => {
+  const h = await harness(t, { connected: false });
+  h.configuration.set('connectionMode', 'browserCompanion');
+  h.fireConfiguration('connectionMode');
+  h.informationChoices.push('Connect built-in browser');
+  await h.commands.get('tensortonic.connect')();
+  await h.commands.get('tensortonic.disconnect')();
+  assert.deepEqual(h.secretCalls, []);
+  assert.equal(h.legacySecrets.get('tensortonic.remembered.fixture'), 'OLD_SECRET_SENTINEL');
+  assert.equal(h.commands.has('tensortonic.chooseConnectionMode'), false);
+  assert.deepEqual(h.clipboardWrites, []);
+  const manifest = JSON.parse(await fs.readFile(path.resolve(__dirname, '../package.json'), 'utf8'));
+  assert.equal(manifest.contributes.configuration.properties['tensortonic.connectionMode'], undefined);
+  assert.equal(manifest.contributes.commands.some(command => command.command === 'tensortonic.chooseConnectionMode'), false);
+  assert.equal(manifest.contributes.commands.find(command => command.command === 'tensortonic.connect').title.includes('companion'), false);
+});
+
+test('untrusted or remote native Connect fails closed without launching a page or reading legacy secrets', async t => {
+  for (const mode of ['untrusted', 'remote']) {
+    const h = await harness(t, { connected: false, trusted: mode !== 'untrusted' });
+    if (mode === 'remote') h.vscode.env.remoteName = 'ssh-remote';
+    h.informationChoices.push('Connect built-in browser');
+    await h.commands.get('tensortonic.connect')();
+    assert.equal(h.api.bridge.starts, 0);
+    assert.deepEqual(h.secretCalls, []);
+    assert.deepEqual(h.clipboardWrites, []);
+    assert.match(h.errors.at(-1), /trusted local VS Code desktop/);
+  }
+});
+
+test('canceling native connection progress before startup never launches the owned browser', async t => {
+  const h = await harness(t, { connected: false });
+  h.informationChoices.push('Connect built-in browser');
+  h.vscode.window.withProgress = async (_options, callback) => callback({ report() {} }, {
+    isCancellationRequested: true, onCancellationRequested() { return disposable(); },
+  });
+  await h.commands.get('tensortonic.connect')();
+  assert.equal(h.api.bridge.starts, 0);
+  assert.equal(h.calls.list.length, 0);
+  assert.deepEqual(h.secretCalls, []);
+  assert.deepEqual(h.errors, []);
 });

@@ -13,20 +13,6 @@
       "outFiles": [
         "${workspaceFolder}/src/**/*.js"
       ]
-    },
-    {
-      "name": "TensorTonic: live account E2E",
-      "type": "extensionHost",
-      "request": "launch",
-      "runtimeExecutable": "${execPath}",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}",
-        "--extensionTestsPath=${workspaceFolder}/test/vscode-e2e.js",
-        "${workspaceFolder}/test/workspace"
-      ],
-      "outFiles": [
-        "${workspaceFolder}/src/**/*.js"
-      ]
     }
   ]
 }

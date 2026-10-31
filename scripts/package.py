@@ -74,7 +74,7 @@ def files_to_package():
         base = ROOT / directory
         if base.exists():
             result.extend(path for path in sorted(base.rglob("*")) if path.is_file() and not path.is_symlink() and path.suffix in suffixes)
-    required = [ROOT / "src/extension.js", ROOT / "src/client.js", ROOT / "src/bridge.js"]
+    required = [ROOT / "src/extension.js", ROOT / "src/client.js", ROOT / "src/native-browser-bridge.js", ROOT / "src/request-policy.js"]
     for path in result + required:
         if not path.is_file():
             raise SystemExit("Missing required package file: " + str(path.relative_to(ROOT)))
