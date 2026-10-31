@@ -12,3 +12,7 @@ research/
 install-check/
 pairing*.js
 connection*.js
+
+# Shipped connection transport modules (not local pairing scripts).
+!src/connection-manager.js
+!test/connection-manager.test.js

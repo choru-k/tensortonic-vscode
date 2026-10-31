@@ -1,12 +1,23 @@
 {
   "manifest_version": 3,
   "name": "TensorTonic VS Code Companion (Unofficial)",
-  "version": "0.1.0",
-  "description": "Connect a TensorTonic tab to your local VS Code after an explicit pairing action. No cookies are read or stored.",
+  "version": "0.2.0",
+  "description": "Remember one local VS Code pairing for up to 30 days. Website passwords and cookies are never read or stored.",
   "minimum_chrome_version": "120",
-  "permissions": ["activeTab", "scripting"],
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
   "action": {
     "default_title": "Connect TensorTonic to VS Code",
     "default_popup": "popup.html"
+  },
+  "optional_host_permissions": [
+    "https://www.tensortonic.com/*",
+    "https://tensortonic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
   }
 }

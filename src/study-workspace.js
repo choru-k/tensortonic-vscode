@@ -10,12 +10,13 @@ const PENDING_TTL_MS = 5 * 60 * 1000;
 const NONCE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 
 class StudyWorkspace {
-  constructor(vscode, context, { showStudyPlan, now = Date.now, createNonce = randomUUID }) {
+  constructor(vscode, context, { showStudyPlan, offerEnvironment, now = Date.now, createNonce = randomUUID }) {
     if (typeof showStudyPlan !== 'function') throw new TypeError('A Study Plan view callback is required.');
     this.vscode = vscode;
     this.state = context.globalState;
     this.workspaceState = context.workspaceState;
     this.showStudyPlan = showStudyPlan;
+    this.offerEnvironment = offerEnvironment;
     this.now = now;
     this.createNonce = createNonce;
     this.queue = Promise.resolve();
@@ -96,6 +97,7 @@ class StudyWorkspace {
     this.requireSupported();
     if (this.singleFolderMatches(folder)) {
       await this.showStudyPlan();
+      if (this.offerEnvironment) await this.offerEnvironment();
       return { status: 'reused' };
     }
     const pending = { uri: folder.toString(), createdAt: this.now(), nonce: this.createNonce() };
@@ -126,7 +128,8 @@ class StudyWorkspace {
   }
 
   async restoreOnce() {
-    // Startup can focus a view only; it must never open a folder or prompt for one.
+    // A fresh explicit Start handoff may focus the view and offer setup consent.
+    // Ordinary startup never opens folders, runs Python, or installs packages.
     if (!this.supported()) return false;
     const pending = this.state.get(PENDING_STUDY_VIEW_KEY);
     if (pending === undefined) return false;
@@ -147,6 +150,7 @@ class StudyWorkspace {
       if (!this.supported() || !this.singleFolderMatches(folder) || !this.samePending(pending) ||
           !this.pendingFresh(pending) || this.workspaceState.get(CONSUMED_STUDY_VIEW_KEY) !== pending.nonce) return false;
       await this.showStudyPlan();
+      if (this.offerEnvironment) await this.offerEnvironment();
       return true;
     } catch { return false; }
   }

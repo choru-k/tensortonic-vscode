@@ -1,40 +1,67 @@
-# Browser companion: no-console connection
+# Browser companion: no-console connection, architecture and verification
 
-The companion replaces JavaScript console pasting. It does **not** copy your password, login cookies, or session into VS Code. A small one-use pairing ticket still needs to be copied from VS Code into the companion popup when connecting.
+The canonical installation, permission, privacy and revocation details are in
+[`browser-companion/README.md`](../browser-companion/README.md). Version 0.2.0
+adds explicitly authorized, absolute 30-day remembered pairing to extension 0.6.0.
+The old 0.1.0 design was memory-only and required re-pairing after tab refresh or
+editor restart; those limitations do not describe 0.2.0.
 
-## One-time setup
+## Components
 
-Install the separately provided **TensorTonic Browser Companion** only in a browser where you are permitted to install it. It is an unpacked Manifest V3 extension, not a published Chrome Web Store listing. The supplied source can be packaged offline:
-
-```sh
-python3 scripts/package_companion.py
-```
-
-The command produces the unpacked `dist/tensortonic-browser-companion` folder and a ZIP. If your browser and organization allow developer-installed extensions, use the browser's normal Extensions → Developer mode → Load unpacked flow and select that folder. Installation grants `activeTab` and `scripting`: temporary access to the tab where you invoke the companion. The implementation refuses non-TensorTonic pages.
-
-Do not disable an organization policy or browser security feature to install or connect it. Installation/enabling is a separate explicit user action; packaging the files does not install anything.
-
-## Each connection
-
-1. In the **same computer's browser**, open `https://www.tensortonic.com/` and sign in normally, including GitHub/2FA if needed. Confirm the intended account.
-2. In VS Code run **TensorTonic: Connect browser companion**, then choose **Copy pairing code**.
-3. On the signed-in TensorTonic tab, open the companion popup, paste the ticket into its pairing field, and choose **Connect this tab**. No DevTools/Console is used.
-4. If the browser asks to allow local-network access, review the request. The connection is only to VS Code's temporary `127.0.0.1` server. Browser/organization policy may deny this; the extension does not bypass that decision.
-5. Keep the tab open. Use **Disconnect browser** in VS Code or **Disconnect** in the companion to end the session.
-
-Tickets expire after two minutes and are consumed on first successful redemption. A fresh ticket invalidates the previous unredeemed ticket. Refreshing the tab or restarting VS Code requires pairing again. Do not share a ticket. The popup clears the input after an attempt; no ticket or capability is intentionally retained in extension storage, address-bar/history entries, or application logs. The underlying loopback requests still carry the ephemeral capability in query parameters, so browser network diagnostics can expose it. Clipboard contents are not silently changed after your copy action; a consumed/expired ticket is unusable.
+- `shared.js`: exact HTTPS origins, bounded loopback ticket parsing, exact response
+  shapes, 64-hex capability validation, and fixed absolute-expiry validation.
+- `background.js`: trusted-only local storage; session tab-owner lease and
+  reservation nonce; one remembered editor; ordered mutations; optional-origin
+  dynamic isolated-script registration; non-secret popup summaries; durable
+  revoke-only tombstones and global Disconnect.
+- `companion.js`: top-frame isolated connector, in-memory transient capability,
+  explicit pair, periodic resume while a permitted tab exists, expiry handling,
+  and revocation delivery. Generation guards discard late asynchronous responses.
+- `popup.js`: explicit user-gesture site permission request, short ticket input
+  cleared after use, sanitized status, and Disconnect even without a website tab.
+- `connector.js`: copied from canonical `src/browser-connector.js` at build time;
+  no duplicate source is maintained in the companion folder.
 
 ## Security boundaries
 
-- Only explicit `activeTab` + `scripting` grants. No cookies, storage, history, broad tabs, background-worker, or host permissions.
-- Connector runs in an isolated world on the exact HTTPS TensorTonic origins and top frame. No page/runtime message channel accepts arbitrary requests.
-- Browser-origin CORS and local-network checks still apply.
-- Pairing uses a separate 128-bit one-use, expiring ticket. The longer-lived bridge capability stays only in memory in VS Code and the isolated content-script closure.
-- Host, origin, ticket, current session and request schemas are validated. The bridge's endpoint/body allowlist still applies. No account settings, billing, reference solutions or arbitrary fetch proxy is exposed.
-- Closing/refreshing the tab, session expiry, or site/API changes can interrupt access. Never retry an uncertain Submit automatically.
+Pairing tickets remain one-use and two minutes long. The durable resume secret is
+not a website cookie or password, is never placed in the DOM, and is never returned
+by popup status messages. Browser local storage is not a password vault. The
+service worker and popup are trusted extension contexts; the code restricts raw
+storage access from content scripts and returns only the one matching exact-origin
+record to its own top-frame script. No externally connectable interface is enabled.
 
-## Validation limitation
+The editor must rotate ephemeral capabilities on resumed connections, refuse a
+second active owner, enforce the original absolute expiry, and discard uncertain
+pending Run/Submit work. Automatic reconnect does not authorize command replay.
+The browser never searches for editors or sends credentials to another port.
 
-Permissionless unit tests, real loopback HTTP tests and real VS Code-host tests can exercise this code with simulated browser APIs. They do not prove that an installed companion works under every browser's policies. The user approved installation in the assistant's managed Chromium, but this environment's browser automation URL policy blocked navigation to `chrome://extensions` (only HTTP/HTTPS URLs are permitted). No installation or activation was performed. No alternate UI/CLI route, browser-policy change, or Mac fallback was used to bypass the block. Live authenticated grading through the installed companion remains unverified until a permitted environment completes that test.
+One editor is remembered per browser profile. Closing an owning tab releases its
+lease; stale ownership recovers after a bounded timeout. Browser and VS Code
+Disconnect are distinct: browser Disconnect forgets locally immediately but
+requires a permitted live tab to deliver server revocation. Offline revocations
+remain as tombstones, not reconnectable records. Editor Disconnect revokes at the
+server immediately. Account switching requires Disconnect because website requests
+use the currently signed-in browser account.
 
-Primary implementation references: [Chrome activeTab](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab), [isolated content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), and [content-script CORS](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
+## Checks
+
+```sh
+node --test test/companion.test.js test/companion-persistence.test.js
+npm test
+npm run test:transport
+python3 scripts/package_companion.py
+```
+
+The package builder checks exact required and optional permissions, the expected
+worker, the canonical connector, and an explicit file allowlist. It refuses
+unexpected files and symlinked outputs.
+
+Automated coverage includes ephemeral compatibility, expiry, malformed responses,
+wrong origins and subframes, service-worker restart, browser restart/refresh,
+competing tabs/windows, pending pairing cancellation, storage reservation
+invalidation, stale resume completion, offline revoke-only recovery, and permission
+removal. These simulations are not proof that a particular real browser's
+permissions, managed policy, website session, or native VS Code UI works. Real
+activation remains a user-reviewed installation step; do not submit live exercises
+merely to test reconnection.

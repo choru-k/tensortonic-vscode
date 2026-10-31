@@ -9,6 +9,7 @@ const ORIGINS = new Set(['https://www.tensortonic.com', 'https://tensortonic.com
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_PAIRING_BYTES = 1024;
 const MAX_PAIRING_ATTEMPTS = 8;
+const REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
 
 // The bridge cannot call arbitrary URLs, account settings, billing, or solutions.
@@ -52,6 +53,104 @@ class BrowserBridge {
     this.pairingTtl = options.pairingTtl ?? 120000;
     this.now = options.now || Date.now;
     this.pairingTicket = undefined;
+    this.persistence = options.persistence;
+    this.preferredPort = options.preferredPort || 0;
+    this.lease = undefined;
+    this.persistenceTail = Promise.resolve();
+    this.generation = 0;
+    this.loaded = false;
+  }
+
+  _persist(operation) {
+    const task = this.persistenceTail.then(operation);
+    this.persistenceTail = task.catch(() => {});
+    return task;
+  }
+
+  async _load() {
+    if (!this.persistence || this.loaded) return;
+    if (!this.loading) this.loading = (async () => {
+      const raw = await this.persistence.load();
+      this.lease = undefined;
+      if (raw) {
+        let value;
+        try { value = JSON.parse(raw); } catch (_) { value = undefined; }
+        if (value && /^[a-f0-9]{64}$/.test(value.resumeKey) &&
+            Number.isInteger(value.port) && value.port === this.preferredPort &&
+            Number.isSafeInteger(value.issuedAt) && Number.isSafeInteger(value.expiresAt) &&
+            value.expiresAt - value.issuedAt === REMEMBER_MS && value.issuedAt <= this.now() && value.expiresAt > this.now()) {
+          this.lease = value;
+        }
+      }
+      this.loaded = true;
+    })();
+    try { await this.loading; } finally { this.loading = undefined; }
+  }
+
+  async restore() {
+    const generation = this.generation;
+    await this._load();
+    if (generation !== this.generation) return false;
+    if (!this.lease) return false;
+    await this.start();
+    return true;
+  }
+
+  _expired() { return !!this.lease && this.now() >= this.lease.expiresAt; }
+
+  async _forget() {
+    this.generation++;
+    this.revocationPending = this.lease || this.revocationPending;
+    this.lease = undefined;
+    this.resumeReservedUntil = 0;
+    this._revokeSession();
+    if (this.persistence) await this._persist(() => this.persistence.delete());
+    this.revocationPending = undefined;
+  }
+
+  async revoke() {
+    // Only the listener owner may revoke a workspace's persisted lease.
+    // A second VS Code window failing to bind must not erase its owner's key.
+    if (!this.server || !this.port) throw new Error('This window does not own the remembered connection. Disconnect in the owning study window.');
+    await this._forget();
+    await this.stop();
+  }
+
+  async shutdown() {
+    // Editor shutdown is not an explicit Disconnect: retain the bounded lease.
+    if (this.revocationPending) await this._forget();
+    await this.stop();
+  }
+
+  async _smallBody(req) {
+    let size = 0; const parts = [];
+    for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+      size += chunk.length;
+      if (size > MAX_PAIRING_BYTES) throw new Error('Body too large');
+      parts.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(parts).toString('utf8'));
+  }
+
+  async _remembered(req, res) {
+    if (req.method !== 'POST' || !['/resume', '/revoke'].includes(req.url) ||
+        req.headers.host !== `127.0.0.1:${this.port}` || this.stopping) return this._json(res, 403, { error: 'Remembered pairing rejected' });
+    const lease = req.url === '/revoke' ? this.lease || this.revocationPending : this.lease;
+    let body;
+    try { body = await this._smallBody(req); } catch (_) { return this._json(res, 400, { error: 'Invalid remembered request' }); }
+    if (!lease || (lease !== this.lease && !(req.url === '/revoke' && lease === this.revocationPending)) || this.stopping || !body || Object.keys(body).length !== 1 ||
+        typeof body.resumeKey !== 'string' || !/^[a-f0-9]{64}$/.test(body.resumeKey) ||
+        !crypto.timingSafeEqual(Buffer.from(body.resumeKey), Buffer.from(lease.resumeKey))) return this._json(res, 403, { error: 'Remembered pairing rejected' });
+    if (req.url === '/revoke') {
+      await this._forget();
+      return this._json(res, 200, { ok: true });
+    }
+    if (this._expired()) { await this._forget(); return this._json(res, 403, { error: 'Remembered pairing expired' }); }
+    if (this.connected || this.pairingTicket || this.now() < (this.resumeReservedUntil || 0)) return this._json(res, 409, { error: 'Another browser connection is active' });
+    this._revokeSession(new Error('Browser reconnected. Previous requests were canceled; check the website before submitting again.'));
+    this.token = crypto.randomBytes(32).toString('hex');
+    this.resumeReservedUntil = this.now() + 45000;
+    return this._json(res, 200, { base: `http://127.0.0.1:${this.port}`, token: this.token, resumeKey: lease.resumeKey, expiresAt: lease.expiresAt });
   }
 
   _connection(value) {
@@ -63,6 +162,9 @@ class BrowserBridge {
   async start() {
     // A reconnect requested while disconnect is closing the old listener must
     // wait for that listener (and any canceled startup) to finish first.
+    const generation = this.generation;
+    if (this.persistence) await this._load();
+    if (generation !== this.generation) throw new Error('Browser connection startup was canceled.');
     if (this.stopping) await this.stopping;
     if (this.starting) return this.starting;
     if (this.server && this.port) return;
@@ -89,15 +191,20 @@ class BrowserBridge {
         server.once('error', onError);
         server.once('close', onClose);
         try {
-          server.listen(0, '127.0.0.1', () => { cleanup(); resolve(); });
+          server.listen(this.preferredPort, '127.0.0.1', () => { cleanup(); resolve(); });
         } catch (error) { onError(error); }
       });
       // stop() can revoke this listener after its callback but before this
       // continuation. Never publish a port or watchdog for a canceled session.
       if (this.server !== server || this.stopping) throw new Error('Browser connection startup was canceled.');
+      // Re-read only after exclusive port ownership. A failed second window
+      // must never resurrect a lease revoked by the former owner meanwhile.
+      if (this.persistence) { this.loaded = false; await this._load(); }
+      if (this.server !== server || this.stopping) throw new Error('Browser connection startup was canceled.');
       this.port = server.address().port;
       server.unref();
       this.watchdog = setInterval(() => {
+        if (this._expired()) { void this._forget().catch(() => {}); return; }
         if (this.connected && ![...this.pending.values()].some(item => item.dispatched) && Date.now() - this.lastSeen > 45000) {
           this._connection(false);
           this._rejectAll(new Error('Browser disconnected. Reconnect your TensorTonic tab.'));
@@ -105,7 +212,9 @@ class BrowserBridge {
       }, 15000);
       this.watchdog.unref();
     } catch (error) {
+      if (this.persistence) { this.lease = undefined; this.loaded = false; }
       if (this.server === server && !this.stopping) {
+        try { server.close(() => {}); server.closeAllConnections(); } catch (_) { /* Not listening. */ }
         this.server = undefined;
         this.token = undefined;
         this.port = undefined;
@@ -126,6 +235,7 @@ class BrowserBridge {
     if (this.connected) throw new Error('A browser is already connected. Disconnect it before creating another pairing code.');
     // A newly displayed code supersedes both earlier tickets and a redeemed
     // capability whose browser has not yet polled. Never replay old work.
+    this.generation++;
     this._revokeSession(new Error('Browser pairing was renewed. Reconnect with the new pairing code.'));
     this.token = crypto.randomBytes(32).toString('hex');
     const key = crypto.randomBytes(16).toString('hex');
@@ -174,6 +284,17 @@ class BrowserBridge {
     // No awaits between validation and consumption: simultaneous tabs cannot
     // redeem the same ticket twice, and a rotated ticket cannot revive a token.
     this.pairingTicket = undefined;
+    if (this.persistence) {
+      const generation = ++this.generation;
+      const issuedAt = this.now();
+      const lease = { resumeKey: crypto.randomBytes(32).toString('hex'), issuedAt, expiresAt: issuedAt + REMEMBER_MS, port: this.port };
+      this.lease = lease;
+      try { await this._persist(async () => { await this.persistence.delete(); await this.persistence.save(JSON.stringify(lease)); }); }
+      catch (_) { if (this.generation === generation) { this.lease = undefined; this._revokeSession(); } return this._json(res, 500, { error: 'Could not securely save pairing. Try again.' }); }
+      if (this.generation !== generation || this.stopping || this.lease !== lease || !this.token) return this._json(res, 403, { error: 'Pairing canceled' });
+      this.resumeReservedUntil = this.now() + 45000;
+      return this._json(res, 200, { base: `http://127.0.0.1:${this.port}`, token: this.token, resumeKey: lease.resumeKey, expiresAt: lease.expiresAt });
+    }
     return this._json(res, 200, { base: `http://127.0.0.1:${this.port}`, token: this.token });
   }
 
@@ -195,12 +316,16 @@ class BrowserBridge {
     let url;
     try { url = new URL(req.url, 'http://127.0.0.1'); }
     catch (_) { return this._json(res, 400, { error: 'Invalid local request' }); }
+    if (['/resume', '/revoke'].includes(url.pathname)) return this._remembered(req, res);
+    if (this.persistence && req.headers.host !== `127.0.0.1:${this.port}`) return this._json(res, 403, { error: 'Loopback host required' });
+    if (this._expired()) { await this._forget(); return this._json(res, 403, { error: 'Remembered pairing expired' }); }
     if (url.pathname === '/pair') return this._pair(req, res);
     const supplied = url.searchParams.get('key') || '';
     if (!this.token || this.stopping || !/^[a-f0-9]{64}$/.test(supplied) || supplied.length !== this.token.length ||
         !crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(this.token))) {
       return this._json(res, 403, { error: 'Pairing key rejected' });
     }
+    const requestToken = this.token;
     this.lastSeen = Date.now();
     if (url.pathname === '/disconnect' && req.method === 'POST') {
       const acknowledged = new Promise(resolve => {
@@ -209,6 +334,9 @@ class BrowserBridge {
       });
       // Revoke synchronously, but close sockets only after this acknowledgement
       // is flushed (or the requester goes away). start() waits for this teardown.
+      if (this.persistence) {
+        await this._forget();
+      }
       void this._stopAfter(acknowledged);
       return this._json(res, 200, { ok: true });
     }
@@ -233,6 +361,7 @@ class BrowserBridge {
           if (size > MAX_BYTES) { this._json(res, 413, { error: 'Response too large' }); req.destroy(); return; }
           parts.push(chunk);
         }
+        if (this.token !== requestToken || this.stopping || this._expired()) return this._json(res, 403, { error: 'Connection changed' });
         const result = JSON.parse(Buffer.concat(parts).toString('utf8'));
         const pending = this.pending.get(result.id);
         if (!pending) return this._json(res, 404, { error: 'Request expired' });
@@ -256,6 +385,10 @@ class BrowserBridge {
   }
 
   request(apiPath, options = {}) {
+    if (this._expired()) {
+      void this._forget().catch(() => {});
+      return Promise.reject(new Error('Remembered pairing expired. Connect again.'));
+    }
     const method = options.method || 'GET';
     if (!isAllowedRequest(apiPath, method) || (method === 'POST' && !validateBody(options.body, apiPath))) {
       return Promise.reject(new Error('Unsupported TensorTonic request. Only Python problem browsing, Run and Submit are allowed.'));
@@ -300,6 +433,7 @@ class BrowserBridge {
     // Install the latch before running teardown so even an onDidChange
     // callback that immediately reconnects cannot reuse the old listener.
     const stopping = Promise.resolve(acknowledged).then(() => this._stop());
+    this.generation++;
     this.stopping = stopping;
     this._revokeSession();
     try { await stopping; } finally { if (this.stopping === stopping) this.stopping = undefined; }
@@ -320,4 +454,4 @@ class BrowserBridge {
   dispose() { void this.stop(); }
 }
 
-module.exports = { BrowserBridge, isAllowedRequest, validateBody, ORIGINS };
+module.exports = { BrowserBridge, isAllowedRequest, validateBody, ORIGINS, REMEMBER_MS };

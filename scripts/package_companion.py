@@ -8,7 +8,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "browser-companion"
-SOURCE_FILES = ("manifest.json", "shared.js", "companion.js", "popup.html", "popup.js", "popup.css", "README.md")
+SOURCE_FILES = ("manifest.json", "background.js", "shared.js", "companion.js", "popup.html", "popup.js", "popup.css", "README.md")
 
 
 def main():
@@ -32,11 +32,13 @@ def main():
     if unknown:
         raise SystemExit("Refusing to reuse a folder with unexpected files: " + ", ".join(unknown))
     manifest = json.loads(files["manifest.json"].read_text())
-    if manifest.get("manifest_version") != 3 or set(manifest.get("permissions", [])) != {"activeTab", "scripting"}:
+    if manifest.get("manifest_version") != 3 or set(manifest.get("permissions", [])) != {"activeTab", "scripting", "storage"}:
         raise SystemExit("Unexpected companion manifest permissions.")
-    forbidden = ("host_permissions", "optional_host_permissions", "content_scripts", "background", "externally_connectable", "web_accessible_resources")
+    forbidden = ("host_permissions", "content_scripts", "externally_connectable", "web_accessible_resources")
     if any(key in manifest for key in forbidden):
         raise SystemExit("Unexpected persistent, host or external access in companion manifest.")
+    if manifest.get("optional_host_permissions") != ["https://www.tensortonic.com/*", "https://tensortonic.com/*"] or manifest.get("background") != {"service_worker": "background.js"}:
+        raise SystemExit("Unexpected optional site access or service worker.")
     for name, source in files.items():
         copyfile(source, unpacked / name)
     archive = output / f"tensortonic-browser-companion-{manifest['version']}.zip"
@@ -47,7 +49,7 @@ def main():
             bundle.write(unpacked / name, name)
     print(str(unpacked))
     print(str(archive))
-    print(f"Packaged {len(files)} files; activeTab + scripting only")
+    print(f"Packaged {len(files)} files; activeTab + scripting + trusted storage; optional exact TensorTonic sites")
 
 
 if __name__ == "__main__":

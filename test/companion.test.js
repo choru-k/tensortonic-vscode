@@ -55,14 +55,15 @@ function pageHarness(options = {}) {
   return { context, api: context.__tensorTonicCompanion, calls, connections, logs, window };
 }
 
-test('companion manifest has only explicit activeTab and scripting permissions', () => {
+test('companion manifest adds trusted storage and optional exact site access only', () => {
   const manifest = JSON.parse(source('manifest.json'));
   assert.equal(manifest.manifest_version, 3);
-  assert.deepEqual(manifest.permissions, ['activeTab', 'scripting']);
-  for (const field of ['host_permissions', 'optional_host_permissions', 'content_scripts', 'background', 'externally_connectable', 'web_accessible_resources']) {
+  assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage']);
+  for (const field of ['host_permissions', 'content_scripts', 'externally_connectable', 'web_accessible_resources']) {
     assert.equal(field in manifest, false, field);
   }
-  assert.equal(source('companion.js').includes('addListener'), false);
+  assert.deepEqual(manifest.optional_host_permissions, ['https://www.tensortonic.com/*', 'https://tensortonic.com/*']);
+  assert.deepEqual(manifest.background, { service_worker: 'background.js' });
   assert.equal(source('companion.js').includes('postMessage'), false);
   assert.equal(source('popup.html').includes('type="password"'), true);
   assert.equal(source('popup.html').includes('autocomplete="off"'), true);
@@ -263,6 +264,8 @@ function popupHarness(options = {}) {
     setInterval: callback => { window.interval = callback; return 1; },
     clearInterval: () => { window.interval = undefined; },
     chrome: {
+      ...(options.runtime ? { runtime: options.runtime } : {}),
+      ...(options.permissions ? { permissions: options.permissions } : {}),
       tabs: { query: async () => [{ id: 7, url: options.url || 'https://www.tensortonic.com/problems' }] },
       scripting: { executeScript: async spec => {
         calls.push(spec);
@@ -380,8 +383,8 @@ test('stdlib companion package contains canonical connector and only explicitly 
   const unpacked = path.join(output, 'tensortonic-browser-companion');
   assert.equal(fs.readFileSync(path.join(unpacked, 'connector.js'), 'utf8'), fs.readFileSync(path.resolve(__dirname, '../src/browser-connector.js'), 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(path.join(unpacked, 'manifest.json')));
-  assert.deepEqual(manifest.permissions, ['activeTab', 'scripting']);
-  assert.equal(fs.readdirSync(unpacked).length, 9);
+  assert.deepEqual(manifest.permissions, ['activeTab', 'scripting', 'storage']);
+  assert.equal(fs.readdirSync(unpacked).length, 10);
   assert.ok(fs.existsSync(path.join(output, 'tensortonic-browser-companion-' + manifest.version + '.zip')));
   fs.writeFileSync(path.join(unpacked, 'unexpected-token.txt'), 'must-not-package');
   const refused = spawnSync('python3', [path.resolve(__dirname, '../scripts/package_companion.py'), '--output-dir', output], { encoding: 'utf8' });
@@ -500,4 +503,35 @@ test('companion popup declares English and labels pairing actions consistently',
   assert.match(html, /<button id="disconnect"[^>]*>Disconnect<\/button>/);
   assert.match(html, /Use within 2 minutes/);
   assert.match(source('README.md'), /\*\*Connect this tab\*\*/);
+});
+
+test('popup requests only current exact origin and denial never injects or pairs', async () => {
+  const requested = [];
+  const messages = [];
+  const h = popupHarness({
+    permissions: { async request(value) { requested.push(plain(value)); return false; } },
+    runtime: { async sendMessage(value) { messages.push(value); return { remembered: false, pendingRevocation: false }; } },
+  });
+  await flush();
+  h.elements.ticket.value = ticket;
+  await h.elements['pair-form'].listeners.submit({ preventDefault() {} });
+  assert.deepEqual(requested, [{ origins: ['https://www.tensortonic.com/*'] }]);
+  assert.equal(h.calls.some(call => call.files || call.args[0] === 'connect'), false);
+  assert.equal(messages.some(message => message.type === 'register'), false);
+  assert.equal(h.elements.ticket.value, '');
+});
+
+test('popup can globally forget saved pairing without an eligible website tab and reports pending revocation', async () => {
+  const messages = [];
+  const h = popupHarness({ url: 'https://example.com/', runtime: { async sendMessage(message) {
+    messages.push(message);
+    return message.type === 'summary' ? { remembered: true, pendingRevocation: false }
+      : { phase: 'disconnected', pendingRevocation: true };
+  } } });
+  await flush();
+  assert.equal(h.elements.disconnect.disabled, false);
+  await h.elements.disconnect.listeners.click();
+  assert.equal(messages.at(-1).type, 'forget');
+  assert.equal(h.calls.length, 0);
+  assert.match(h.elements.status.textContent, /revocation is pending/);
 });

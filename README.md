@@ -6,10 +6,10 @@ This is not an official TensorTonic extension. It currently supports free Python
 
 ## Installation
 
-Requires VS Code 1.95 or later. Download [TensorTonic 0.5.0 for VS Code](https://github.com/choru-k/tensortonic-vscode/raw/refs/heads/main/releases/tensortonic-vscode-0.5.0.vsix). In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
+Requires VS Code 1.95 or later. Download [TensorTonic 0.8.1 for VS Code](releases/tensortonic-vscode-0.8.1.vsix) or the [install bundle](releases/tensortonic-native-browser-0.8.1.zip). Native mode was validated on VS Code 1.144.0; older versions may require the explicit legacy companion fallback. In the Extensions view, choose `…` → **Install from VSIX…** and select the downloaded package. From a repository checkout, you can also run:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.5.0.vsix
+code --install-extension releases/tensortonic-vscode-0.8.1.vsix
 ```
 
 For a separate study space, use **TensorTonic: Start studying** from the Command Palette or the Study plan toolbar. You can still use the extension in an ordinary existing workspace if you prefer.
@@ -29,14 +29,18 @@ Only an explicit Start command requests a new window. Normal startup never opens
 
 ## Connect your browser — no console required
 
-Install the **TensorTonic Browser Companion** once, then pair it with VS Code. GitHub sign-in, passwords, and login cookies stay in the browser. The current distribution is an unpacked browser extension supplied in the [companion ZIP](releases/tensortonic-browser-companion-0.1.0.zip), not a Chrome Web Store listing. Read the [installation, permissions, and troubleshooting guide](docs/browser-companion.md) first. If your organization blocks installation, do not disable or bypass its policy.
+**0.8.1 defaults to the built-in browser connection.** Run **TensorTonic: Connect browser**, approve the dedicated native browser session, and sign in normally. Then Refresh problems. No companion installation or pairing code is needed in native mode. See [native connection, privacy, migration and validation boundaries](docs/native-browser.md).
+
+To use the retained fallback, run **TensorTonic: Choose connection mode (Native / Legacy)** and select **Legacy browser companion**. The following instructions apply only to that mode.
+
+Install the **TensorTonic Browser Companion** once, then pair it with VS Code. GitHub sign-in, passwords, and login cookies stay in the browser. The current distribution is an unpacked browser extension supplied in the [companion 0.2.0 ZIP](releases/tensortonic-browser-companion-0.2.0.zip), not a Chrome Web Store listing. Read the [installation, permissions, and troubleshooting guide](docs/browser-companion.md) first. If your organization blocks installation, do not disable or bypass its policy.
 
 1. In a browser **on the same computer as VS Code**, sign in to [TensorTonic](https://www.tensortonic.com/) normally. Complete GitHub sign-in and 2FA on the website, and confirm that you are using the intended account.
-2. In VS Code, run **TensorTonic: Connect browser companion** and choose **Copy pairing code**.
+2. In VS Code, run **TensorTonic: Connect browser** and choose **Copy pairing code**.
 3. Open the companion popup on the signed-in TensorTonic tab, paste the code, and select **Connect this tab**. No DevTools or console is needed.
-4. If the browser asks for local-network access, review the request. This is a temporary connection to `127.0.0.1` on the same computer and must be permitted by your browser and organization. Keep the tab open.
+4. If the browser asks for local-network access, review the request. This connects to `127.0.0.1` on the same computer and must be permitted by your browser and organization. A signed-in TensorTonic tab must be open for problem access and grading.
 
-Each pairing code expires after two minutes and can be used only once. Issuing a new code, disconnecting, or restarting VS Code invalidates the old code. Pair again after refreshing the tab. Do not share the code. The popup clears its input after a connection attempt; it does not export login cookies to VS Code or save them to files or extension storage. Copying the one-use code into the popup is still required.
+Each setup code still expires after two minutes and can be used only once. After explicit pairing, a separate connection capability is remembered for **30 days from pairing**, not extended on use: VS Code uses SecretStorage and companion 0.2.0 uses extension-owned local storage. The companion requests only optional TensorTonic site access for automatic reinjection after refresh/restart. No website password or login cookie is copied. Use **Disconnect** in VS Code or **Disconnect and forget** in the companion to revoke remembered access. See [security, multiple windows, and offline revocation](docs/remembered-pairing.md). Browser login expiration is independent; this cannot promise 30 days of website login.
 
 Use **Disconnect browser** in VS Code or **Disconnect** in the companion to end the session. Disconnect before switching to another tab or account. A browser on another computer or VM cannot reach your computer's `127.0.0.1` listener.
 
@@ -121,17 +125,27 @@ The test checks opening and editing a problem, Run, Submit, the Agent context to
 
 The problem browser, description panel, and Run/Submit CodeLens workflow were inspired by the [LeetCode OpenSource VS Code extension](https://github.com/LeetCode-OpenSource/vscode-leetcode). Its LeetCode-specific CLI and authentication code are not included. This implementation is licensed under MIT. The TensorTonic name and service belong to their respective owners.
 
+## Dedicated local Python setup (0.7.0)
+
+The first **Start studying** offers a private study Python environment after explicit confirmation. It uses a supported installed Python, downloads fixed `torch` + `numpy` packages into extension-owned storage, and selects that interpreter only for the study folder. It does not change global Python, overwrite your `.venv`, or install anything on ordinary activation. Use **Set up study Python environment** or **Repair study Python environment** later. See [setup, supported runtimes, cancellation, and verification limits](docs/study-python.md).
+
+## Choose Markdown or Web problem view (0.7.0)
+
+Use **TensorTonic: Choose problem view (Markdown / Web)** in the command palette or study sidebar toolbar, or set `tensortonic.problemView` to `web`. The default remains `markdown`. The command saves the preference to the current workspace (or user settings when no workspace is open); simply changing it does not open pages or rewrite your solution.
+
+When **Web** is selected, opening a problem from the sidebar or navigating Previous/Next opens the original page in VS Code's native Integrated Browser alongside your Python editor. It reuses the prior study tab only while that tab still matches the exact expected original URL; manually navigated or login pages are not broadly matched or hijacked. A separate normal website login may be needed. If the native browser is unavailable, the extension falls back to the local Markdown description instead of silently launching an external browser. **Show problem description** remains an explicit Markdown option. Dirty solution files are preserved.
+
 ## Original interactive explanations (0.5.0)
 
 Select **Interactive explanation** above your solution, use the problem’s sidebar context action, or run **TensorTonic: Open original problem in VS Code**. On supported desktop VS Code, this opens the **actual TensorTonic page** in VS Code’s native Integrated Browser beside your editor. The site renders its own interactive cards and applies its own account/subscription access; the extension does not implement a separate card for each problem. The complete page may also include TensorTonic’s navigation and code editor—not only its explanation card.
 
-Sign in normally **inside the Integrated Browser**. Its session is separate from Chrome/Helium/Safari; existing cookies are not transferred. Subscription access and any GitHub/OAuth login must succeed on the actual site. The existing external browser companion connection remains the Run/Submit bridge; opening the page does not pair that companion or transfer its session. We do not change browser storage, trust, permissions, or AI page-sharing settings.
+Sign in normally **inside the Integrated Browser**. Its session is separate from Chrome/Helium/Safari; existing cookies are not transferred. Subscription access and any GitHub/OAuth login must succeed on the actual site. In native mode, the dedicated owned built-in browser is also the local-editor Run/Submit bridge. In legacy mode, the external companion remains the bridge; opening an original page does not transfer its session. We do not change browser storage, trust, permissions, or AI page-sharing settings.
 
 This action requires VS Code’s native Integrated Browser command, introduced in the 1.109 release family. Current command arguments were checked in official desktop VS Code 1.144.0. Older versions, web builds, or alternative editors may not expose it. If unavailable or the command fails, the extension offers **Open in external browser** and opens it only if you choose that option. You can always use the existing **Open original problem in browser** action. Dispatching the command is not verification that the page loaded or that login succeeded.
 
 Only an explicit action opens a page: startup, refresh, opening a solution, and Previous/Next do not spawn or navigate browser tabs. Reopening the same original URL requests reuse of a matching native browser tab; a different problem may open another tab. No broad wildcard reuse can redirect an unrelated page or in-progress login. Native VS Code owns tab close/reopen and page focus. Native Markdown/math and your solution remain intact.
 
-This is normal top-level browser navigation, **not an iframe, copied page, reverse proxy, or header/CSP bypass**. Native original-page login and card rendering have not yet been visually verified on the user’s Mac; see [0.5.0 verification](docs/original-page-validation.md).
+This is normal top-level browser navigation, **not an iframe, copied page, reverse proxy, or header/CSP bypass**. Native login and Web navigation passed actual macOS validation for 0.8.0; see [current validation scope](docs/native-browser.md#validation). The [0.5.0 verification](docs/original-page-validation.md) remains a historical record.
 
 ## Optional offline learning explorations (0.4.0 retained)
 

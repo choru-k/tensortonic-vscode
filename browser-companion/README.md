@@ -1,41 +1,40 @@
-# TensorTonic VS Code Companion — Unofficial
+# TensorTonic browser companion 0.2.0
 
-This small Manifest V3 browser extension replaces console-code pasting with an explicit popup. It is not an official TensorTonic product or an authentication provider. GitHub/TensorTonic login stays in the normal website.
+Unofficial Chromium Manifest V3 companion for VS Code extension 0.6.0. Pair one browser profile with one local editor workspace for **at most 30 days**. This is a local editor capability, not a TensorTonic password, cookie, or website login session.
 
-## User flow
+## Install and pair
 
-1. After reviewing and explicitly approving installation, install this companion in a browser permitted by your organization's policies.
-2. Sign in normally on `https://www.tensortonic.com` (or `https://tensortonic.com`). Keep VS Code and the browser on the same computer.
-3. In VS Code, run **TensorTonic: Connect browser companion** and use its explicit **Copy pairing code** action.
-4. On the signed-in TensorTonic tab, open this companion's toolbar popup. Paste the one-use code into its masked field and click **Connect this tab**.
-5. If the browser asks for local-network access, review and allow it only when that permission is permitted for this connection. The popup distinguishes “connecting” from a confirmed poll.
+1. Build with `python3 scripts/package_companion.py`; use the resulting unpacked folder or ZIP through the browser's normal extension installation flow. Do not bypass managed-browser restrictions.
+2. Open a signed-in TensorTonic tab on the same computer.
+3. In VS Code, run **TensorTonic: Connect browser companion** and use **Copy pairing code**.
+4. Open the companion popup, paste the code, and choose **Connect this tab**. Review the optional access request for that exact TensorTonic HTTPS site. The other TensorTonic hostname is not silently granted.
+5. Review any browser local-network prompt normally. Wait for “Connected to VS Code.”
 
-The code expires after two minutes and is consumed once. Refreshing or closing the TensorTonic tab requires a new pairing code. The popup's Disconnect action stops the page connector and notifies the local editor. The VS Code Disconnect command also revokes the connection.
+The setup code still expires after **two minutes**, is consumed once, and is never saved. The remembered pairing expires 30 days after creation, not 30 days after last use. Website login can expire sooner; sign in normally if necessary. The companion uses the account currently signed in on the paired exact website origin. Disconnect before switching accounts or sharing the computer.
 
-A small product-UI copy/paste remains; there is **no developer console, login-cookie copying, password entry in the extension, or unattended discovery of local ports**.
+## Reconnection and limits
 
-## Permissions and security boundary
+Refresh/reopen the TensorTonic tab, restart the browser or the same VS Code workspace, or recover from sleep/network failure: the companion retries the local connection while a permitted TensorTonic tab is open. Recovery may take around a minute because a previous tab's connection must time out before another takes ownership. No background website tab is opened. At absolute expiry, pair again.
 
-- Manifest permissions are only `activeTab` and `scripting`. No permanent site permissions, background worker, automatic content scripts, `cookies`, `storage`, `tabs`, `history`, clipboard-reading permissions, externally connectable messages, or web-accessible resources.
-- Access follows the user's extension action and is restricted by the code to the two exact HTTPS TensorTonic origins, top frame only. Script execution uses Chrome's isolated world, not the page's main JavaScript world.
-- The pairing code selects only `http://127.0.0.1:<valid-port>/pair`. It cannot select an arbitrary host/path. Requests refuse redirects; returned configuration must name the exact requested origin.
-- Only the one-use pairing ticket reaches the popup. The longer-lived connection capability remains in an ephemeral isolated-script closure and is never returned to the popup, placed in the DOM, persisted, or logged.
-- No page/runtime message listeners expose a general fetch service. The packaged canonical connector keeps its narrow TensorTonic problem API allowlist. Cookies are included by the browser's normal fetch rules, never read by this extension.
-- Content-script network calls are still subject to the page's origin/CORS and browser local-network policies. This extension is **not** a bypass for managed-browser policy. If installation, scripting, or local-network access is blocked, stop and ask the relevant administrator.
+One remembered editor is supported per browser profile. A second workspace requires **Disconnect** first; a different tab/window cannot silently take over the active editor. VS Code stores a fixed loopback port for that workspace; if another process owns it, the editor fails closed rather than redirecting credentials or scanning other ports. Reopening a different workspace does not inherit this pairing.
 
-Official platform references: [activeTab](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab), [isolated content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), and [content-script cross-origin requests](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests).
+Reconnection never replays Run, Submit, or a pending command. Check TensorTonic before retrying an operation whose outcome is uncertain.
 
-## Build and test
+## Disconnect and revoke
 
-From the VS Code repository root:
+The popup's **Disconnect** button works even without a TensorTonic tab. It immediately forgets the active browser pairing and stops known content connectors. When a permitted TensorTonic tab can reach the editor, the companion also revokes the editor-side grant. If the editor is offline or no permitted tab exists, a **revoke-only tombstone** remains until a later permitted visit can deliver revocation or the original expiry is reached. The UI states that revocation is pending; it does not claim the remote grant was deleted. Use VS Code's **TensorTonic: Disconnect** for immediate editor-side revocation.
 
-```sh
-python3 scripts/package_companion.py
-node --test test/companion.test.js
-```
+Removing TensorTonic site access forgets active remembered access and removes automatic script registration for that site. Pending revocation still needs a permitted tab, or editor-side Disconnect. Removing the entire browser extension deletes its local data but cannot contact an offline editor: revoke from VS Code as well.
 
-The packager creates `dist/tensortonic-browser-companion/` and a versioned ZIP. It copies the canonical `src/browser-connector.js` as `connector.js`; do not load the unbuilt source folder, which intentionally does not contain a second drifting copy of that script. The ZIP contains only allowlisted package files.
+## Exact permissions and storage
 
-Unpacked installation, enabling developer mode, a store listing, or installing/activating this extension in an existing browser is a **separate user/admin-authorized step**. No such operation is performed by the build or the permissionless Node tests. Do not use another browser, a hidden injection channel, or a policy change to work around a denied action.
+- Required: `activeTab`, `scripting`, `storage`.
+- Optional site access: `https://www.tensortonic.com/*` and `https://tensortonic.com/*`; only the current exact origin is requested when Connect is clicked.
+- No `cookies`, `tabs`, `history`, clipboard-reading, all-sites, API-host, or localhost host permission. No externally connectable messages or web-accessible resources.
+- A service worker restricts `storage.local` and `storage.session` to trusted extension contexts before serving requests. It dynamically registers top-frame isolated scripts only on granted TensorTonic origins.
+- Local browser storage contains the editor loopback address, a random resume secret, exact origin, and absolute expiry. It is **not an encrypted password vault** and is **not synced**. The ephemeral connection token is not persisted. Protect the browser profile and computer.
+- The worker returns secrets only to this extension's exact-origin, top-frame script; popup messages/UI never contain them. No webpage DOM or page-message bridge exposes them. Trusted extension contexts, including the popup, technically have storage access; this implementation's popup only requests non-secret summaries.
+- Session storage holds one tab-owner lease and in-flight reservation nonce, not website credentials. Disconnect invalidates reservations so late pairing responses cannot restore access.
+- Pair/resume/revoke only target the previously validated canonical `http://127.0.0.1:<port>` address, refuse redirects, and omit cookies. Website API requests remain narrowly allowlisted and use normal browser-managed login.
 
-Node tests simulate extension/browser APIs and fake network responses. Passing them is not proof that a particular managed browser permits installation or that live account/browser networking works. Actual browser and live account validation must be reported separately.
+Automated worker/content tests simulate browser APIs. Real-browser permission dialogs, managed policies, restart behavior and website authentication still require installation-time manual verification.

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.8.1
+
+- Send native connection guidance to the TensorTonic output channel instead of a notification that can pause the integrated browser during login. Keep pre-launch consent, cancellable progress, and existing status-bar feedback.
+- No authentication, browser-storage, request, or grading behavior changes.
+
+## 0.8.0 (native-browser release candidate)
+
+- Add an explicit built-in browser connection using only an owned editor-browser debugger tree; no cookie/token extraction, pairing codes, or companion is required in native mode.
+- Add bounded large-JSON result transport, strict endpoint/body allowlists, owned-session cleanup and exactly-once grading without automatic retries or fallback.
+- Route Web presentation through the owned study browser while preserving dirty solutions, Python environments, and explicit Markdown descriptions.
+- Keep the legacy companion and 30-day pairing as an explicit selectable fallback until actual installed-candidate feature parity is verified.
+- Include a separately authorized read-only native-host validation runner; no real account submission or automatic companion removal is part of installation.
+
+
+## 0.7.0 (local release candidate)
+
+- Offer dedicated per-study-folder Python environment setup after explicit Start/setup consent, using installed supported runtimes and fixed torch/numpy packages in extension-owned storage.
+- Select and verify the interpreter through Microsoft's scoped Python API; never overwrite global Python or existing project .venv/settings. Add cancellable setup and explicit repair commands.
+- Add `tensortonic.problemView` and a discoverable Markdown/Web choice. Explicit problem navigation respects the preference, preserves dirty solutions, and safely reuses original native-browser pages when possible.
+- Retain 0.6.0's fixed 30-day remembered browser pairing and companion 0.2.0.
+
+
+## 0.6.0 (local release candidate)
+
+- Remember explicitly paired browser access for an absolute 30 days using VS Code SecretStorage and extension-owned browser storage; never store website passwords or cookies.
+- Restore the same workspace's loopback listener after editor restart; reconnect after tab refresh, browser restart, sleep, or transient connection loss when a signed-in TensorTonic tab is available.
+- Keep two-minute single-use setup tickets. Require companion 0.2.0 with storage and optional exact TensorTonic site access; do not request arbitrary sites, API-origin, or loopback host permissions.
+- Revoke remembered access on explicit Disconnect, fail closed at expiry, isolate multiple study windows, and never replay an uncertain Run or Submit.
+- Add regression coverage for persistence races, stale window ownership, expiry during requests, failed secure storage, and duplicate browser sessions.
+
+
 ## 0.5.0
 
 - Make Interactive explanation open the original TensorTonic page in VS Code’s native Integrated Browser, with feature detection and canonical URL reuse filtering without wildcards. No per-problem visualization implementation is needed for this path.

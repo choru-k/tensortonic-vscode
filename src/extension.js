@@ -4,17 +4,21 @@ const vscode = require('vscode');
 const crypto = require('node:crypto');
 const { TensorTonicClient } = require('./client');
 const { BrowserBridge } = require('./bridge');
+const { NativeBrowserBridge } = require('./native-browser-bridge');
+const { ConnectionManager } = require('./connection-manager');
+const { rememberedOptions } = require('./remembered-pairing');
 const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = require('./context');
 const { renderResult } = require('./results');
 const { ProblemTreeProvider } = require('./tree');
 const { StudyWorkspace } = require('./study-workspace');
+const { StudyEnvironmentUI } = require('./study-environment-ui');
 const { resolveCard } = require('./cards');
 const { buildCardHtml } = require('./cards/webview');
 
 const COMMANDS = [
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
   'description', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
-  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder',
+  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'repairStudyEnvironment', 'chooseConnectionMode', 'chooseProblemView',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
@@ -169,7 +173,9 @@ async function createTextFile(uri, content) {
 }
 
 function activate(context) {
-  const bridge = new BrowserBridge();
+  const nativeBridge = new NativeBrowserBridge(vscode);
+  const legacyBridge = new BrowserBridge(rememberedOptions(vscode, context));
+  const bridge = new ConnectionManager({ native: nativeBridge, legacy: legacyBridge, mode: vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native') });
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
   const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, cardGeneration: 0, cardPanel: undefined, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
   const tree = new ProblemTreeProvider(vscode, state);
@@ -219,7 +225,7 @@ function activate(context) {
 
   function updateConnection() {
     status.text = bridge.connected ? '$(check) TensorTonic' : '$(plug) TensorTonic';
-    status.tooltip = bridge.connected ? 'TensorTonic browser connected' : 'Connect a signed-in TensorTonic browser tab';
+    status.tooltip = bridge.connected ? `TensorTonic ${bridge.mode === 'native' ? 'built-in browser' : 'legacy companion'} connected; website login may still be required` : 'Connect the built-in TensorTonic browser (or choose the legacy companion)';
     status.command = bridge.connected ? 'tensortonic.search' : 'tensortonic.connect';
     tree.refresh();
     vscode.commands.executeCommand('setContext', 'tensortonic.connected', bridge.connected);
@@ -228,7 +234,7 @@ function activate(context) {
   bridge.onDidChange = () => {
     if (!bridge.connected) invalidateProblems();
     updateConnection();
-    if (bridge.connected) refresh().catch(showError);
+    if (bridge.connected && bridge.mode === 'browserCompanion') refresh().catch(showError);
   };
 
   function showError(error) {
@@ -238,7 +244,7 @@ function activate(context) {
   }
 
   function requireConnection() {
-    if (!bridge.connected) throw new Error('Connect a signed-in TensorTonic browser tab using “TensorTonic: Connect browser companion” first.');
+    if (!bridge.connected) throw new Error('Use “TensorTonic: Connect browser” first, then sign in normally on the TensorTonic page.');
   }
 
   function invalidateProblems() {
@@ -295,6 +301,26 @@ function activate(context) {
     if (bridge.connected && !state.loading) await refresh();
   }
 
+  function getProblemView() {
+    // A workspace value can choose only a local renderer or canonical site route.
+    // It is never used as a URL, command identifier, script, or file path.
+    return vscode.workspace.getConfiguration('tensortonic').get('problemView', 'markdown') === 'web' ? 'web' : 'markdown';
+  }
+
+  async function chooseProblemView() {
+    const chosen = await vscode.window.showQuickPick([
+      { label: 'Markdown', description: 'Local formatted statement and math', mode: 'markdown' },
+      { label: 'Web', description: 'Original TensorTonic page and interactive cards', mode: 'web' },
+    ], { title: 'TensorTonic problem view', placeHolder: 'Choose the default for future problem opens and navigation' });
+    if (!chosen || !['markdown', 'web'].includes(chosen.mode)) return;
+    const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length;
+    const target = hasWorkspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    await vscode.workspace.getConfiguration('tensortonic').update('problemView', chosen.mode, target);
+    // Changing this preference alone must not reload/write a learner's files or
+    // open a page. It applies on the next explicit open/Previous/Next action.
+    await vscode.window.showInformationMessage(`TensorTonic problem view is now ${chosen.mode === 'web' ? 'Web' : 'Markdown'} for ${hasWorkspace ? 'this workspace' : 'your user settings'}. Open a problem or use Previous/Next to apply it. Description remains available as Markdown.`);
+  }
+
   async function chooseStudyPlan() {
     const chosen = await vscode.window.showInputBox({
       title: 'TensorTonic study plan',
@@ -321,23 +347,48 @@ function activate(context) {
     if (pairingPromptInProgress) return undefined;
     pairingPromptInProgress = true;
     try {
+      await bridge.setMode(vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native'));
+      if (bridge.mode === 'native') {
+        if (vscode.workspace.isTrusted !== true || vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) throw new Error('The native connection requires a trusted local VS Code desktop window.');
+        if (!bridge.connected) {
+          const choice = await vscode.window.showInformationMessage('Connect TensorTonic in VS Code’s built-in browser?', {
+            modal: true,
+            detail: 'Open a dedicated TensorTonic browser page and attach only this extension’s own browser debug session. Sign in normally in that page. Problem access and explicit Run/Submit use the website session without copying cookies, passwords, or tokens. No pairing code or Chrome/Helium companion is needed. Disconnect stops only this owned connection. Native connection is a release candidate; the legacy companion remains available as an explicit fallback.',
+          }, 'Connect built-in browser', 'Choose connection mode');
+          if (choice === 'Choose connection mode') return chooseConnectionMode();
+          if (choice !== 'Connect built-in browser') return;
+        }
+        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Connecting the TensorTonic built-in browser', cancellable: true }, async (_progress, token) => {
+          const cancel = token.onCancellationRequested(() => { void nativeBridge.stop().catch(() => {}); });
+          try { if (token.isCancellationRequested) return; await bridge.start(); }
+          finally { cancel.dispose(); }
+        });
+        if (!bridge.connected) return;
+        try { await refresh(); } catch (error) { if (error.code !== 'AUTH_REQUIRED') throw error; }
+        // Notifications can pause the integrated browser while the user signs in.
+        // Keep guidance discoverable without showing a toast or moving focus.
+        output.appendLine('TensorTonic browser connected. Sign in normally on the dedicated page if needed, then use Refresh problems or Connect again. No companion pairing code is required.');
+        return { nativeConnected: true };
+      }
       if (bridge.connected) {
         await refresh();
         return vscode.window.showInformationMessage('TensorTonic browser is already connected. Disconnect before pairing another tab or account.');
       }
       const chosen = await vscode.window.showInformationMessage('Connect with the TensorTonic browser companion', {
         modal: true,
-        detail: 'Sign in normally on TensorTonic in the same computer’s browser. Copy a one-use pairing code, then paste it into the companion popup on that tab. No console or login-cookie copying is needed. The code expires after two minutes.',
+        detail: 'Sign in normally on TensorTonic on this computer. Pairing will be remembered for 30 days in VS Code SecretStorage and the browser companion, with automatic reconnection. No passwords or website cookies are stored. Disconnect revokes remembered access. Copy the one-use code and paste it into the companion within two minutes; approve its TensorTonic-only permission if you agree.',
       }, 'Copy pairing code', 'Companion setup');
       if (chosen === 'Companion setup') return companionGuide();
       if (chosen !== 'Copy pairing code') return undefined;
+      if (vscode.workspace.isTrusted === false) throw new Error('Review workspace trust before connecting TensorTonic.');
+      await rememberedConnectionReady;
       await bridge.start();
       if (bridge.connected) return vscode.window.showInformationMessage('TensorTonic browser is already connected.');
       // Clipboard writes happen only after the explicit Copy action. Never
       // put the ticket or longer-lived capability in a document, log or URL.
       const ticket = bridge.pairingCode();
       await vscode.env.clipboard.writeText(ticket);
-      const next = await vscode.window.showInformationMessage('Pairing code copied. Paste it into the browser companion within two minutes. Keep that TensorTonic tab open.', 'Open TensorTonic', 'Companion setup');
+      const next = await vscode.window.showInformationMessage('Pairing code copied. Paste it into companion 0.2.0 or newer within two minutes. The connection can be remembered for 30 days.', 'Open TensorTonic', 'Companion setup');
       if (next === 'Open TensorTonic') await vscode.env.openExternal(vscode.Uri.parse('https://www.tensortonic.com/'));
       if (next === 'Companion setup') await companionGuide();
       return { pairingRequested: true };
@@ -346,9 +397,24 @@ function activate(context) {
     }
   }
 
+  async function chooseConnectionMode() {
+    const selected = await vscode.window.showQuickPick([
+      { label: 'Built-in browser', description: 'Native connection — no browser companion or pairing code', mode: 'native' },
+      { label: 'Legacy browser companion', description: 'Existing Chrome/Helium companion and remembered pairing', mode: 'browserCompanion' },
+    ], { title: 'TensorTonic connection mode', placeHolder: 'Changing mode disconnects the current owned connection; requests are never replayed.' });
+    if (!selected || !['native', 'browserCompanion'].includes(selected.mode)) return;
+    await bridge.setMode(selected.mode);
+    const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
+    await vscode.workspace.getConfiguration('tensortonic').update('connectionMode', selected.mode, target);
+    invalidateProblems(); updateConnection();
+    await vscode.window.showInformationMessage(`TensorTonic now uses ${selected.mode === 'native' ? 'the built-in browser' : 'the legacy browser companion'}. Run Connect browser when ready. No request was replayed.`);
+  }
+
   async function disconnect() {
+    await rememberedConnectionReady;
     invalidateProblems();
-    await bridge.stop();
+    if (typeof bridge.revoke === 'function') await bridge.revoke();
+    else await bridge.stop();
     updateConnection();
   }
 
@@ -469,7 +535,16 @@ function activate(context) {
     state.currentProblem = problem;
     const contextUri = await writeProblemContext(problem, uri);
     if (!isCurrent()) return undefined;
-    await showDescription(problem, uri, isCurrent);
+    const mode = getProblemView();
+    const presentationCurrent = () => isCurrent() && getProblemView() === mode;
+    if (mode === 'web') {
+      const opened = await interactiveExplanation(problem.ref, { studyNavigation: true, isCurrentNavigation: presentationCurrent });
+      if (!presentationCurrent()) return undefined;
+      if (!opened || !opened.requested) await showDescription(problem, uri, presentationCurrent);
+      else if (state.statementPanel) { const previous = state.statementPanel; state.statementPanel = undefined; previous.dispose(); }
+    } else {
+      await showDescription(problem, uri, presentationCurrent);
+    }
     if (!isCurrent()) return undefined;
     return { problem, uri, testsUri: testsUriFor(uri), contextUri };
   }
@@ -591,17 +666,21 @@ function activate(context) {
     return problem;
   }
 
-  async function interactiveExplanation(input) {
+  async function interactiveExplanation(input, { studyNavigation = false, isCurrentNavigation = () => true } = {}) {
     // Delegate normal top-level navigation to VS Code's native Chromium browser.
     // Never frame/proxy the page, alter headers, or transfer browser credentials.
     const generation = ++state.cardGeneration;
     const navigation = state.openGeneration;
-    const isCurrent = () => !disposed && generation === state.cardGeneration && navigation === state.openGeneration;
+    const isCurrent = () => !disposed && generation === state.cardGeneration && navigation === state.openGeneration && isCurrentNavigation();
     let ref;
     try { ref = await refFrom(input || state.lastSolutionUri); }
     catch (error) { if (!isCurrent()) return; throw error; }
     if (!isCurrent()) return;
     const url = problemUrl(ref);
+    if (bridge.mode === 'native' && bridge.connected) {
+      await bridge.openProblemPage(url);
+      return isCurrent() ? { ref, target: 'owned-native', requested: true } : undefined;
+    }
     let available;
     try { available = await vscode.commands.getCommands(true); }
     catch (error) { if (!isCurrent()) return; throw error; }
@@ -610,7 +689,12 @@ function activate(context) {
     let unavailable = !available.includes(nativeCommand);
     if (!unavailable) {
       try {
-        await vscode.commands.executeCommand(nativeCommand, { url, openToSide: true, reuseUrlFilter: url });
+        // Reuse only the exact canonical URL last requested by study navigation.
+        // Never match all TensorTonic pages: a manually navigated/login tab must
+        // not be redirected. If the user navigated away, native Code opens a tab.
+        const reuseUrlFilter = studyNavigation && state.studyBrowserUrl ? state.studyBrowserUrl : url;
+        await vscode.commands.executeCommand(nativeCommand, { url, openToSide: true, reuseUrlFilter });
+        if (studyNavigation && isCurrent()) state.studyBrowserUrl = url;
         // Dispatch is not proof of page loading, authentication or entitlement.
         return isCurrent() ? { ref, target: 'integrated', requested: true } : undefined;
       } catch (_) {
@@ -619,6 +703,10 @@ function activate(context) {
       }
     }
     if (unavailable) {
+      if (studyNavigation) {
+        await vscode.window.showInformationMessage('Web view is unavailable in this VS Code window. Showing Markdown instead; use Interactive explanation for an explicit external-browser option. The Web preference is unchanged.');
+        return isCurrent() ? { ref, target: 'none', requested: false } : undefined;
+      }
       const choice = await vscode.window.showInformationMessage(
         'The original page could not be opened in VS Code’s Integrated Browser. Use a desktop VS Code version with Integrated Browser, or open your normal browser. Sign in on the website yourself; browser sessions are separate.',
         'Open in external browser');
@@ -783,13 +871,18 @@ function activate(context) {
     return result;
   }
 
-  const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan });
+  const studyEnvironment = new StudyEnvironmentUI(vscode, context);
+  context.subscriptions.push(studyEnvironment);
+  const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan, offerEnvironment: () => studyEnvironment.offer().catch(showError) });
 
   const handlers = {
     connect, disconnect, openProblem, search, refresh, description, interactiveExplanation, offlineExploration, openOriginalInVSCode: interactiveExplanation, openTests, openInBrowser,
-    chooseStudyPlan, showStudyPlan,
+    chooseStudyPlan, chooseProblemView, showStudyPlan,
     startStudying: () => studyWorkspace.start(),
     changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),
+    chooseConnectionMode,
+    setupStudyEnvironment: () => studyEnvironment.setup(),
+    repairStudyEnvironment: () => studyEnvironment.repair(),
     run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
     openAgentContext, discussWithAgent, discussWithCodex,
     previousProblem: input => navigateProblem(-1, input), nextProblem: input => navigateProblem(1, input),
@@ -814,8 +907,11 @@ function activate(context) {
   }
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(rememberSelectedSolution));
   rememberSelectedSolution(vscode.window.activeTextEditor);
-  context.subscriptions.push({ dispose() { bridge.stop().catch(() => {}); } });
+  context.subscriptions.push({ dispose() { (typeof bridge.shutdown === 'function' ? bridge.shutdown() : bridge.stop()).catch(() => {}); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (event.affectsConfiguration('tensortonic.connectionMode')) {
+      void bridge.setMode(vscode.workspace.getConfiguration('tensortonic').get('connectionMode', 'native')).then(() => { invalidateProblems(); updateConnection(); }).catch(showError);
+    }
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
       invalidateProblems();
     }
@@ -835,11 +931,16 @@ function activate(context) {
 
   // Startup may consume a recent explicit Start Studying request for this exact
   // local folder. It never opens a window or redirects existing solution files.
+  const rememberedConnectionReady = vscode.workspace.isTrusted !== false && typeof bridge.restore === 'function'
+    ? bridge.restore().catch(() => {
+      output.appendLine('Remembered connection could not be restored. Another window may own its local port, or secure storage may be unavailable. Use the original study window; never change security settings to bypass this.');
+      return false;
+    }) : Promise.resolve(false);
   const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().catch(() => {
     output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
     return false;
   });
-  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
+  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, rememberedConnectionReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {}

@@ -100,7 +100,7 @@ class ProblemTreeProvider {
   rebuild() {
     this.clear();
     if (!this.state.bridge || !this.state.bridge.connected) {
-      this.placeholder('Connect your TensorTonic browser companion', 'disconnected', 'plug', 'connect');
+      this.placeholder('Connect your TensorTonic browser', 'disconnected', 'plug', 'connect');
       return;
     }
     if (this.state.loading) {

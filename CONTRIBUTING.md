@@ -4,7 +4,7 @@
 
 Maintain this public repository in English: documentation, changelog entries, user-facing extension and companion text, code comments, and test descriptions. Preserve TensorTonic's original problem content, proper names, and intentional multilingual fixtures. Do not translate user-authored solutions or notes.
 
-The extension is unofficial and supports Python free and study-plan problems. Preserve its existing authentication and security boundaries: login stays in the browser, pairing is explicit and temporary, and requests use the narrow supported API allowlist.
+The extension is unofficial and supports Python free and study-plan problems. Preserve its existing authentication and security boundaries: login stays in the browser, setup pairing is explicit and short-lived; remembered access is a separate revocable capability with an absolute 30-day limit, and requests use the narrow supported API allowlist.
 
 ## Checks before submitting a change
 

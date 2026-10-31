@@ -26,6 +26,7 @@ exports.run = async function run() {
     assert.ok(extension,'installed extension discovered');
     report.extensionPath=extension.extensionPath;
     report.extensionVersion=extension.packageJSON.version;
+    await vscode.workspace.getConfiguration('tensortonic').update('connectionMode','browserCompanion',vscode.ConfigurationTarget.Workspace);
     api=await extension.activate();
     assert.equal((await api.smokeTest()).connected,false);
     const commands=await vscode.commands.getCommands(true);
@@ -54,6 +55,23 @@ exports.run = async function run() {
         if(target.origin!==`http://127.0.0.1:${api.bridge.port}`)throw new Error('External network blocked');
         return fetch(url,{...options,headers:{...options.headers,Origin:origin}});
       }};
+    // Synthetic extension storage API: never reads a real browser profile.
+    let savedPairing, pendingRevocation;
+    sandbox.setInterval = () => 0;
+    sandbox.chrome = { runtime: {
+      onMessage: { addListener() {} },
+      async sendMessage(message) {
+        if (message.type === 'reserve') return { ok: true, reservation: 'host-test-reservation' };
+        if (message.type === 'save') { savedPairing = { ...message.record, origin }; return { ok: true }; }
+        if (message.type === 'claim') return pendingRevocation ? { pending: pendingRevocation } : savedPairing ? { record: savedPairing } : {};
+        if (message.type === 'forget') { pendingRevocation = savedPairing; savedPairing = undefined; return { ok: true }; }
+        if (message.type === 'abandon') { pendingRevocation = message.record; return { ok: true }; }
+        if (message.type === 'revocations') return { pending: pendingRevocation };
+        if (message.type === 'revoked') { pendingRevocation = undefined; return { ok: true }; }
+        if (message.type === 'invalid') { savedPairing = undefined; return { ok: true }; }
+        throw new Error('Unexpected synthetic runtime message');
+      },
+    } };
     sandbox.window=sandbox;
     sandbox.top=sandbox;
     vm.createContext(sandbox);

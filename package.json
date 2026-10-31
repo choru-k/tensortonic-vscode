@@ -1,8 +1,8 @@
 {
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
-  "description": "Browse and solve TensorTonic Python problems with a no-console browser companion; login cookies stay in your browser.",
-  "version": "0.5.0",
+  "description": "Solve TensorTonic problems through VS Code’s built-in browser, with an explicit legacy companion fallback. Login stays in the browser.",
+  "version": "0.8.1",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -64,7 +64,7 @@
     "commands": [
       {
         "command": "tensortonic.connect",
-        "title": "Connect browser companion",
+        "title": "Connect browser",
         "category": "TensorTonic",
         "icon": "$(plug)"
       },
@@ -170,7 +170,7 @@
       },
       {
         "command": "tensortonic.changeStudyFolder",
-        "title": "Start studying in another folder\u2026",
+        "title": "Start studying in another folder…",
         "category": "TensorTonic",
         "icon": "$(folder-opened)"
       },
@@ -191,6 +191,27 @@
         "title": "Offline learning exploration",
         "category": "TensorTonic",
         "icon": "$(beaker)"
+      },
+      {
+        "command": "tensortonic.setupStudyEnvironment",
+        "title": "Set up study Python environment",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.repairStudyEnvironment",
+        "title": "Repair study Python environment",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.chooseProblemView",
+        "title": "Choose problem view (Markdown / Web)",
+        "category": "TensorTonic",
+        "icon": "$(browser)"
+      },
+      {
+        "command": "tensortonic.chooseConnectionMode",
+        "title": "Choose connection mode (Native / Legacy)",
+        "category": "TensorTonic"
       }
     ],
     "menus": {
@@ -224,6 +245,11 @@
           "command": "tensortonic.disconnect",
           "when": "view == tensortonicProblems && tensortonic.connected",
           "group": "connection@1"
+        },
+        {
+          "command": "tensortonic.chooseProblemView",
+          "when": "view == tensortonicProblems",
+          "group": "settings@2"
         }
       ],
       "view/item/context": [
@@ -258,6 +284,30 @@
           "default": "tensortonic",
           "description": "Relative folder inside the workspace for solution code and editable test cases.",
           "scope": "window"
+        },
+        "tensortonic.problemView": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "web"
+          ],
+          "default": "markdown",
+          "enumDescriptions": [
+            "Show the local formatted Markdown statement and math.",
+            "Open the canonical original TensorTonic page in VS Code Integrated Browser beside the solution. Website login is separate."
+          ],
+          "description": "Default presentation for explicit problem opens, sidebar selection, and Previous/Next. Choose problem view command changes this workspace only when one is open. Description always opens Markdown.",
+          "scope": "window"
+        },
+        "tensortonic.connectionMode": {
+          "type": "string",
+          "enum": [
+            "native",
+            "browserCompanion"
+          ],
+          "default": "native",
+          "scope": "window",
+          "markdownDescription": "Use the built-in browser (native release candidate) or explicitly select the legacy Chrome/Helium companion. Mode changes disconnect owned sessions; requests are never replayed."
         }
       }
     },

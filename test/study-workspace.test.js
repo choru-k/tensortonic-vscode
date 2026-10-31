@@ -263,3 +263,14 @@ test('failed pending-state persistence prevents the open request and does not po
   h.onUpdate = undefined;
   await h.controller.start(); assert.equal(h.opens.length, 1);
 });
+
+test('Python setup offer is tied to explicit Start or a fresh matching handoff, never remembered-folder startup alone', async () => {
+  const idle = harness({ current: '/study', remembered: 'file:///study' }); let offers = 0;
+  idle.controller.offerEnvironment = async () => { offers++; };
+  assert.equal(await idle.controller.restorePendingStudyView(), false); assert.equal(offers, 0);
+  await idle.controller.start(); assert.equal(offers, 1);
+  const handoff = harness({ current: '/study', remembered: 'file:///study', pending: marker() });
+  handoff.controller.offerEnvironment = async () => { offers++; };
+  assert.equal(await handoff.controller.restorePendingStudyView(), true); assert.equal(offers, 2);
+  assert.equal(await handoff.controller.restorePendingStudyView(), false); assert.equal(offers, 2);
+});

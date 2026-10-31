@@ -10,6 +10,8 @@ let busy = false;
 let timer;
 let uiGeneration = 0;
 let localTicketError = false;
+let savedPairing = false;
+let pendingRevocation = false;
 
 function showStatus(result) {
   let phase = result && result.phase || 'idle';
@@ -23,7 +25,7 @@ function showStatus(result) {
     pairing: 'Checking the one-use pairing code…',
     connecting: 'Connection requested. Check your browser for a local-network permission prompt and check VS Code.',
     connected: 'Connected to VS Code. Keep this TensorTonic tab open.',
-    disconnected: 'Disconnected. Copy a new code from VS Code to reconnect.',
+    disconnected: 'Disconnected. Remembered pairings reconnect automatically while VS Code and a permitted TensorTonic tab are open.',
     error: 'Could not connect. Check that you are signed in, using the same computer, and have local-network permission. Then copy a new code from VS Code.',
   };
   statusLine.textContent = invalidTicket
@@ -33,7 +35,8 @@ function showStatus(result) {
   const active = ['pairing', 'connecting', 'connected'].includes(phase);
   connectButton.disabled = busy || !selectedTab || active;
   ticketInput.disabled = busy || !selectedTab || active;
-  disconnectButton.disabled = busy || !selectedTab || !active;
+  disconnectButton.disabled = busy || (!active && !savedPairing && !pendingRevocation);
+  if (pendingRevocation && !active) statusLine.textContent = 'Forgotten in this browser. Editor revocation is pending until a permitted TensorTonic tab can reach it. VS Code Disconnect revokes immediately.';
 }
 
 async function invoke(method, value) {
@@ -69,6 +72,12 @@ form.addEventListener('submit', async event => {
     TensorTonicCompanionShared.parseTicket(ticket);
     failureCode = 'PAIRING_FAILED';
     if (!selectedTab || !TensorTonicCompanionShared.isTensorTonicPage(selectedTab.url)) throw new Error('WRONG_PAGE');
+    if (chrome.permissions) {
+      const granted = await chrome.permissions.request({ origins: [new URL(selectedTab.url).origin + '/*'] });
+      if (!granted) throw new Error('PERMISSION_REQUIRED');
+      const registered = await chrome.runtime.sendMessage({ type: 'register' });
+      if (!registered || registered.error) throw new Error('REGISTRATION_FAILED');
+    }
     await chrome.scripting.executeScript({
       target: { tabId: selectedTab.id, frameIds: [0] }, world: 'ISOLATED',
       files: ['shared.js', 'connector.js', 'companion.js'],
@@ -100,7 +109,12 @@ disconnectButton.addEventListener('click', async () => {
   busy = true;
   showStatus({ phase: 'connecting' });
   try {
-    const result = await invoke('disconnect');
+    const result = chrome.runtime
+      ? await chrome.runtime.sendMessage({ type: 'forget' })
+      : await invoke('disconnect');
+    if (!result || result.error) throw new Error('FORGET_FAILED');
+    savedPairing = false;
+    pendingRevocation = !!result.pendingRevocation;
     busy = false;
     showStatus(result);
   } catch (_) {
@@ -109,9 +123,19 @@ disconnectButton.addEventListener('click', async () => {
   }
 });
 
+async function refreshSummary() {
+  if (!chrome.runtime) return;
+  const result = await chrome.runtime.sendMessage({ type: 'summary' });
+  if (!result || result.error) throw new Error('STORAGE_UNAVAILABLE');
+  savedPairing = result.remembered;
+  pendingRevocation = result.pendingRevocation;
+}
+
 async function initialize() {
   connectButton.disabled = true;
   ticketInput.disabled = true;
+  await refreshSummary();
+  disconnectButton.disabled = !savedPairing && !pendingRevocation;
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tab = tabs[0];
   if (!tab || !Number.isInteger(tab.id) || !TensorTonicCompanionShared.isTensorTonicPage(tab.url)) {
@@ -125,6 +149,7 @@ async function initialize() {
     if (busy) return;
     const generation = uiGeneration;
     try {
+      await refreshSummary();
       const result = await invoke('status');
       if (!busy && generation === uiGeneration) showStatus(result);
     } catch (_) {
