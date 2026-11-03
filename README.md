@@ -2,8 +2,8 @@
 
 TensorTonic study tools for VS Code: browse Python problems, edit native solution
 files, run or submit explicitly, and keep the original interactive problem page
-beside your code. Version **0.12.1** adds study-workspace recognition and clearer
-Python environment actions to the reusable study UI.
+beside your code. Version **0.12.2** gives new study environments a recognizable TensorTonic
+interpreter label while preserving stable environment paths.
 
 This project is not affiliated with TensorTonic. Normal website account and
 subscription requirements apply. Browser integration uses an unstable VS Code API
@@ -136,7 +136,7 @@ never automatically replayed, and there is no browser grading fallback. See the
 
 ## Supported host and installation
 
-Download [the current VSIX](releases/tensortonic-vscode-0.12.1.vsix) and use
+Download [the current VSIX](releases/tensortonic-vscode-0.12.2.vsix) and use
 **Extensions: Install from VSIX...**. See [SHA-256](releases/SHA256SUMS.txt) for
 artifact integrity. Installing it does not import a session or set up Python.
 

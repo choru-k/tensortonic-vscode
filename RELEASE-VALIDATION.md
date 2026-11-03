@@ -1,13 +1,4 @@
-# 0.12.2 local label candidate
-
-The display-name change is not published. Its 754/754 aggregate tests pass with zero failures or skips;
-package integrity and source parity are checked for the local candidate. The
-existing environment label was verified in the actual interpreter picker and
-status bar using accessibility state after a supported manager refresh. Current
-screenshot capture returned blank images, so no new pixel evidence is claimed.
-The environment path, selected interpreter and installed packages are preserved.
-
-# 0.12.1 release checks
+# 0.12.2 release checks
 
 This page describes reproducible release checks and their limits. It contains no
 account-specific test history, login/session values, personal paths, screenshots,
@@ -17,7 +8,8 @@ or internal checkpoint identifiers.
 
 | Area | Status and scope |
 | --- | --- |
-| Automated suite | The public 0.12.1 tree passed 752/752 tests with zero failures or skips. Tests use synthetic sessions, requests, browser ports and isolated filesystem fixtures. |
+| Automated suite | The 0.12.2 release source passed 754/754 tests with zero failures or skips. Tests use synthetic sessions, requests, browser ports and isolated filesystem fixtures. |
+| Environment label | The actual interpreter picker and status bar showed the friendly name after the supported manager refresh. Metadata-only migration preserved the environment path, selected interpreter and package imports. Label screenshot capture returned blank images, so no new pixel evidence is claimed. |
 | Native UI | Selected study-workspace flows have been exercised in a supporting VS Code desktop host. This is not evidence of real-account grading compatibility on every host. |
 | Theme smoke checks | Reviewed UI surfaces passed pixel checks in Dark 2026, Dark High Contrast and Light High Contrast. Other themes, scales and assistive-technology combinations are not exhaustively covered. |
 | Focus mode | The five-control desktop Browse/Prev/Next contract passed native force-apply/restore: all five exact controls hid and recovered their computed display. Unknown structures remain visible. |

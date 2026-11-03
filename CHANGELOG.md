@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.2 (local candidate)
+## 0.12.2
 
 - Give newly created study environments a supported TensorTonic prompt label, with bounded workspace context. Keep their stable storage path and interpreter identity. Existing environments can receive the same display metadata without moving or reinstalling them.
 
