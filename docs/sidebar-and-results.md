@@ -52,7 +52,7 @@ difficulty labels are unchanged.
 **Focus mode / Original view** is available in the study sidebar overflow and
 recognized solution editor overflow. It starts off and affects only the exact
 extension-owned canonical problem tab. Before a dedicated stylesheet can hide
-anything, the contract verifies these seven controls:
+anything, the contract verifies these eight targets:
 
 - The responsive Prev/Next problem-navigation links: two mobile and two desktop.
 - The desktop and narrow problem-header **Browse problems** launchers. Each must
@@ -63,10 +63,18 @@ anything, the contract verifies these seven controls:
   and one sparkles icon, with no form association. Existing Toni conversations
   are not hidden or closed.
 
+- The closed signed-in top navigation capsule, with its exact public-source-reviewed
+  wrapper, navigation links, hamburger, logo, announcements, Discord, theme and
+  avatar structure. Loading/sign-in variants, open menus and changed content fail
+  open. A temporary root marker gates the CSS. An observer revokes that marker
+  on any capsule subtree or ancestor mutation and never requalifies a replacement;
+  new notices, including unlabelled text, remain visible. Normal UI updates can
+  conservatively reopen the capsule too.
+
 Every selector must match exactly once. The page, document and top frame must
 remain the same; links must have safe canonical problem destinations. A changed,
 missing, boundary or ambiguous structure stays visible. The contents of an already-open drawer,
-global website navigation and browser address bar are not hide targets. The top
+separate problem tabs and browser address bar are not hide targets. The top
 Browse/search launchers are hidden at both responsive widths.
 
 Original view empties only the extension's dedicated stylesheet, including after
@@ -78,7 +86,7 @@ pending even when controls are visibly restored. If Original view cannot confirm
 cleanup, finish any page-local work, close only that owned problem tab, then
 explicitly reopen the problem.
 
-Login, payment or security notices, Theory/Solution/Notes controls, site stylesheets,
+Login, payment or security notices, Problem/Theory/Solution/Submissions/Notes/Code controls, site stylesheets,
 browser chrome, automation indicators and global settings are outside focus mode.
 See [release verification limits](../RELEASE-VALIDATION.md).
 

@@ -2,6 +2,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
+const { makeNavbar } = require('./helpers/focus-navbar-fixture');
+const { NAVBAR_CANDIDATE, NAVBAR_SELECTOR, NAVBAR_MARKER } = require('../src/focus-navbar');
 const { NativeBrowserBridge, displayedBase64, problemUrl } = require('../src/native-browser-bridge');
 const { FOCUS_CONTRACT } = require('../src/focus-contract');
 const { FocusBrowserAdapter } = require('../src/focus-browser-adapter');
@@ -55,7 +57,15 @@ async function focusHarness(t, options) {
   h.focusElements = new Map(FOCUS_CONTRACT.targets.map(target => [target.selector, [{ tagName: target.expectation.tag.toUpperCase(), textContent: target.expectation.text, form: null,
     getAttribute(name) { return name === 'title' ? target.expectation.title : name === 'aria-label' ? target.expectation.ariaLabel || null : name === 'type' ? target.expectation.type ?? null : name === 'href' && target.expectation.tag === 'a' ? 'https://www.tensortonic.com/problems/next?studyPlan=pytorch' : null; },
     closest() { return null; }, querySelectorAll(selector) { return ['svg', 'svg.' + target.expectation.icon].includes(selector) ? [{}] : []; } }]]));
-  h.sandbox.document.querySelectorAll = selector => h.focusElements.get(selector) || [];
+  h.navbar = makeNavbar();
+  h.focusElements.set(FOCUS_CONTRACT.targets.find(target => target.id === 'top-navbar').selector, [h.navbar.nav]);
+  const markerAttrs = new Map(), observers = new Set();
+  const root = { parentNode: h.sandbox.document, hasAttribute: key => markerAttrs.has(key), getAttribute: key => markerAttrs.get(key) ?? null, setAttribute: (key, value) => markerAttrs.set(key, value), removeAttribute: key => { markerAttrs.delete(key); for (const observer of [...observers]) observer.callback(); } };
+  h.sandbox.document.documentElement = root;
+  h.navbar.nav.parentNode = root; h.navbar.nav.isConnected = true;
+  h.sandbox.MutationObserver = class { constructor(callback) { this.callback = callback; } observe() { observers.add(this); } disconnect() { observers.delete(this); } takeRecords() { return []; } };
+  h.revokeNavbar = () => { for (const observer of [...observers]) observer.callback(); };
+  h.sandbox.document.querySelectorAll = selector => selector === NAVBAR_CANDIDATE ? h.focusElements.get(NAVBAR_SELECTOR) || [] : selector === NAVBAR_SELECTOR && !root.hasAttribute(NAVBAR_MARKER) ? [] : h.focusElements.get(selector) || [];
   h.sandbox.getComputedStyle = element => ({ display: typeof h.focusDisplay === 'function' ? h.focusDisplay(element) : h.focusDisplay || ([...h.styles.values()].includes(FOCUS_CONTRACT.cssText) ? 'none' : 'block') });
   Object.defineProperty(h.sandbox.document, 'cookie', { get() { assert.fail('focus code read cookies'); } });
   h.adapter = new FocusBrowserAdapter({ getPage: () => h.bridge.getFocusPage(), inspect: contract => h.bridge.inspectFocusContract(contract), createStyleSheet: (...args) => h.bridge.createFocusStyleSheet(...args), setStyleSheetText: (...args) => h.bridge.setFocusStyleSheetText(...args), styleSheetExists: (...args) => h.bridge.focusStyleSheetExists(...args) });
@@ -289,10 +299,10 @@ test('focus contract pinning rejects changed selectors, expectations, counts and
   assert.equal(h.calls.length, 0); assert.equal(h.opens, 0);
 });
 
-test('focus pins seven reviewed controls including responsive Browse and the floating assistant launcher', t => {
+test('focus pins eight reviewed controls including responsive Browse and the floating assistant launcher', t => {
   const h = harness(t), browse = FOCUS_CONTRACT.targets.find(target => target.id === 'desktop-browse');
-  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-focus-controls-2026-11-03');
-  assert.equal(FOCUS_CONTRACT.targets.length, 7);
+  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-focus-capsule-2026-11-03');
+  assert.equal(FOCUS_CONTRACT.targets.length, 8);
   assert.equal(FOCUS_CONTRACT.targets.filter(target => target.expectation.tag === 'a').length, 4);
   assert.equal(browse.selector, 'nav.flex.gap-4.px-4.h-12.items-end.border-b.border-border.text-sm > button[title="Browse problems"]');
   assert.deepEqual(browse.expectation, { tag: 'button', text: '', title: 'Browse problems', ariaLabel: '', icon: 'lucide-panel-left', href: null, type: null, inForm: false });
@@ -300,7 +310,7 @@ test('focus pins seven reviewed controls including responsive Browse and the flo
   assert.equal(FOCUS_CONTRACT.cssText, FOCUS_CONTRACT.targets.map(target => `${target.selector}{display:none!important;}`).join('\n'));
   assert.ok(FOCUS_CONTRACT.targets.some(target => target.id === 'mobile-browse' && target.selector.includes('md:hidden')));
   assert.ok(FOCUS_CONTRACT.targets.some(target => target.id === 'ask-toni' && target.selector.includes('button.fixed.bottom-5.right-5[aria-label="Ask Toni"][type="button"]')));
-  assert.ok(!FOCUS_CONTRACT.targets.some(target => /input|textarea|section|role="(?:alert|dialog)"/.test(target.selector)));
+  assert.ok(!FOCUS_CONTRACT.targets.filter(target => target.id !== 'top-navbar').some(target => /input|textarea|section|role="(?:alert|dialog)"/.test(target.selector)));
   for (const changed of [
     { ...FOCUS_CONTRACT, id: 'tt-problem-navigation-2026-11-02' },
     { ...FOCUS_CONTRACT, targets: FOCUS_CONTRACT.targets.slice(0, 4) },
@@ -379,10 +389,10 @@ test('Focus cannot report Applied when the floating assistant or narrow Browse r
   }
 });
 
-test('focus inspects only the seven reviewed targets and restores only its dedicated stylesheet', async t => {
-  const h = await focusHarness(t), selectors = new Set(FOCUS_CONTRACT.targets.map(target => target.selector)), inspected = [];
+test('focus inspects only the eight reviewed targets and restores only its dedicated stylesheet', async t => {
+  const h = await focusHarness(t), selectors = new Set([...FOCUS_CONTRACT.targets.map(target => target.selector), NAVBAR_CANDIDATE]), inspected = [];
   const query = h.sandbox.document.querySelectorAll;
-  h.sandbox.document.querySelectorAll = selector => { assert.ok(selectors.has(selector), 'drawer contents, assistant conversations and global navbar must not be queried'); inspected.push(selector); return query(selector); };
+  h.sandbox.document.querySelectorAll = selector => { assert.ok(selectors.has(selector), 'only exact contract targets may be queried'); inspected.push(selector); return query(selector); };
   const lease = await h.applyFocus(), sheet = [...h.bridge.focusSheets.values()][0];
   assert.equal(h.styles.get(sheet.nativeId), FOCUS_CONTRACT.cssText);
   assert.ok(inspected.includes(FOCUS_CONTRACT.targets.find(target => target.id === 'desktop-browse').selector));
@@ -643,5 +653,64 @@ test('failed final recovery verification does not retain a partially rebound tar
     };
     await assert.rejects(h.bridge.recoverFocusPage({ signal: controller.signal }));
     assert.equal(h.bridge.target, undefined);
+  }
+});
+
+ test('top capsule fails open for changed structure, login, loading, menus and warning text', async t => {
+  const h = await focusHarness(t), selector = FOCUS_CONTRACT.targets.find(target => target.id === 'top-navbar').selector;
+  for (const mutate of [
+    f => f.nav.children.push(f.element('DIV', [], 'Security notice')),
+    f => f.menu.matches = () => false,
+    f => f.avatar.matches = () => false,
+    f => f.theme.textContent = 'Verify your account',
+    f => f.logo.matches = () => false,
+    f => f.right.children.push(f.element('DIV', [], 'Security notice')),
+    f => f.news.childNodes.push({ nodeType: 3, textContent: 'Session expired' }),
+  ]) {
+    const f = makeNavbar(); mutate(f); h.focusElements.set(selector, [f.nav]);
+    await assert.rejects(h.applyFocus(), { code: 'UNAVAILABLE' });
+  }
+  assert.equal(h.calls.filter(call => call.method.startsWith('CSS.')).length, 0);
+});
+ test('capsule is included in computed hiding and failed confirmation restores every target', async t => {
+   const h = await focusHarness(t); h.focusDisplay = element => element === h.navbar.nav ? 'block' : 'none';
+   await assert.rejects(h.applyFocus(), { code: 'APPLY_FAILED' });
+   assert.ok([...h.bridge.focusSheets.values()].every(sheet => h.styles.get(sheet.nativeId) === ''));
+ });
+
+test('capsule guard is sticky fail-open after a mutation and Off removes the marker', async t => {
+  const h = await focusHarness(t), lease = await h.applyFocus();
+  assert.equal(h.sandbox.document.documentElement.getAttribute(NAVBAR_MARKER), 'guarded');
+  h.revokeNavbar();
+  assert.equal(h.sandbox.document.querySelectorAll(NAVBAR_SELECTOR).length, 0);
+  assert.equal(h.sandbox.document.querySelectorAll(NAVBAR_CANDIDATE).length, 1);
+  await lease.restore();
+  assert.equal(h.sandbox.document.documentElement.hasAttribute(NAVBAR_MARKER), false);
+});
+test('existing root marker is not adopted or overwritten and no nonempty stylesheet is sent', async t => {
+  const h = await focusHarness(t);
+  h.sandbox.document.documentElement.setAttribute(NAVBAR_MARKER, 'site-owned');
+  await assert.rejects(h.applyFocus(), { code: 'APPLY_FAILED' });
+  assert.equal(h.sandbox.document.documentElement.getAttribute(NAVBAR_MARKER), 'site-owned');
+  assert.equal(h.calls.filter(call => call.method === 'CSS.setStyleSheetText' && call.params.text !== '').length, 0);
+});
+test('unconfirmed guard installation leaves cleanup pending until the owned document closes', async t => {
+  const h = await focusHarness(t, { evaluationTimeout: 10 });
+  h.beforeSend = async call => { if (call.method === 'Runtime.evaluate' && call.params.expression.includes('function installNavbarGuard')) return false; };
+  await assert.rejects(h.applyFocus(), { code: 'RESTORE_PENDING' });
+  assert.equal(h.calls.filter(call => call.method === 'CSS.setStyleSheetText' && call.params.text !== '').length, 0);
+  assert.equal([...h.bridge.focusSheets.values()][0].navbarGuard, 'uncertain');
+  h.beforeSend = undefined; await h.bridge.stop(); assert.equal(h.tabCloses, 1);
+});
+test('sheet absence never releases unresolved marker cleanup; CSS restores independently', async t => {
+  for (const removed of [false, true, 'protocol']) {
+    const h = await focusHarness(t), lease = await h.applyFocus(), sheet = [...h.bridge.focusSheets.values()][0];
+    if (removed === true) h.messages.fire({ method: 'CSS.styleSheetRemoved', sessionId: h.sid, params: { styleSheetId: sheet.nativeId } });
+    h.beforeSend = async call => { if (call.method === 'Runtime.evaluate' && call.params.expression.includes('const root=document.documentElement;')) throw Error('synthetic guard cleanup rejection'); if (removed === 'protocol' && call.method === 'CSS.getStyleSheetText') { h.messages.fire({ id: call.id, sessionId: call.sessionId, error: missingSheetError }); return false; } };
+    await assert.rejects(lease.restore(), { code: 'RESTORE_PENDING' });
+    assert.equal(sheet.navbarGuard,'installed');
+    if (removed) assert.equal((await h.bridge.focusStyleSheetExists(sheet.id, {page:h.page})).authoritative, false);
+    else { assert.equal(h.styles.get(sheet.nativeId), ''); assert.equal(sheet.dirty,false); }
+    h.beforeSend = undefined; await lease.restore(); assert.equal(sheet.navbarGuard,undefined);
   }
 });

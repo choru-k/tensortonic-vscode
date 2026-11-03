@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.6 (cloud candidate; native visual check pending)
+
+- Extend Focus to the entire closed signed-in top navigation capsule, preserving the separate problem tabs. Original view restores the dedicated stylesheet as before.
+- Use exact public-source-reviewed structure and semantics, with fail-open checks for unknown, loading, sign-in and open-menu variants. A conservative marker/observer revokes capsule hiding on any subtree or ancestor mutation, including unlabelled notices and replacements; it never automatically hides changed UI again.
+- Keep owned-page identity, cancellation, refresh recovery, authentication and grading behavior unchanged. The authenticated desktop DOM and rendered hide/restore behavior still require native validation.
+
 ## 0.12.5 (cloud-validated candidate)
 
 - Recover Focus after a same-page refresh using only the original owned browser resource, session, root frame and exact problem URL. Explicit Focus never opens or adopts another tab.

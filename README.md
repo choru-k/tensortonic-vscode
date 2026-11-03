@@ -96,16 +96,20 @@ terminal. See [Python setup and limits](docs/study-python.md).
 
 **Focus mode / Original view** is available in the study sidebar and recognized
 solution editor overflow menus. It starts off. On the exact extension-owned problem
-page, a reviewed contract checks five controls: four responsive Prev/Next links
-and the desktop problem-header **Browse problems** launcher that opens the problem
-search drawer. Only matching structure, labels, counts, link destinations and
-button semantics permit hiding those controls.
+page, a reviewed contract checks eight targets: four responsive Prev/Next links,
+desktop and narrow **Browse problems** launchers, the floating **Ask Toni** button,
+and the closed signed-in top navigation capsule (hamburger, logo, announcements,
+Discord, theme and avatar). The separate Problem/Theory/Solution/Submissions/Notes/
+Code tabs remain visible. Exact structure, labels, counts and semantics are checked.
 
-Changed, missing or ambiguous controls stay visible. The drawer search input,
-mobile Browse launcher and global website navigation are outside this contract.
-Original view empties only the extension's dedicated stylesheet; navigation turns
-focus off. Uncertain cleanup stays pending and can be retried. Browser chrome,
-automation indicators, login/security notices and global settings are unaffected.
+Changed, missing or ambiguous structures stay visible. Login/loading states and
+open menus do not qualify. A conservative observer reopens the capsule on any content, attribute or ancestor
+structure change, including unlabelled notices or replacement navigation. It never
+automatically hides a changed capsule again. Original view
+empties only the extension's dedicated stylesheet; navigation turns Focus off.
+Uncertain cleanup stays pending and can be retried. Browser chrome and automation
+indicators are unaffected. The authenticated desktop capsule has not yet been
+visually validated for this candidate.
 See [focus behavior and boundaries](docs/sidebar-and-results.md#difficulty-and-focus).
 
 ## Session scope and lifetime

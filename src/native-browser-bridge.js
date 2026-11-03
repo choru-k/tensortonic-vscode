@@ -1,4 +1,5 @@
 'use strict';
+const { verifyNavbar, installNavbarGuard, NAVBAR_CANDIDATE, NAVBAR_MARKER } = require('./focus-navbar');
 
 const crypto = require('node:crypto');
 const { isAllowedRequest, validateBody, ORIGINS } = require('./request-policy');
@@ -143,9 +144,9 @@ class NativeBrowserBridge {
       this._invalidate(r, p?.sessionId); r.targets.delete(p?.sessionId);
     } else {
       const target = r.targets.get(message.sessionId); if (!target) return;
-      if (message.method === 'Runtime.executionContextsCleared') { this.focusProof = undefined; this._invalidate(r, message.sessionId); this._displayState(r); }
+      if (message.method === 'Runtime.executionContextsCleared') { for (const sheet of this.focusSheets.values()) if (sheet.resource === r && sheet.target.sessionId === message.sessionId) sheet.navbarGuard = undefined; this.focusProof = undefined; this._invalidate(r, message.sessionId); this._displayState(r); }
       else if (message.method === 'Runtime.executionContextDestroyed') {
-        if (target.contexts.has(p?.executionContextId)) { this.focusProof = undefined; this._invalidate(r, message.sessionId); this._displayState(r); }
+        if (target.contexts.has(p?.executionContextId)) { for (const sheet of this.focusSheets.values()) if (sheet.resource === r && sheet.target.sessionId === message.sessionId && sheet.target.context.id === p.executionContextId) sheet.navbarGuard = undefined; this.focusProof = undefined; this._invalidate(r, message.sessionId); this._displayState(r); }
       } else if (message.method === 'Runtime.executionContextCreated') {
         const c = p?.context;
         if (Number.isSafeInteger(c?.id) && c.auxData?.isDefault === true && typeof c.auxData.frameId === 'string' && ORIGINS.has(c.origin)) {
@@ -272,8 +273,8 @@ class NativeBrowserBridge {
   async inspectFocusContract(value) {
     if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
     const page = await this.getFocusPage(), target = this.target, generation = this.generation;
-    const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.selector, count: item.count, expectation: item.expectation }));
-    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
+    const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? NAVBAR_CANDIDATE : item.selector, count: item.count, expectation: item.expectation }));
+    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyNavbar.toString()})(e))valid=false;continue}if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
     const raw = await this._evaluate(target, expression, generation);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
@@ -347,7 +348,7 @@ class NativeBrowserBridge {
     return created;
   }
   _emptyFocusSheet(sheet) {
-    if (sheet.gone || !sheet.dirty) return Promise.resolve();
+    if ((sheet.gone && sheet.gone !== 'sheet-removed') || (!sheet.dirty && !sheet.navbarGuard)) return Promise.resolve();
     if (sheet.emptying) return sheet.emptying;
     const task = this._emptyFocusSheetOnce(sheet);
     sheet.emptying = task;
@@ -355,13 +356,28 @@ class NativeBrowserBridge {
     return task;
   }
   async _emptyFocusSheetOnce(sheet) {
-    if (sheet.gone || !sheet.dirty) return;
+    if ((sheet.gone && sheet.gone !== 'sheet-removed') || (!sheet.dirty && !sheet.navbarGuard)) return;
+    // DOM guard cleanup and inspector CSS restoration are independent. A
+    // failed marker removal must not prevent restoring the seven old controls.
+    let guardError;
+    try {
+      if (sheet.navbarGuard === 'uncertain') throw fault('Capsule guard installation is uncertain; close the owned page to finish cleanup.', 'RESTORE_PENDING');
+      if (sheet.navbarGuard === 'installed') {
+        const expression = `(()=>{const root=document.documentElement;if(root.getAttribute(${JSON.stringify(NAVBAR_MARKER)})==='guarded')root.removeAttribute(${JSON.stringify(NAVBAR_MARKER)});return root.hasAttribute(${JSON.stringify(NAVBAR_MARKER)})?0:1})()`;
+        const target = sheet.target, live = sheet.resource.targets.get(target.sessionId);
+        if (!live || live.epoch !== target.epoch || live.contexts.get(target.context.id) !== target.context) throw fault('Capsule guard cleanup lost its exact owned context.', 'RESTORE_PENDING');
+        const context = target.context;
+        const reply = await this._cdp(sheet.resource, 'Runtime.evaluate', { expression, returnByValue: true, awaitPromise: false, silent: true, timeout: this.cleanupTimeout, ...(context.uniqueId ? { uniqueContextId: context.uniqueId } : { contextId: context.id }) }, target.sessionId);
+        if (reply?.exceptionDetails || reply?.result?.value !== 1) throw fault('Capsule guard cleanup is unconfirmed.', 'RESTORE_PENDING');
+        sheet.navbarGuard = undefined;
+      }
+    } catch (error) { guardError = error; }
     if (sheet.pending) {
       const previous = sheet.pending;
       try { await bounded(previous, this.cleanupTimeout, 'Owned style mutation cleanup is pending.'); }
       catch (error) { if (sheet.pending === previous) throw error; }
     }
-    if (sheet.gone) return;
+    if (sheet.gone) { if (guardError) throw guardError; return; }
     const pending = this._focusCall(sheet.resource, 'CSS.setStyleSheetText', { styleSheetId: sheet.id, text: '' }, sheet.target.sessionId);
     sheet.pending = pending;
     try {
@@ -369,6 +385,7 @@ class NativeBrowserBridge {
       const result = await bounded(this._focusCall(sheet.resource, 'CSS.getStyleSheetText', { styleSheetId: sheet.id }, sheet.target.sessionId), this.cleanupTimeout, 'Owned empty stylesheet could not be confirmed.');
       if (result?.text !== '') throw fault('Owned stylesheet cleanup is unconfirmed.', 'RESTORE_PENDING');
       sheet.dirty = false;
+      if (guardError) throw guardError;
     } finally { pending.then(() => { if (sheet.pending === pending) sheet.pending = undefined; }, () => { if (sheet.pending === pending) sheet.pending = undefined; }); }
   }
   async setFocusStyleSheetText(id, text, { page, signal } = {}) {
@@ -382,6 +399,15 @@ class NativeBrowserBridge {
     this._check(generation, sheet.target, signal);
     if (sheet.resource.tab.url !== page.url) throw fault('The owned problem URL changed before styling.', 'PAGE_CHANGED');
     sheet.used = true; sheet.dirty = true;
+    // Install the observer and prove/mark the exact node atomically before CSS.
+    // An uncertain evaluation never permits another apply; closing the owned
+    // document is the safe recovery when its result cannot be established.
+    sheet.navbarGuard = 'uncertain';
+    const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return (${installNavbarGuard.toString()})(document,${JSON.stringify(NAVBAR_CANDIDATE)},${JSON.stringify(NAVBAR_MARKER)},(${verifyNavbar.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)})()`;
+    const guarded = await this._number(sheet.target, guardExpression, generation);
+    sheet.navbarGuard = guarded === 1 ? 'installed' : undefined;
+    if (guarded !== 1) throw fault('Capsule guard could not be installed. Controls remain visible.', 'INVALID_PROOF');
+    this._check(generation, sheet.target, signal);
     const pending = this._focusCall(sheet.resource, 'CSS.setStyleSheetText', { styleSheetId: id, text }, sheet.target.sessionId, signal);
     sheet.pending = pending;
     const settled = () => {
@@ -406,7 +432,7 @@ class NativeBrowserBridge {
   }
   async focusStyleSheetExists(id, { page } = {}) {
     const sheet = this._focusSheet(id, page);
-    if (sheet.gone) return Object.freeze({ exists: false, authoritative: true, reason: sheet.gone, styleSheetId: id, documentId: sheet.page.documentId });
+    if (sheet.gone) return Object.freeze({ exists: false, authoritative: sheet.gone !== 'sheet-removed' || !sheet.navbarGuard, reason: sheet.gone, styleSheetId: id, documentId: sheet.page.documentId });
     let result;
     try { result = await bounded(this._focusCall(sheet.resource, 'CSS.getStyleSheetText', { styleSheetId: id }, sheet.target.sessionId), this.evaluationTimeout, 'Owned stylesheet state is unknown.'); }
     catch (error) {
@@ -414,7 +440,7 @@ class NativeBrowserBridge {
       if (proof?.sheet === sheet && proof.resource === r && proof.sessionId === sheet.target.sessionId &&
           !sheet.pending && this.resources.has(r) && !r.closed && !r.tabClosed && r.targets.size === 1 && r.targets.has(proof.sessionId)) {
         sheet.gone = 'sheet-removed';
-        return Object.freeze({ exists: false, authoritative: true, reason: 'sheet-removed', styleSheetId: id, documentId: sheet.page.documentId });
+        return Object.freeze({ exists: false, authoritative: !sheet.navbarGuard, reason: 'sheet-removed', styleSheetId: id, documentId: sheet.page.documentId });
       }
       throw fault('Owned stylesheet state is unknown.', 'RESTORE_PENDING');
     }
@@ -653,7 +679,7 @@ class NativeBrowserBridge {
         try { await bounded(r.tab.close(), this.cleanupTimeout, 'Owned browser tab cleanup pending.'); r.tabClosed = true; this._focusGone(r, undefined, undefined, 'page-closed'); }
         catch (_) { failed = true; }
       }
-      if (focusRestoreFailed && [...this.focusSheets.values()].some(sheet => sheet.resource === r && sheet.dirty && !sheet.gone)) failed = true;
+      if (focusRestoreFailed && [...this.focusSheets.values()].some(sheet => sheet.resource === r && (sheet.dirty || sheet.navbarGuard) && !['page-closed', 'document-destroyed'].includes(sheet.gone))) failed = true;
       if (failed) { this.cleanupPending = true; throw fault('Owned browser cleanup is pending. Disconnect again; unrelated tabs were not touched.', 'CLEANUP_PENDING'); }
       for (const entry of r.requests.values()) entry.reject(fault('Owned browser transport closed.', 'DISCONNECTED'));
       r.requests.clear(); r.targets.clear();

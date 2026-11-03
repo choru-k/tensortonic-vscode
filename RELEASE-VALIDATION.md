@@ -1,3 +1,20 @@
+# 0.12.6 guarded top navigation capsule candidate
+
+Cloud serial validation passed 800/800 aggregate tests on Node 24.22.1. The
+additional tests exercise capsule structure rejection, direct warning text, observer
+revocation, cloned-root replacement, marker collisions, uncertain installation,
+exact contract pinning, computed-visibility failure and dedicated-sheet restoration.
+Separate serial session and transport suites passed 102/102 and 76/76 checks.
+All account UI fixtures are synthetic. Source evidence and precise limits are
+recorded in [capsule validation](docs/focus-capsule-validation.md).
+
+The cloud Chromium fixture check could not launch: the environment denied its
+process socket, including after an approval-reviewed retry. The test did not
+reach a page. No authenticated DOM, native rendering, Mac access, installation,
+publication, cookie import or grading request was performed for this candidate.
+
+The following sections are historical validation for earlier versions.
+
 # 0.12.5 cloud-validated Focus refresh recovery candidate
 
 Cloud-only validation on Node 24.22.1 and Python 3.12.14 passed 789/789

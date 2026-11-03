@@ -1,4 +1,5 @@
 'use strict';
+const { NAVBAR_SELECTOR, NAVBAR_BASE } = require('./focus-navbar');
 
 // This module contains no production selectors, browser discovery, CDP access,
 // or page script. The root supplies a port restricted to its exact owned page.
@@ -43,6 +44,7 @@ function samePage(left, right) {
 }
 
 function preciseSelector(value) {
+  if (value === NAVBAR_SELECTOR) value = NAVBAR_BASE;
   if (typeof value !== 'string' || !value.trim() || value !== value.trim() || value.length > 1024 || /[\u0000-\u001f\u007f{},;@\\*<]/.test(value)) return false;
   // '>' is a CSS child combinator, not markup. Require an actual selector on
   // both sides; '<', escapes, declaration delimiters and universal targets stay

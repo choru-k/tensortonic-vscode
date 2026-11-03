@@ -232,7 +232,7 @@ test('Focus hover explains scope, reset behavior, and curated reset reasons', ()
     assert.equal(row.description, 'Off');
     assert.match(row.tooltip, expected);
     assert.match(row.tooltip, /resets on reload and navigation/);
-    assert.match(row.tooltip, /only the verified website Prev\/Next links, desktop\/narrow Browse problems launchers and floating Ask Toni button/);
+    assert.match(row.tooltip, /only the verified website Prev\/Next links, desktop\/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule/);
   }
 });
 

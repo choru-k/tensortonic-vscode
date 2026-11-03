@@ -48,9 +48,10 @@ visible for retry and is not silently adopted by a new connection.
 
 Focus starts off and accepts only the reviewed canonical problem-page contract.
 It may hide the matching responsive Prev/Next links, desktop and narrow
-problem-header Browse/search launchers, and floating Ask Toni button after exact
+problem-header Browse/search launchers, floating Ask Toni button and the guarded
+closed signed-in top navigation capsule after exact
 identity, count and semantic checks. It does not hide an already-open drawer or
-assistant conversation, global navbar, login/security controls, browser chrome or
+assistant conversation, separate problem tabs, login/security notices, browser chrome or
 automation indicators.
 
 The adapter creates a dedicated forced stylesheet. Original view empties it and

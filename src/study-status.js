@@ -1,6 +1,6 @@
 'use strict';
 
-const FOCUS_SCOPE = 'Focus mode resets on reload and navigation. It changes only the verified website Prev/Next links, desktop/narrow Browse problems launchers and floating Ask Toni button on the extension-owned Web problem page.';
+const FOCUS_SCOPE = 'Focus mode resets on reload and navigation. It changes only the verified website Prev/Next links, desktop/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule on the extension-owned Web problem page. The capsule reappears conservatively if its content or surrounding structure changes.';
 const FOCUS_RESET_REASONS = new Map([
   ['reload-default', 'Focus mode starts off after an extension reload.'],
   ['page-changed', 'Focus mode was reset after the owned Web page changed, reloaded, or closed.'],
