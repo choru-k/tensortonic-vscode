@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.5 (cloud-validated candidate)
+
+- Recover Focus after a same-page refresh using only the original owned browser resource, session, root frame and exact problem URL. Explicit Focus never opens or adopts another tab.
+- Accept only the exact missing-owned-stylesheet protocol response as absence proof; transport errors and pending writes remain conservative. Late removal notifications retry cleanup without reapplying Focus.
+- Honor cancellation throughout recovery and discard an incompletely verified rebind. Fence pending Focus actions before discovery so newer navigation, session changes, Original view or disposal cannot be overwritten. Authentication, cookie handling and grading behavior are unchanged.
+
+## 0.12.4 (local candidate)
+
+- Extend reversible Focus mode to the exact narrow-layout Browse/search launcher and floating Ask Toni button, alongside the existing desktop launcher and Prev/Next links.
+- Require the expected label, button type, single icon, form isolation and exact count before styling. Confirm computed hiding before reporting Applied; preserve assistant conversations and all other website controls.
+
+## 0.12.3 (local candidate)
+
+- Separate persistent Study status from the problem tree. Show Focus application/cleanup state, the Web/Markdown default, and explicit workspace environment actions with native inline controls.
+- Refresh presentation status on commands, settings, browser navigation, active-tab changes and delayed cleanup. Keep proposed API denial compatible with Markdown/status activation.
+- Show compact status in the section header when collapsed. Existing commands and menus remain available.
+
 ## 0.12.2
 
 - Give newly created study environments a supported TensorTonic prompt label, with bounded workspace context. Keep their stable storage path and interpreter identity. Existing environments can receive the same display metadata without moving or reinstalling them.

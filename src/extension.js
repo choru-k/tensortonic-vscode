@@ -18,18 +18,20 @@ const { navigationTargets, findProblemIndex, problemKey, recognizedSolution } = 
 const { renderDescription } = require('./description-renderer');
 const { StudyLayout } = require('./study-layout');
 const { ProblemTreeProvider } = require('./tree');
+const { StudyStatusProvider } = require('./study-status');
 const { StudyWorkspace } = require('./study-workspace');
 const { StudyEnvironmentUI } = require('./study-environment-ui');
 const { resolveCard } = require('./cards');
 const { buildCardHtml } = require('./cards/webview');
 
 const COMMANDS = [
-  'manageStudyPlans', 'removeStudyPlan', 'resumeStudyPlan', 'discussSelectedFailure', 'toggleFocusMode',
+  'manageStudyPlans', 'removeStudyPlan', 'resumeStudyPlan', 'discussSelectedFailure', 'toggleFocusMode', 'showStudyStatus',
   'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit', 'gradingStatus',
   'description', 'testsView', 'resultsView', 'cancelExecution', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
   'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'nextUnsolved', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'useStudyEnvironment', 'repairStudyEnvironment', 'chooseProblemView',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
+const STATUS_VIEW_ID = 'tensortonicStudyStatus';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,199}$/i;
 
@@ -161,6 +163,8 @@ function activate(context) {
   let studyEnvironment;
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
   const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, planPickGeneration: 0, cardGeneration: 0, sessionEpoch: 0, cardPanel: undefined, lastSolutionUri: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
+  state.environmentInStatusView = true;
+  state.focusReason = 'reload-default';
   state.difficultyDisplay = vscode.workspace.getConfiguration('tensortonic').get('difficultyDisplay', 'text');
   const tree = new ProblemTreeProvider(vscode, state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
@@ -179,23 +183,65 @@ function activate(context) {
     return display;
   }
   const focusPort = {
-    getPage: () => focusDisplay().getFocusPage(),
+    getPage: options => focusDisplay().getFocusPage(options),
     inspect: contract => focusDisplay().inspectFocusContract(contract),
     createStyleSheet: (options, request) => focusDisplay().createFocusStyleSheet(options, request),
     setStyleSheetText: (id, text, options) => focusDisplay().setFocusStyleSheetText(id, text, options),
     styleSheetExists: (id, options) => focusDisplay().focusStyleSheetExists(id, options),
   };
-  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT });
+  let studyStatus;
+  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT, onChange: () => studyStatus?.refresh() });
+  function presentationSnapshot() {
+    let display = { open: state.webPageOpen === true, otherBrowserActive: false };
+    try {
+      if (bridge.display?.presentationState) display = bridge.display.presentationState;
+      else display.otherBrowserActive = !!vscode.window.activeBrowserTab;
+    } catch (_) { /* Unavailable host APIs cannot imply ownership. */ }
+    return Object.freeze({
+      focus: Object.freeze({ ...focusMode.state, busy: focusMode.busy, reason: state.focusReason }),
+      problemView: getProblemView(),
+      display: Object.freeze({ open: display.open === true, otherBrowserActive: display.otherBrowserActive === true, navigating: !!state.webNavigating, mismatch: displayMismatch(state.activeRef) }),
+      environment: state.environment ? Object.freeze({ ...state.environment }) : undefined,
+    });
+  }
+  studyStatus = new StudyStatusProvider(vscode, { getSnapshot: presentationSnapshot });
+  const studyStatusView = vscode.window.createTreeView(STATUS_VIEW_ID, { treeDataProvider: studyStatus, showCollapseAll: false });
+  const updateStatusDescription = () => { studyStatusView.description = studyStatus.summary; };
+  context.subscriptions.push(studyStatus, studyStatusView, studyStatus.onDidChangeTreeData(updateStatusDescription));
+  updateStatusDescription();
+  for (const event of ['onDidChangeActiveBrowserTab', 'onDidChangeBrowserTabState', 'onDidCloseBrowserTab']) {
+    try {
+      const subscribe = vscode.window[event];
+      if (typeof subscribe === 'function') context.subscriptions.push(subscribe.call(vscode.window, () => studyStatus.refresh()));
+    } catch (_) { /* Status and Markdown remain usable without the browser proposal. */ }
+  }
   let focusedPage;
   let focusObservation = 0;
+  let focusAction = 0;
+  let focusRecovery;
+  function invalidateFocusAction() {
+    focusAction++;
+    focusRecovery?.controller.abort();
+    focusRecovery = undefined;
+  }
   async function observeFocusPage(closed = false) {
+    // Even when Focus is still Off, a pending explicit recovery must not
+    // outlive a newer owned-page observation.
+    if (focusRecovery) invalidateFocusAction();
     if (!focusMode.enabled && focusMode.state.status !== 'restore-pending') return;
+    if (!focusMode.enabled && focusMode.state.status === 'restore-pending') {
+      // A late owned-sheet removal or tab closure may now supply positive
+      // cleanup proof. Retry Off only; this never discovers or styles a page.
+      if (!focusMode.busy) await focusMode.pageChanged();
+      return;
+    }
     const observation = ++focusObservation;
     let page;
     try { if (!closed) page = await focusPort.getPage(); } catch (_) { /* Unknown structures stay visible. */ }
     if (observation !== focusObservation || !focusedPage) return;
     if (!page || ['id', 'url', 'documentId', 'frameId'].some(key => page[key] !== focusedPage[key])) {
       focusedPage = undefined;
+      state.focusReason = 'page-changed';
       await focusMode.pageChanged();
     }
   }
@@ -224,6 +270,7 @@ function activate(context) {
   let observedConnection = bridge.connected;
   let observedToken = bridge.token;
   function clearSessionPresentation() {
+    invalidateFocusAction();
     state.sessionEpoch++;
     studyEnvironment?.invalidateSession?.();
     state.currentProblem = undefined;
@@ -233,6 +280,7 @@ function activate(context) {
     resultSnapshots.clear();
     focusedPage = undefined;
     focusObservation++;
+    state.focusReason = 'session-changed';
     void focusMode.pageChanged();
     problemWorkspace.resetSession();
     invalidateProblems();
@@ -257,6 +305,7 @@ function activate(context) {
     return (state.webRef.planId || '') !== (ref.planId || '') || state.webRef.slug !== ref.slug;
   }
   function updateActions() {
+    studyStatus?.refresh();
     const targets = navigationTargets(state.problems, state.activeRef, { selectedPlanId: membership.initialized ? state.activeRef?.planId || '' : state.selectedPlanId || '' });
     for (const [name, value] of Object.entries({
       hasPrevious: !!targets.previous && !state.loading && bridge.connected,
@@ -309,7 +358,7 @@ function activate(context) {
   context.subscriptions.push(treeView.onDidChangeVisibility(event => {
     if (event.visible) revealCurrentProblem();
   }));
-  context.subscriptions.push({ dispose() { disposed = true; revealPending = false; state.cardGeneration++; if (state.cardPanel) state.cardPanel.dispose(); } });
+  context.subscriptions.push({ dispose() { disposed = true; invalidateFocusAction(); revealPending = false; state.cardGeneration++; if (state.cardPanel) state.cardPanel.dispose(); } });
 
 
   function getPlanId() {
@@ -442,7 +491,8 @@ function activate(context) {
     await vscode.workspace.getConfiguration('tensortonic').update('problemView', chosen.mode, target);
     // Changing this preference alone must not reload/write a learner's files or
     // open a page. It applies on the next explicit open/Previous/Next action.
-    await vscode.window.showInformationMessage(`TensorTonic problem view is now ${chosen.mode === 'web' ? 'Web' : 'Markdown'} for ${hasWorkspace ? 'this workspace' : 'your user settings'}. Open a problem or use Previous/Next to apply it. Description remains available as Markdown.`);
+    studyStatus.refresh();
+    output.appendLine(`TensorTonic problem view is now ${chosen.mode === 'web' ? 'Web' : 'Markdown'} for ${hasWorkspace ? 'this workspace' : 'your user settings'}. Open a problem or use Previous/Next to apply it. Description remains available as Markdown.`);
   }
 
   async function chooseStudyPlan() {
@@ -729,6 +779,7 @@ function activate(context) {
   }
 
   async function interactiveExplanation(input, { studyNavigation = false, isCurrentNavigation = () => true } = {}) {
+    invalidateFocusAction();
     // Delegate normal top-level navigation to VS Code's native Chromium browser.
     // Never frame/proxy the page, alter headers, or transfer browser credentials.
     const generation = ++state.cardGeneration;
@@ -749,8 +800,10 @@ function activate(context) {
       state.webNavigating = navigation;
       updateActions();
       try {
+        invalidateFocusAction();
         focusedPage = undefined;
         focusObservation++;
+        state.focusReason = 'page-changed';
         const restored = await focusMode.pageChanged();
         if (restored.status === 'restore-pending') throw new Error('Focus mode cleanup is pending. Retry Original view before navigating this owned page.');
         await bridge.openProblemPage(url, { viewColumn: studyLayout.problemColumn, onDidChangePage: page => {
@@ -1021,19 +1074,35 @@ function activate(context) {
   async function toggleFocusMode() {
     // Retrying an uncertain Off is cleanup-only. It must not restore and then
     // immediately hide the page again because enabled already became false.
-    const enabled = focusMode.state.status === 'restore-pending' ? false : !focusMode.enabled;
+    const enabled = focusMode.state.status === 'restore-pending' ? false : !(focusRecovery?.enabled ?? focusMode.enabled);
+    invalidateFocusAction();
+    const action = focusAction, epoch = state.sessionEpoch, navigation = state.openGeneration, card = state.cardGeneration;
+    const controller = new AbortController();
+    const current = () => !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration;
+    focusRecovery = { enabled, controller };
     let page;
-    try { if (enabled) page = await focusPort.getPage(); } catch (_) { /* No access to unrelated tabs. */ }
+    try {
+      if (enabled) {
+        const display = focusDisplay();
+        page = typeof display.recoverFocusPage === 'function' ? await display.recoverFocusPage({ signal: controller.signal }) : await focusPort.getPage({ signal: controller.signal });
+      }
+    } catch (_) { /* No access to unrelated tabs. */ }
+    if (!current()) {
+      if (focusRecovery?.controller === controller) focusRecovery = undefined;
+      return focusMode.state;
+    }
+    focusRecovery = undefined;
+    state.focusReason = enabled && !page ? 'no-owned-page' : undefined;
     focusedPage = page;
     focusObservation++;
     const result = await focusMode.setEnabled(enabled, { page });
     // A notification pauses browser interaction. Keep this presentation feedback
     // in Output instead, so switching to Original view works immediately.
     output.appendLine(result.status === 'applied'
-      ? 'Focus mode: verified Prev/Next links and the desktop Browse problems launcher hidden. Other website controls are unchanged.'
+      ? 'Focus mode: verified Prev/Next links, desktop/narrow Browse problems launchers and floating Ask Toni button hidden. Other website controls are unchanged.'
       : result.status === 'off' ? 'Focus mode: original website styles restored.'
       : result.status === 'restore-pending' ? 'Focus mode: stylesheet restoration is pending. Retry Original view or close the owned problem tab.'
-      : 'Focus mode unavailable: no website styles or browser controls were changed because the owned page structure was not verified.');
+      : 'Focus mode unavailable: owned-page verification or visibility confirmation failed. Original website styles were retained or restored.');
     return result;
   }
 
@@ -1062,6 +1131,7 @@ function activate(context) {
     const result = await studyEnvironment.status();
     if (disposed || generation !== environmentGeneration) return;
     state.environment = result;
+    studyStatus.refresh();
     tree.refresh();
     updateActions();
     revealCurrentProblem();
@@ -1088,6 +1158,7 @@ function activate(context) {
     run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
     gradingStatus: () => vscode.window.showInformationMessage(bridge.supportsGrading===true ? 'Explicit Python Run and Submit use direct HTTPS. Canceled or uncertain actions are never replayed.' : 'Run and Submit are unavailable in this read-only candidate. Grading compatibility must be verified before they return.'),
     manageStudyPlans, removeStudyPlan, resumeStudyPlan, discussSelectedFailure, toggleFocusMode,
+    showStudyStatus: () => vscode.commands.executeCommand(`${STATUS_VIEW_ID}.focus`),
     openAgentContext, discussWithAgent, discussWithCodex,
     previousProblem: input => navigateProblem(-1, input), nextProblem: input => navigateProblem(1, input), nextUnsolved: () => navigateProblem('unsolved'),
   };
@@ -1127,11 +1198,13 @@ function activate(context) {
     }));
   }
   let shutdown;stopActiveSession=()=>shutdown??=(async()=>{
+    invalidateFocusAction();
     try { await focusMode.dispose(); }
     finally { await bridge.dispose().catch(()=>{}); }
   })();
   context.subscriptions.push({ dispose() { void stopActiveSession(); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (event.affectsConfiguration('tensortonic.problemView')) studyStatus.refresh();
     if (event.affectsConfiguration('tensortonic.difficultyDisplay')) { state.difficultyDisplay = vscode.workspace.getConfiguration('tensortonic').get('difficultyDisplay', 'text'); tree.refresh(); }
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
       invalidateProblems();
@@ -1161,7 +1234,7 @@ function activate(context) {
     output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
   }).finally(updateConnection);
   // Do not export a vault, SecretStorage object, raw transport or CDP capability.
-  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
+  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {return stopActiveSession();}

@@ -53,9 +53,10 @@ async function focusHarness(t, options) {
   h.bridge.setFocusContract(FOCUS_CONTRACT);
   await h.bridge.openProblemPage('https://www.tensortonic.com/problems/current?studyPlan=pytorch');
   h.focusElements = new Map(FOCUS_CONTRACT.targets.map(target => [target.selector, [{ tagName: target.expectation.tag.toUpperCase(), textContent: target.expectation.text, form: null,
-    getAttribute(name) { return name === 'title' ? target.expectation.title : name === 'href' && target.expectation.tag === 'a' ? 'https://www.tensortonic.com/problems/next?studyPlan=pytorch' : null; },
-    closest() { return null; }, querySelectorAll(selector) { return ['svg', 'svg.lucide-panel-left'].includes(selector) ? [{}] : []; } }]]));
+    getAttribute(name) { return name === 'title' ? target.expectation.title : name === 'aria-label' ? target.expectation.ariaLabel || null : name === 'type' ? target.expectation.type ?? null : name === 'href' && target.expectation.tag === 'a' ? 'https://www.tensortonic.com/problems/next?studyPlan=pytorch' : null; },
+    closest() { return null; }, querySelectorAll(selector) { return ['svg', 'svg.' + target.expectation.icon].includes(selector) ? [{}] : []; } }]]));
   h.sandbox.document.querySelectorAll = selector => h.focusElements.get(selector) || [];
+  h.sandbox.getComputedStyle = element => ({ display: typeof h.focusDisplay === 'function' ? h.focusDisplay(element) : h.focusDisplay || ([...h.styles.values()].includes(FOCUS_CONTRACT.cssText) ? 'none' : 'block') });
   Object.defineProperty(h.sandbox.document, 'cookie', { get() { assert.fail('focus code read cookies'); } });
   h.adapter = new FocusBrowserAdapter({ getPage: () => h.bridge.getFocusPage(), inspect: contract => h.bridge.inspectFocusContract(contract), createStyleSheet: (...args) => h.bridge.createFocusStyleSheet(...args), setStyleSheetText: (...args) => h.bridge.setFocusStyleSheetText(...args), styleSheetExists: (...args) => h.bridge.focusStyleSheetExists(...args) });
   h.page = await h.bridge.getFocusPage();
@@ -288,16 +289,18 @@ test('focus contract pinning rejects changed selectors, expectations, counts and
   assert.equal(h.calls.length, 0); assert.equal(h.opens, 0);
 });
 
-test('focus v2026-11-03 pins exactly five controls and only the desktop Browse launcher', t => {
+test('focus pins seven reviewed controls including responsive Browse and the floating assistant launcher', t => {
   const h = harness(t), browse = FOCUS_CONTRACT.targets.find(target => target.id === 'desktop-browse');
-  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-navigation-2026-11-03');
-  assert.equal(FOCUS_CONTRACT.targets.length, 5);
+  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-focus-controls-2026-11-03');
+  assert.equal(FOCUS_CONTRACT.targets.length, 7);
   assert.equal(FOCUS_CONTRACT.targets.filter(target => target.expectation.tag === 'a').length, 4);
   assert.equal(browse.selector, 'nav.flex.gap-4.px-4.h-12.items-end.border-b.border-border.text-sm > button[title="Browse problems"]');
-  assert.deepEqual(browse.expectation, { tag: 'button', text: '', title: 'Browse problems', icon: 'lucide-panel-left', href: null, type: null, inForm: false });
+  assert.deepEqual(browse.expectation, { tag: 'button', text: '', title: 'Browse problems', ariaLabel: '', icon: 'lucide-panel-left', href: null, type: null, inForm: false });
   assert.equal(browse.count, 1);
   assert.equal(FOCUS_CONTRACT.cssText, FOCUS_CONTRACT.targets.map(target => `${target.selector}{display:none!important;}`).join('\n'));
-  assert.ok(!FOCUS_CONTRACT.targets.some(target => /input|Search problems|md:hidden.*button/.test(target.selector)));
+  assert.ok(FOCUS_CONTRACT.targets.some(target => target.id === 'mobile-browse' && target.selector.includes('md:hidden')));
+  assert.ok(FOCUS_CONTRACT.targets.some(target => target.id === 'ask-toni' && target.selector.includes('button.fixed.bottom-5.right-5[aria-label="Ask Toni"][type="button"]')));
+  assert.ok(!FOCUS_CONTRACT.targets.some(target => /input|textarea|section|role="(?:alert|dialog)"/.test(target.selector)));
   for (const changed of [
     { ...FOCUS_CONTRACT, id: 'tt-problem-navigation-2026-11-02' },
     { ...FOCUS_CONTRACT, targets: FOCUS_CONTRACT.targets.slice(0, 4) },
@@ -341,10 +344,45 @@ test('desktop Browse is rechecked before nonempty CSS and an altered button is l
   assert.equal(h.styles.get('site-style'), '.site{color:blue}');
 });
 
-test('focus inspects the five exact targets and restores only its dedicated stylesheet', async t => {
+test('floating Ask Toni fails open for a form, submit action, changed identity, icon, or duplicate', async t => {
+  const h = await focusHarness(t), target = FOCUS_CONTRACT.targets.find(item => item.id === 'ask-toni');
+  const original = h.focusElements.get(target.selector)[0];
+  for (const nodes of [
+    [], [original, original], [{ ...original, textContent: 'Sign in' }],
+    [{ ...original, closest: () => ({ tagName: 'FORM' }) }], [{ ...original, form: {} }],
+    [{ ...original, getAttribute: name => name === 'type' ? 'submit' : original.getAttribute(name) }],
+    [{ ...original, getAttribute: name => name === 'aria-label' ? 'Sign in' : original.getAttribute(name) }],
+    [{ ...original, querySelectorAll: selector => ['svg', 'svg.lucide-panel-left'].includes(selector) ? [{}] : [] }],
+  ]) {
+    h.focusElements.set(target.selector, nodes);
+    await assert.rejects(h.bridge.inspectFocusContract(FOCUS_CONTRACT), { code: 'INVALID_PROOF' });
+  }
+  assert.equal(h.calls.filter(call => call.method.startsWith('CSS.')).length, 0);
+  assert.equal(h.styles.get('site-style'), '.site{color:blue}');
+});
+
+test('narrow Browse is independently verified before any stylesheet is dispatched', async t => {
+  const h = await focusHarness(t), target = FOCUS_CONTRACT.targets.find(item => item.id === 'mobile-browse');
+  const original = h.focusElements.get(target.selector)[0];
+  h.focusElements.set(target.selector, [{ ...original, getAttribute: name => name === 'type' ? 'submit' : original.getAttribute(name) }]);
+  await assert.rejects(h.applyFocus(), { code: 'UNAVAILABLE' });
+  assert.equal(h.calls.filter(call => call.method.startsWith('CSS.')).length, 0);
+});
+
+test('Focus cannot report Applied when the floating assistant or narrow Browse remains visible', async t => {
+  for (const id of ['ask-toni', 'mobile-browse']) {
+    const h = await focusHarness(t), target = FOCUS_CONTRACT.targets.find(item => item.id === id);
+    const visible = h.focusElements.get(target.selector)[0];
+    h.focusDisplay = element => element === visible ? 'block' : 'none';
+    await assert.rejects(h.applyFocus(), { code: 'APPLY_FAILED' });
+    assert.ok([...h.bridge.focusSheets.values()].every(sheet => h.styles.get(sheet.nativeId) === ''));
+  }
+});
+
+test('focus inspects only the seven reviewed targets and restores only its dedicated stylesheet', async t => {
   const h = await focusHarness(t), selectors = new Set(FOCUS_CONTRACT.targets.map(target => target.selector)), inspected = [];
   const query = h.sandbox.document.querySelectorAll;
-  h.sandbox.document.querySelectorAll = selector => { assert.ok(selectors.has(selector), 'drawer, mobile Browse and global navbar must not be queried'); inspected.push(selector); return query(selector); };
+  h.sandbox.document.querySelectorAll = selector => { assert.ok(selectors.has(selector), 'drawer contents, assistant conversations and global navbar must not be queried'); inspected.push(selector); return query(selector); };
   const lease = await h.applyFocus(), sheet = [...h.bridge.focusSheets.values()][0];
   assert.equal(h.styles.get(sheet.nativeId), FOCUS_CONTRACT.cssText);
   assert.ok(inspected.includes(FOCUS_CONTRACT.targets.find(target => target.id === 'desktop-browse').selector));
@@ -501,4 +539,109 @@ test('successful shutdown empties the owned sheet before detaching its CDP group
   const emptied = h.calls.findIndex(call => call.method === 'CSS.setStyleSheetText' && call.params.text === '');
   const detach = h.calls.findIndex(call => call.method === 'Target.setAutoAttach' && call.params.autoAttach === false);
   assert.ok(emptied >= 0 && detach > emptied); assert.equal(h.bridge.cleanupPending, false);
+});
+
+test('presentation status compares only already-owned tab references and never inspects a foreign page',async t=>{
+ const h=harness(t);assert.deepEqual(h.bridge.presentationState,{open:false,otherBrowserActive:false});await h.bridge.start();
+ const before=h.calls.length;h.vscode.window.activeBrowserTab=h.tab;assert.deepEqual(h.bridge.presentationState,{open:true,otherBrowserActive:false});
+ h.vscode.window.activeBrowserTab=new Proxy({}, {get(){throw Error('Foreign tab metadata must not be read');}});assert.deepEqual(h.bridge.presentationState,{open:true,otherBrowserActive:true});assert.equal(h.calls.length,before);
+ h.vscode.window.activeBrowserTab=undefined;assert.deepEqual(h.bridge.presentationState,{open:true,otherBrowserActive:false});
+});
+
+test('a closed automation group does not erase ownership of its still-open page and emits a display update',async t=>{
+ const h=harness(t),states=[];await h.bridge.openProblemPage('https://www.tensortonic.com/problems/status-owned',{onDidChangePage:value=>states.push(value)});
+ h.vscode.window.activeBrowserTab=h.tab;const before=states.length;h.closed.fire();
+ assert.deepEqual(h.bridge.presentationState,{open:true,otherBrowserActive:false});assert.ok(states.length>before);assert.equal(states.at(-1).ref.slug,'status-owned');
+});
+
+test('a successful stylesheet write is not Applied when any fixed control remains computed-visible',async t=>{
+ const h=await focusHarness(t);h.focusDisplay='block';const {FocusModeController}=require('../src/focus-mode'),events=[];
+ const controller=new FocusModeController({adapter:h.adapter,verifiedContract:FOCUS_CONTRACT,onChange:value=>events.push(value)});
+ assert.equal((await controller.setEnabled(true,{page:h.page})).status,'unavailable');
+ assert.ok(!events.some(value=>value.status==='applied'));assert.ok(h.calls.some(call=>call.method==='Runtime.evaluate'&&call.params.expression.includes('getComputedStyle')));
+ assert.equal([...h.bridge.focusSheets.values()].length,1);assert.ok([...h.bridge.focusSheets.values()].every(sheet=>h.styles.get(sheet.nativeId)===''));await controller.dispose();
+});
+
+test('fixed control count changes after the stylesheet write fail visibility proof and restore the own sheet',async t=>{
+ const h=await focusHarness(t);h.beforeSend=async message=>{if(message.method==='CSS.setStyleSheetText'&&message.params.text!=='')h.focusElements.delete(FOCUS_CONTRACT.targets[0].selector);};
+ await assert.rejects(h.applyFocus(),{code:'APPLY_FAILED'});assert.ok([...h.bridge.focusSheets.values()].every(sheet=>h.styles.get(sheet.nativeId)===''));
+});
+
+const missingSheetError = { code: -32000, message: 'No style sheet with given id found' };
+function protocolError(h, method, error = missingSheetError, mutate = () => {}) {
+  h.beforeSend = async message => {
+    if (message.method !== method) return;
+    mutate(message);
+    h.messages.fire({ id: message.id, sessionId: message.sessionId, error });
+    return false;
+  };
+}
+test('exact owned missing-sheet read proves absence and restores lease after refresh', async t => {
+  const h = await focusHarness(t), lease = await h.applyFocus(), sheet = [...h.bridge.focusSheets.values()][0];
+  h.newDocument(); h.styles.delete(sheet.nativeId);
+  protocolError(h, 'CSS.getStyleSheetText');
+  assert.deepEqual(await h.bridge.focusStyleSheetExists(sheet.id, { page: h.page }), { exists: false, authoritative: true, reason: 'sheet-removed', styleSheetId: sheet.id, documentId: h.page.documentId });
+  await lease.restore(); assert.equal(h.styles.get('site-style'), '.site{color:blue}');
+});
+test('wrong method, error, native ID, session and pending mutation do not prove absence', async t => {
+  for (const scenario of ['method', 'code', 'message', 'native', 'session', 'pending', 'forged']) {
+    const h = await focusHarness(t); await h.applyFocus(); const sheet = [...h.bridge.focusSheets.values()][0];
+    if (scenario === 'method') {
+      protocolError(h, 'CSS.setStyleSheetText');
+      await assert.rejects(h.bridge.setFocusStyleSheetText(sheet.id, '', { page: h.page }));
+    } else {
+      const error = scenario === 'code' ? { ...missingSheetError, code: -1 } : scenario === 'message' ? { ...missingSheetError, message: 'No style sheet with given id found extra' } : missingSheetError;
+      protocolError(h, 'CSS.getStyleSheetText', error, message => {
+        if (scenario === 'native') sheet.nativeId += '-replaced';
+        if (scenario === 'session') message.sessionId = 'foreign';
+        if (scenario === 'pending') sheet.pending = new Promise(() => {});
+      });
+      if (scenario === 'forged') h.beforeSend = async message => { if (message.method === 'CSS.getStyleSheetText') throw Object.assign(Error(missingSheetError.message), { code: 'FOCUS_SHEET_ABSENT' }); };
+      await assert.rejects(h.bridge.focusStyleSheetExists(sheet.id, { page: h.page }), { code: 'RESTORE_PENDING' });
+    }
+    assert.equal(sheet.gone, undefined); sheet.pending = undefined;
+  }
+});
+test('explicit Focus recovers only original root and exact URL without launch, navigation or requests', async t => {
+  const h = await focusHarness(t), original = h.page, token = h.bridge.token, opens = h.opens, navs = h.navigations.length;
+  h.newDocument(); const calls = h.calls.length;
+  const recovered = await h.bridge.recoverFocusPage();
+  assert.equal(recovered.id, original.id); assert.notEqual(recovered.documentId, original.documentId);
+  assert.equal(recovered.url, original.url); assert.equal(h.opens, opens); assert.equal(h.navigations.length, navs); assert.equal(h.bridge.token, token); assert.equal(h.requests.length, 0);
+  assert.ok(h.calls.slice(calls).every(call => ['Page.getFrameTree', 'Runtime.evaluate'].includes(call.method)));
+});
+test('Focus recovery rejects changed root, URL, session, ambiguity, trust and cancellation', async t => {
+  for (const scenario of ['frame', 'url', 'session', 'ambiguous', 'trust', 'cancel']) {
+    const h = await focusHarness(t); h.newDocument(); const resource = [...h.bridge.resources][0];
+    const controller = new AbortController();
+    if (scenario === 'frame') h.frameId = 'different';
+    if (scenario === 'url') h.tab.url = 'https://www.tensortonic.com/problems/other';
+    if (scenario === 'session') resource.targets.clear();
+    if (scenario === 'ambiguous') h.attach('other');
+    if (scenario === 'trust') h.vscode.workspace.isTrusted = false;
+    if (scenario === 'cancel') controller.abort();
+    await assert.rejects(h.bridge.recoverFocusPage({ signal: controller.signal }));
+    assert.equal(h.bridge.target, undefined);
+  }
+});
+
+test('recovery cancellation with an existing target dispatches nothing', async t => {
+  const h = await focusHarness(t), controller = new AbortController(), before = h.calls.length;
+  controller.abort(); await assert.rejects(h.bridge.recoverFocusPage({ signal: controller.signal }));
+  assert.equal(h.calls.length, before);
+});
+test('failed final recovery verification does not retain a partially rebound target', async t => {
+  for (const scenario of ['cancel', 'url', 'context']) {
+    const h = await focusHarness(t), controller = new AbortController(); h.newDocument();
+    let frames = 0;
+    h.beforeSend = async message => {
+      if (message.method === 'Page.getFrameTree' && ++frames === 2) {
+        if (scenario === 'cancel') controller.abort();
+        if (scenario === 'url') h.tab.url = 'https://www.tensortonic.com/problems/other';
+        if (scenario === 'context') h.newDocument();
+      }
+    };
+    await assert.rejects(h.bridge.recoverFocusPage({ signal: controller.signal }));
+    assert.equal(h.bridge.target, undefined);
+  }
 });

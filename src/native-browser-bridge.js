@@ -8,6 +8,10 @@ const MAX_BODY = 1024 * 1024;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
 const PAGE_GUARD = `window===window.top && (${JSON.stringify([...ORIGINS])}).includes(location.origin)`;
 const FOCUS_GATES = new WeakMap();
+// A private brand for Chromium's exact response to our own stylesheet probe.
+// Arbitrary error codes/messages from callers or other protocol methods cannot
+// become proof of cleanup, and raw protocol details never leave this module.
+const MISSING_FOCUS_SHEETS = new WeakMap();
 const FOCUS_URL = new RegExp(`^https://www\\.tensortonic\\.com/problems/${SLUG}(?:\\?studyPlan=${SLUG})?$`);
 const focusCore = value => JSON.stringify({ id: value?.id, verified: value?.verified, surface: value?.surface, hidesSecurityUI: value?.hidesSecurityUI, targets: Array.isArray(value?.targets) ? value.targets.map(target => ({ id: target?.id, selector: target?.selector, count: target?.count })) : undefined, cssText: value?.cssText });
 const focusFull = value => JSON.stringify({ core: focusCore(value), expectations: Array.isArray(value?.targets) ? value.targets.map(target => target?.expectation || target?.expect) : undefined });
@@ -26,7 +30,8 @@ function bounded(promise, ms, message, signal) {
     let timer;
     const done = (fn, value) => { clearTimeout(timer); if (signal) signal.removeEventListener('abort', abort); fn(value); };
     const abort = () => done(reject, fault('Native browser operation canceled. A dispatched Run or Submit may have completed; check the website before trying again.', 'CANCELED'));
-    Promise.resolve(promise).then(value => done(resolve, value), () => done(reject, fault(message, 'TRANSPORT_ERROR')));
+    Promise.resolve(promise).then(value => done(resolve, value), error => done(reject,
+      MISSING_FOCUS_SHEETS.has(error) ? error : fault(message, 'TRANSPORT_ERROR')));
     timer = setTimeout(() => done(reject, fault(message, 'TIMEOUT')), ms);
     if (signal) { signal.addEventListener('abort', abort, { once: true }); if (signal.aborted) abort(); }
   });
@@ -79,6 +84,13 @@ class NativeBrowserBridge {
     try { this.onDisplayPage(Object.freeze({ closed, ...(ref ? { ref } : {}) })); } catch (_) {}
   }
   get hasOwnedResources() { return this.resources.size > 0 || !!this.launching; }
+  get presentationState() {
+    // Compare only the public active-tab reference with resources we already own.
+    // Never enumerate other tabs or expose their URL, title, content or CDP group.
+    const owned = [...this.resources].filter(resource => !resource.tabClosed && resource.tab);
+    const active = this.vscode.window?.activeBrowserTab;
+    return Object.freeze({ open: owned.length > 0, otherBrowserActive: !!active && !owned.some(resource => resource.tab === active) });
+  }
   _setConnected(value) { if (this.connected !== value) { this.connected = value; if (this.onDidChange) this.onDidChange(); } }
   _invalidate(r, sessionId) {
     for (const target of r.targets.values()) if (!sessionId || target.sessionId === sessionId) { target.epoch++; target.contexts.clear(); }
@@ -99,13 +111,25 @@ class NativeBrowserBridge {
     if (Number.isSafeInteger(message.id)) {
       const entry = r.requests.get(message.id);
       if (!entry || message.sessionId !== entry.sessionId) return;
-      if (message.error) entry.reject(fault('Owned browser protocol request failed.', 'TRANSPORT_ERROR'));
+      if (message.error) {
+        const sheet = entry.focusReadSheet;
+        if (sheet && this.focusSheets.get(sheet.id) === sheet && sheet.resource === r &&
+            sheet.nativeId === entry.focusNativeId && sheet.target.sessionId === entry.sessionId &&
+            this.resources.has(r) && !r.closed && !r.tabClosed && r.targets.size === 1 && r.targets.has(entry.sessionId) &&
+            message.error.code === -32000 && message.error.message === 'No style sheet with given id found') {
+          const error = fault('The owned focus stylesheet no longer exists.', 'FOCUS_SHEET_ABSENT');
+          MISSING_FOCUS_SHEETS.set(error, { sheet, resource: r, sessionId: entry.sessionId });
+          entry.reject(error);
+        } else entry.reject(fault('Owned browser protocol request failed.', 'TRANSPORT_ERROR'));
+      }
       else entry.resolve(message.result);
       return;
     }
     const p = message.params;
     if (message.method === 'CSS.styleSheetRemoved') {
-      for (const sheet of this.focusSheets.values()) if (sheet.nativeId === p?.styleSheetId && sheet.resource === r && sheet.target.sessionId === message.sessionId) sheet.gone = 'sheet-removed';
+      let changed = false;
+      for (const sheet of this.focusSheets.values()) if (sheet.nativeId === p?.styleSheetId && sheet.resource === r && sheet.target.sessionId === message.sessionId) { sheet.gone = 'sheet-removed'; changed = true; }
+      if (changed) this._displayState(r);
       return;
     }
     if (message.method === 'Target.attachedToTarget' && !message.sessionId && p?.targetInfo?.type === 'page' && typeof p.sessionId === 'string' && typeof p.targetInfo.vscodeBrowserViewId === 'string') {
@@ -186,27 +210,70 @@ class NativeBrowserBridge {
     const documentId = crypto.createHash('sha256').update(JSON.stringify([target.sessionId, target.context.uniqueId || target.context.id, target.epoch])).digest('hex');
     return Object.freeze({ id: resource.focusId, url, documentId, frameId: target.context.frameId, owned: true });
   }
-  async getFocusPage() {
+  async getFocusPage({ signal } = {}) {
     const target = this.target, generation = this.generation;
     if (!target) throw fault('No exact owned problem page is available.', 'PAGE_CHANGED');
-    this._check(generation, target);
+    this._check(generation, target, signal);
     const url = target.resource.tab.url;
     if (typeof url !== 'string' || !FOCUS_URL.test(url) || url.length > 2048) throw fault('Focus mode requires the exact owned canonical problem page.', 'PAGE_CHANGED');
-    const tree = await this._cdp(target.resource, 'Page.getFrameTree', {}, target.sessionId);
-    this._check(generation, target);
+    const tree = await this._cdp(target.resource, 'Page.getFrameTree', {}, target.sessionId, signal);
+    this._check(generation, target, signal);
     if (tree?.frameTree?.frame?.id !== target.context.frameId) throw fault('The owned top frame changed.', 'PAGE_CHANGED');
     const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(url)}||location.hash)return '';return JSON.stringify({url:location.origin+location.pathname+location.search})})()`;
-    const raw = await this._evaluate(target, expression, generation);
+    const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 2200) throw fault('Invalid owned page metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Owned page identity is unavailable.', 'PAGE_CHANGED'); }
     if (metadata?.url !== url || target.resource.tab.url !== url) throw fault('The owned problem page changed.', 'PAGE_CHANGED');
+    this.focusAnchor = { resource: target.resource, sessionId: target.sessionId, frameId: target.context.frameId, url };
     return this._focusPage(target, url);
+  }
+  async recoverFocusPage({ signal } = {}) {
+    if (this.target) return this.getFocusPage({ signal });
+    const anchor = this.focusAnchor, generation = this.generation;
+    const r = anchor?.resource;
+    // Explicit Focus action only: no tab launch, navigation, global discovery,
+    // other resource adoption, or change to the saved-session transport.
+    if (!r || !this.resources.has(r) || r.closed || r.tabClosed || !r.group ||
+        r.tab.url !== anchor.url || !FOCUS_URL.test(anchor.url) || r.targets.size !== 1 || !r.targets.has(anchor.sessionId)) throw fault('The original owned Focus page is unavailable.', 'PAGE_CHANGED');
+    const deadline = this.now() + Math.min(this.discoverTimeout, this.evaluationTimeout);
+    do {
+      this._check(generation, undefined, signal);
+      if (r.closed || r.tabClosed || r.tab.url !== anchor.url || r.targets.size !== 1 || !r.targets.has(anchor.sessionId)) throw fault('The owned Focus page changed.', 'PAGE_CHANGED');
+      const tree = await bounded(this._cdp(r, 'Page.getFrameTree', {}, anchor.sessionId, signal), this.evaluationTimeout, 'Owned Focus frame is unavailable.', signal);
+      this._check(generation, undefined, signal);
+      if (r.closed || r.tabClosed || r.tab.url !== anchor.url || r.targets.size !== 1 || !r.targets.has(anchor.sessionId)) throw fault('The owned Focus page changed during frame verification.', 'PAGE_CHANGED');
+      if (tree?.frameTree?.frame?.id !== anchor.frameId) throw fault('The owned Focus root frame changed.', 'PAGE_CHANGED');
+      const live = r.targets.get(anchor.sessionId), matches = [];
+      for (const context of live.contexts.values()) {
+        if (context.frameId !== anchor.frameId) continue;
+        const target = { resource: r, sessionId: anchor.sessionId, context, epoch: live.epoch };
+        const expression = `window===window.top && location.origin==='https://www.tensortonic.com' && location.origin+location.pathname+location.search===${JSON.stringify(anchor.url)} && !location.hash ? 1 : 0`;
+        try { if (await this._number(target, expression, generation, signal) === 1) matches.push(target); }
+        catch (_) { this._check(generation, undefined, signal); }
+      }
+      if (matches.length > 1) throw fault('The owned Focus context is ambiguous.', 'AMBIGUOUS_TARGET');
+      if (matches.length === 1) {
+        this._check(generation, matches[0], signal);
+        if (r.tab.url !== anchor.url) throw fault('The owned Focus URL changed.', 'PAGE_CHANGED');
+        const recovered = matches[0];
+        this.target = recovered;
+        try { return await this.getFocusPage({ signal }); }
+        catch (error) {
+          // Never retain a partially verified rebind after cancellation or a
+          // document/URL change during the final identity checks.
+          if (this.target === recovered) this.target = undefined;
+          throw error;
+        }
+      }
+      await this.pause(50);
+    } while (this.now() < deadline);
+    throw fault('The owned Focus page is still loading. Try Focus after it loads.', 'PAGE_CHANGED');
   }
   async inspectFocusContract(value) {
     if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
     const page = await this.getFocusPage(), target = this.target, generation = this.generation;
     const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.selector, count: item.count, expectation: item.expectation }));
-    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(x.icon!=='lucide-panel-left'||x.href!==null||x.type!==null||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==null||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.lucide-panel-left').length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
+    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
     const raw = await this._evaluate(target, expression, generation);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
@@ -233,7 +300,8 @@ class NativeBrowserBridge {
     const id = ++this.nextId;
     let resolve, reject;
     const reply = new Promise((yes, no) => { resolve = yes; reject = no; }); reply.catch(() => {});
-    resource.requests.set(id, { resolve, reject, sessionId });
+    const readSheet = method === 'CSS.getStyleSheetText' ? this.focusSheets.get(params.styleSheetId) : undefined;
+    resource.requests.set(id, { resolve, reject, sessionId, ...(readSheet ? { focusReadSheet: readSheet, focusNativeId: readSheet.nativeId } : {}) });
     // Retain the raw mutation until it settles. A caller timeout/cancellation
     // must not let a late nonempty write overtake its own cleanup.
     const completion = Promise.resolve().then(() => {
@@ -310,7 +378,8 @@ class NativeBrowserBridge {
     if (sheet.gone || sheet.used || !this.focusContract || text !== this.focusContract.cssText || sheet.fingerprint !== focusCore(this.focusContract)) throw fault('Nonempty focus styles require the exact reviewed proof.', 'INVALID_PROOF');
     await this.inspectFocusContract(this.focusContract);
     if (!sameFocusPage(page, this.focusProof.page)) throw fault('The owned document changed.', 'PAGE_CHANGED');
-    this._check(this.generation, sheet.target, signal);
+    const generation = this.generation;
+    this._check(generation, sheet.target, signal);
     if (sheet.resource.tab.url !== page.url) throw fault('The owned problem URL changed before styling.', 'PAGE_CHANGED');
     sheet.used = true; sheet.dirty = true;
     const pending = this._focusCall(sheet.resource, 'CSS.setStyleSheetText', { styleSheetId: id, text }, sheet.target.sessionId, signal);
@@ -324,6 +393,10 @@ class NativeBrowserBridge {
       await bounded(pending, this.evaluationTimeout, 'Owned focus stylesheet mutation is unconfirmed.');
       if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
       if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed.', 'PAGE_CHANGED');
+      const targets = this.focusContract.targets.map(target => ({ selector: target.selector, count: target.count }));
+      const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return ${JSON.stringify(targets)}.every(target=>{const nodes=document.querySelectorAll(target.selector);return nodes.length===target.count&&[...nodes].every(element=>getComputedStyle(element).display==='none')})?1:0})()`;
+      if (await this._number(sheet.target, expression, generation, signal) !== 1) throw fault('Focus controls remained visible; original styles will be restored.', 'FOCUS_NOT_APPLIED');
+      if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed after visibility verification.', 'PAGE_CHANGED');
       if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
     } catch (error) {
       sheet.needsLateEmpty = true;
@@ -334,7 +407,17 @@ class NativeBrowserBridge {
   async focusStyleSheetExists(id, { page } = {}) {
     const sheet = this._focusSheet(id, page);
     if (sheet.gone) return Object.freeze({ exists: false, authoritative: true, reason: sheet.gone, styleSheetId: id, documentId: sheet.page.documentId });
-    const result = await bounded(this._focusCall(sheet.resource, 'CSS.getStyleSheetText', { styleSheetId: id }, sheet.target.sessionId), this.evaluationTimeout, 'Owned stylesheet state is unknown.');
+    let result;
+    try { result = await bounded(this._focusCall(sheet.resource, 'CSS.getStyleSheetText', { styleSheetId: id }, sheet.target.sessionId), this.evaluationTimeout, 'Owned stylesheet state is unknown.'); }
+    catch (error) {
+      const proof = MISSING_FOCUS_SHEETS.get(error), r = sheet.resource;
+      if (proof?.sheet === sheet && proof.resource === r && proof.sessionId === sheet.target.sessionId &&
+          !sheet.pending && this.resources.has(r) && !r.closed && !r.tabClosed && r.targets.size === 1 && r.targets.has(proof.sessionId)) {
+        sheet.gone = 'sheet-removed';
+        return Object.freeze({ exists: false, authoritative: true, reason: 'sheet-removed', styleSheetId: id, documentId: sheet.page.documentId });
+      }
+      throw fault('Owned stylesheet state is unknown.', 'RESTORE_PENDING');
+    }
     if (typeof result?.text !== 'string' || result.text.length > 16384) throw fault('Owned stylesheet state is invalid.', 'INVALID_RESPONSE');
     return Object.freeze({ exists: true, authoritative: true, styleSheetId: id, documentId: sheet.page.documentId });
   }
@@ -427,6 +510,7 @@ class NativeBrowserBridge {
           r.closed = true; this.token = undefined; this._invalidate(r);
           for (const entry of r.requests.values()) entry.reject(fault('Owned browser transport closed.', 'DISCONNECTED'));
           r.requests.clear();
+          this._displayState(r);
         }));
         await this._cdp(r, 'Target.setAutoAttach', { autoAttach: true, flatten: true, waitForDebuggerOnStart: false });
         this._check(generation, undefined, signal);

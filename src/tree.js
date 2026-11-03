@@ -99,6 +99,7 @@ class ProblemTreeProvider {
   }
 
   environmentAction() {
+    if (this.state.environmentInStatusView === true) return;
     const state = this.state.environment;
     if (!state || !state.label || (state.state === 'not-study-window' && state.command !== 'tensortonic.startStudying')) return;
     const allowed = new Set(['tensortonic.setupStudyEnvironment', 'tensortonic.useStudyEnvironment', 'tensortonic.repairStudyEnvironment', 'tensortonic.startStudying']);

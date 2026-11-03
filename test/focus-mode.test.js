@@ -119,3 +119,18 @@ test('hung restore is bounded, retained, and shared with retries until late clea
  assert.equal((await within(c.setEnabled(false))).status,'restore-pending');assert.equal(h.calls.restore,1);
  restoration.resolve();await tick();assert.deepEqual(c.state,{enabled:false,status:'off',applied:false});assert.equal((await c.dispose()).status,'off');
 });
+
+test('status observers receive pending, applied and navigation reset states without controlling the adapter',async()=>{
+ const h=setup(),events=[],gate=deferred();h.adapter.verify=async p=>{await gate.promise;return{...p,owned:true,contractId:verifiedContract.id};};
+ const c=new FocusModeController({adapter:h.adapter,verifiedContract,onChange:value=>events.push(value)}),pending=c.setEnabled(true,{page});
+ assert.equal(events[0].busy,true);assert.equal(events[0].applied,false);gate.resolve();await pending;
+ assert.deepEqual(events.at(-1),{enabled:true,status:'applied',applied:true,busy:false});
+ await c.pageChanged();assert.deepEqual(events.at(-1),{enabled:false,status:'off',applied:false,busy:false});assert.equal(h.calls.apply,1);assert.equal(h.calls.restore,1);
+});
+
+test('late cleanup completion updates status observers and broken observers cannot prevent restoration',async()=>{
+ const h=setup(),gate=deferred(),events=[];h.adapter.apply=async()=>({restore:()=>gate.promise});
+ const c=new FocusModeController({adapter:h.adapter,verifiedContract,operationTimeoutMs:15,onChange:value=>{events.push(value);throw Error('synthetic UI listener');}});
+ await c.setEnabled(true,{page});assert.equal((await within(c.setEnabled(false))).status,'restore-pending');assert.equal(events.at(-1).status,'restore-pending');
+ gate.resolve();await tick();await tick();assert.deepEqual(events.at(-1),{enabled:false,status:'off',applied:false,busy:false});await c.dispose();
+});

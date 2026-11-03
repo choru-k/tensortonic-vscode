@@ -17,7 +17,7 @@ user action; a checked feature is not permission to perform those actions.
 | Reusable Description/Tests/Results, freshness and explicit failure discussion | Implemented with captured-target and session/navigation fences. |
 | Environment discovery and Create/Use/Repair/Ready status | Implemented; existing generated workspaces recognized read-only, unknown folders offer Choose. |
 | Actual environment creation and scoped interpreter selection | Supported explicit setup workflow; depends on a compatible installed runtime and available official wheels. Never runs on refresh/startup. |
-| Reversible focused original page | Implemented for the five exact reviewed Prev/Next/Browse controls. Changed structures remain visible; drawer input/global navigation are outside scope. |
+| Reversible focused original page | Local 0.12.4 source covers seven exact reviewed Prev/Next, responsive Browse/search and floating Ask Toni controls. Changed structures remain visible; drawer contents, assistant conversations and global navigation are outside scope. |
 | Dark and light high-contrast UI | Selected sidebar/code/results surfaces visually checked; full WCAG/theme/scale coverage is not claimed. |
 | Unofficial branding and icon provenance | Disclosed; logo reuse rights remain unresolved and are not granted by the MIT code license. |
 | Public VSIX source parity and tests | See the current release checks and artifact checksum. |

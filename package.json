@@ -2,7 +2,7 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "TensorTonic study with a consented encrypted session, direct HTTPS Python Run/Submit, and optional browser presentation.",
-  "version": "0.12.2",
+  "version": "0.12.5",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -25,7 +25,8 @@
   "activationEvents": [
     "onView:tensortonicProblems",
     "onLanguageModelTool:tensortonic_current_problem",
-    "onStartupFinished"
+    "onStartupFinished",
+    "onView:tensortonicStudyStatus"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -58,6 +59,11 @@
         {
           "id": "tensortonicProblems",
           "name": "Study plan"
+        },
+        {
+          "id": "tensortonicStudyStatus",
+          "name": "Study status",
+          "visibility": "visible"
         }
       ]
     },
@@ -199,12 +205,14 @@
       {
         "command": "tensortonic.setupStudyEnvironment",
         "title": "Set up study Python environment",
-        "category": "TensorTonic"
+        "category": "TensorTonic",
+        "icon": "$(add)"
       },
       {
         "command": "tensortonic.repairStudyEnvironment",
         "title": "Repair study Python environment",
-        "category": "TensorTonic"
+        "category": "TensorTonic",
+        "icon": "$(tools)"
       },
       {
         "command": "tensortonic.chooseProblemView",
@@ -272,7 +280,14 @@
       {
         "command": "tensortonic.toggleFocusMode",
         "title": "Focus mode / Original view",
-        "category": "TensorTonic"
+        "category": "TensorTonic",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "tensortonic.showStudyStatus",
+        "title": "Show study status",
+        "category": "TensorTonic",
+        "icon": "$(dashboard)"
       }
     ],
     "menus": {
@@ -336,6 +351,11 @@
           "command": "tensortonic.toggleFocusMode",
           "when": "view == tensortonicProblems",
           "group": "presentation@9"
+        },
+        {
+          "command": "tensortonic.showStudyStatus",
+          "when": "view == tensortonicProblems",
+          "group": "workspace@3"
         }
       ],
       "view/item/context": [
@@ -363,6 +383,36 @@
           "command": "tensortonic.resumeStudyPlan",
           "when": "view == tensortonicProblems && viewItem == tensortonicStudyPlan",
           "group": "management@2"
+        },
+        {
+          "command": "tensortonic.toggleFocusMode",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusFocus",
+          "group": "inline"
+        },
+        {
+          "command": "tensortonic.chooseProblemView",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusProblemView",
+          "group": "inline"
+        },
+        {
+          "command": "tensortonic.setupStudyEnvironment",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusEnvironmentCreate",
+          "group": "inline"
+        },
+        {
+          "command": "tensortonic.useStudyEnvironment",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusEnvironmentUse",
+          "group": "inline"
+        },
+        {
+          "command": "tensortonic.repairStudyEnvironment",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusEnvironmentRepair",
+          "group": "inline"
+        },
+        {
+          "command": "tensortonic.startStudying",
+          "when": "view == tensortonicStudyStatus && viewItem == tensortonicStatusEnvironmentChoose",
+          "group": "inline"
         }
       ],
       "editor/title": [

@@ -14,7 +14,7 @@ function nonempty(value) { return typeof value === 'string' && value.length > 0;
 // The adapter owns the reviewed DOM/CSS contract. This controller grants only
 // an exact owned-document proof and retains every returned cleanup lease.
 class FocusModeController {
-  constructor({ adapter, verifiedContract, operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT } = {}) {
+  constructor({ adapter, verifiedContract, operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT, onChange = () => {} } = {}) {
     this.adapter = adapter;
     this.contract = verifiedContract ? Object.freeze({ ...verifiedContract }) : undefined;
     this.operationTimeoutMs = Number.isFinite(operationTimeoutMs) && operationTimeoutMs > 0 ? Math.min(operationTimeoutMs, DEFAULT_OPERATION_TIMEOUT) : DEFAULT_OPERATION_TIMEOUT;
@@ -30,9 +30,20 @@ class FocusModeController {
     this._activeLease = undefined;
     this._operation = undefined;
     this._running = undefined;
+    this.onChange = onChange;
+    this._pendingOperations = new Set();
+    this._lastNotification = undefined;
   }
 
   get state() { return Object.freeze({ enabled: this.enabled, status: this.status, applied: this._leases.size > 0 }); }
+  get busy() { return this._pendingOperations.size > 0; }
+  _notify() {
+    const value = Object.freeze({ ...this.state, busy: this.busy });
+    const key = JSON.stringify(value);
+    if (key === this._lastNotification) return;
+    this._lastNotification = key;
+    try { this.onChange(value); } catch (_) { /* Presentation listeners cannot interrupt cleanup. */ }
+  }
   _current(operation) { return this._operation === operation && operation.generation === this.generation; }
   _needsCleanup() { return this._pendingApplies.size > 0 || [...this._leases].some(lease => lease !== this._activeLease); }
 
@@ -55,6 +66,7 @@ class FocusModeController {
     else if (!this.enabled || this.disposed) this.status = 'off';
     else if (this._activeLease) this.status = 'applied';
     else if (this.status === 'restore-pending') this.status = 'unavailable';
+    this._notify();
   }
 
   _wait(promise, operation) {
@@ -199,11 +211,17 @@ class FocusModeController {
     this.enabled = enabled === true && !this.disposed;
     const operation = { generation: ++this.generation, controller: new AbortController() };
     this._operation = operation;
+    this._pendingOperations.add(operation);
+    this._notify();
     const cancel = () => operation.controller.abort();
     signal?.addEventListener('abort', cancel, { once: true });
     if (signal?.aborted) cancel();
     const task = () => this._run(operation, page);
-    const result = this.queue.then(task, task).finally(() => signal?.removeEventListener('abort', cancel));
+    const result = this.queue.then(task, task).finally(() => {
+      signal?.removeEventListener('abort', cancel);
+      this._pendingOperations.delete(operation);
+      this._notify();
+    });
     this.queue = result.catch(() => {});
     return result;
   }

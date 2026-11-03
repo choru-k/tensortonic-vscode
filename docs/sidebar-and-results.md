@@ -52,23 +52,31 @@ difficulty labels are unchanged.
 **Focus mode / Original view** is available in the study sidebar overflow and
 recognized solution editor overflow. It starts off and affects only the exact
 extension-owned canonical problem tab. Before a dedicated stylesheet can hide
-anything, the contract verifies these five controls:
+anything, the contract verifies these seven controls:
 
 - The responsive Prev/Next problem-navigation links: two mobile and two desktop.
-- The desktop problem-header **Browse problems** button that opens the problem
-  search drawer. It must have the expected label, one panel-left SVG icon, no href,
+- The desktop and narrow problem-header **Browse problems** launchers. Each must
+  retain its reviewed navigation parent, title, one panel-left SVG icon, no href,
   no type attribute and no form association.
+- The floating **Ask Toni** launcher directly inside the problem main area. It
+  must retain its fixed bottom/right classes, accessible label, button type, text
+  and one sparkles icon, with no form association. Existing Toni conversations
+  are not hidden or closed.
 
 Every selector must match exactly once. The page, document and top frame must
 remain the same; links must have safe canonical problem destinations. A changed,
-missing, boundary or ambiguous structure stays visible. The drawer search input,
-mobile Browse button and global website navigation are not hide targets.
+missing, boundary or ambiguous structure stays visible. The contents of an already-open drawer,
+global website navigation and browser address bar are not hide targets. The top
+Browse/search launchers are hidden at both responsive widths.
 
 Original view empties only the extension's dedicated stylesheet, including after
 SPA route changes. Full document destruction, exact stylesheet removal or tab
 closure count as cleanup only with owned lifecycle proof. Navigation turns focus
 off. Failed or late cleanup remains pending for retry; a protocol error alone
-never means the page was restored.
+never means the page was restored. A full browser-page reload can leave cleanup
+pending even when controls are visibly restored. If Original view cannot confirm
+cleanup, finish any page-local work, close only that owned problem tab, then
+explicitly reopen the problem.
 
 Login, payment or security notices, Theory/Solution/Notes controls, site stylesheets,
 browser chrome, automation indicators and global settings are outside focus mode.
@@ -79,3 +87,38 @@ See [release verification limits](../RELEASE-VALIDATION.md).
 The extension uses TensorTonic's favicon silhouette and raster icon and remains
 explicitly unofficial. Reuse rights are unresolved; the brand asset is not covered
 by this repository's MIT license. See [icon provenance](icon-provenance.md).
+
+## Study status
+
+The **Study status** section is shown by default below the problem tree. It keeps
+three native rows separate from problem membership and progress:
+
+- **Focus mode** reports Off, Updating, On/Applied, Unavailable or Cleanup pending.
+  Select the row or its inline eye action to toggle the existing Focus/Original
+  control. A requested On state alone is not shown as Applied. Each fixed target must
+  still match and have computed display `none` immediately after applying the
+  stylesheet. A failed visibility check restores the owned styles; this is not
+  continuous visibility polling.
+- **Problem view** reports the Web or Markdown default for future explicit problem
+  opens. Select it or its inline browser action to choose a mode. The preference
+  does not close existing tabs or rewrite code.
+- **Study environment** offers the existing explicit Create, Use, Repair or Choose
+  workspace action, or a non-actionable Ready state. Refresh never installs or
+  selects an environment. The old problem-list environment footer moves here.
+
+The section header also shows a short summary when collapsed. VS Code still lets
+the user resize, move, collapse or hide native views. Use **TensorTonic: Show study
+status** to focus it again; the extension does not override manual layout choices.
+
+Focus currently resets to Off after extension reload or owned-page navigation.
+Its tooltip explains this and why it may not apply: no owned website page, a
+changed or mismatched page, another browser tab active, unverified controls, or
+pending restoration. Markdown is a local renderer and is not styled by website
+Focus mode. An existing owned Web tab can remain styled even when the default is
+changed to Markdown. Only fixed reviewed website controls are affected; login,
+security, payment and interactive content remain outside this presentation scope.
+
+Status rendering reads only host state and settings. It performs no HTTP request,
+cookie access, Python import, grading action or browser inspection. Browser state
+uses only references to already-owned tabs and the public active-tab reference;
+no unrelated page URL, title or content is inspected.

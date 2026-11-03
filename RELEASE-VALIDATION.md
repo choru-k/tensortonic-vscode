@@ -1,3 +1,67 @@
+# 0.12.5 cloud-validated Focus refresh recovery candidate
+
+Cloud-only validation on Node 24.22.1 and Python 3.12.14 passed 789/789
+aggregate tests (with file concurrency set to one), 102/102 session checks and 70/70 transport checks, with no
+failures, skips or cancellations. All fixtures are synthetic. No desktop host,
+real account, cookie import, grading request or installation was used.
+
+Regression coverage verifies exact owned missing-stylesheet responses; rejection
+of wrong methods, codes, messages, native IDs, sessions and pending mutations;
+original-resource/root/URL-only recovery; cancellation and failed-rebind cleanup;
+and late removal notifications that retry Off without discovery or styling.
+A pending-action regression covers both recovery and legacy page lookup across
+new navigation, session changes, Original view, page observations and disposal.
+
+An earlier serial run had one existing synthetic Unicode-response deadline
+timeout during host contention; a parallel session-only run also hit an existing
+secure-storage deadline fixture. The unchanged Unicode test passed alone in
+59 ms, and the complete unchanged serial suite passed. No deadlines were relaxed.
+
+The VSIX is built by the repository allowlist, archive-tested and checked for
+byte-for-byte source parity. Authentication/session code is unchanged. The
+recovery only reads the existing owned page's frame and exact URL metadata and
+never opens, navigates or adopts another tab.
+
+Actual native-host refresh recovery and visual behavior are not verified for
+this candidate. Earlier native checks below concern earlier versions and must
+not be read as native validation of 0.12.5. Publication and installation are
+separate actions.
+
+# 0.12.4 local Focus controls candidate
+
+This local candidate extends the fixed owned-page CSS contract from five to
+seven controls: responsive Prev/Next, both Browse/search launchers and floating
+Ask Toni. Anonymous public source and an actual owned problem page established
+the exact control structures. Baseline native checks reproduced the narrow
+Browse and floating assistant remaining visible under the older contract.
+
+The candidate passed 781/781 aggregate tests, 102/102 session checks, 64/64
+transport checks and an independent 125-test Focus/status review. Synthetic
+loopback fixtures require ordinary local execution permission on restricted hosts.
+
+Actual native checks at 896 and 384 CSS-pixel widths confirmed all seven controls
+hidden with Focus On and their computed display restored with Off. Native pixels
+and accessibility checks preserved Theory, Solution, Notes and interactive content.
+Navigation resets Focus; a mismatched or404 problem page is left untouched.
+
+A full browser-page reload restored the visible controls but retained conservative
+cleanup-pending state in the tested host. Closing only the owned problem tab and
+explicitly reopening its problem restored clean Focus operation. Do not treat a
+protocol error or visible controls alone as proof that an old sheet is gone.
+
+Both owned test hosts exited normally with no pending fixture requests, debugger
+sessions, secret operations or cookie operations. No new account import, real
+grading or public publication is implied. Private host records and research
+downloads are excluded from the package.
+
+# 0.12.3 local Study status candidate
+
+This candidate adds a separate native status view. Automated tests cover cached
+status rendering, denied browser APIs, settings and navigation updates, delayed
+cleanup and computed visibility failure after a successful stylesheet write.
+Native local verification is recorded separately; no account-specific records or
+new public publication are implied by this local package.
+
 # 0.12.2 release checks
 
 This page describes reproducible release checks and their limits. It contains no

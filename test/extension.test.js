@@ -24,7 +24,7 @@ class Uri {
 
 function disposable() { return { dispose() {} }; }
 
-async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, nativeTransport, environmentController, editorLayout, membershipState } = {}) {
+async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, nativeTransport, environmentController, editorLayout, membershipState, deniedBrowserAPI = false } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tensortonic-ui-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const documents = new Map();
@@ -45,6 +45,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   const configuration = new Map([['studyPlan', 'pytorch-basics'], ['solutionDirectory', 'tensortonic'], ['problemView', 'markdown']]);
   const configurationListeners = [];
   const activeEditorListeners = [];
+  const activeBrowserListeners = [];
   const fireConfiguration = key => configurationListeners.forEach(listener => listener({ affectsConfiguration: name => name === `tensortonic.${key}` }));
   const calls = { list: [], get: [], run: [], submit: [] };
   const fixtures = new Map([DEFAULT_REF, SECOND_REF].map((ref, i) => [fixtureKey(ref), {
@@ -205,6 +206,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         return this.activeTextEditor;
       },
       onDidChangeActiveTextEditor: listener => { activeEditorListeners.push(listener); return disposable(); },
+      onDidChangeActiveBrowserTab: listener => { activeBrowserListeners.push(listener); return disposable(); },
       showErrorMessage: async message => { errors.push(message); },
       showInformationMessage: async (...args) => { information.push(args); return informationChoices.shift(); },
       showQuickPick: async items => items[0],
@@ -301,12 +303,13 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     async delete(key) { secretCalls.push(['delete', key]); legacySecrets.delete(key); },
   };
   const context = { secrets, globalState, subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
+  if (deniedBrowserAPI) for (const key of ['activeBrowserTab','onDidChangeActiveBrowserTab','onDidChangeBrowserTabState','onDidCloseBrowserTab']) Object.defineProperty(vscode.window,key,{get(){throw Error('Browser proposal denied');}});
   const publicApi = extension.activate(context);
   const api = {...publicApi,bridge:transport,client:fixtureClient};
   await api.studyWorkspaceReady;
   await api.sessionReady;
   t.after(() => { for (const subscription of context.subscriptions.reverse()) subscription.dispose(); });
-  return { fireClose: document=>closeListeners.forEach(fn=>fn(document)), fireOpen: document=>openListeners.forEach(fn=>fn(document)), fireText: document => changeListeners.forEach(fn=>fn({document})), savedState, root, extension, api, publicApi, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues, secretCalls, legacySecrets };
+  return { fireActiveBrowser: tab=>{vscode.window.activeBrowserTab=tab;activeBrowserListeners.forEach(fn=>fn(tab));}, fireClose: document=>closeListeners.forEach(fn=>fn(document)), fireOpen: document=>openListeners.forEach(fn=>fn(document)), fireText: document => changeListeners.forEach(fn=>fn({document})), savedState, root, extension, api, publicApi, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues, secretCalls, legacySecrets };
 }
 
 function panelConfig(panel) { const match=panel.webview.html.match(/const config = (\{[^\n]+\});/); return match ? JSON.parse(match[1]) : undefined; }
@@ -1616,13 +1619,13 @@ test('Tests view reports invalid unsaved JSON without rewriting or saving it',as
  const panel=h.webviews[0];assert.ok(panel.messages.some(message=>message.testsHtml?.includes('not a JSON array')));assert.equal(document.getText(),'{broken');assert.equal(document.isDirty,true);assert.equal(await fs.readFile(opened.testsUri.fsPath,'utf8'),disk);assert.equal(h.calls.run.length+h.calls.submit.length,0);
 });
 
-test('environment footer refresh is read-only, stale-safe and explicit Use shares existing controller',async t=>{
+test('separate status view environment refresh is read-only, stale-safe and explicit Use shares existing controller',async t=>{
  const first=deferred();let change,statusCalls=0,useCalls=0,setupCalls=0;
  let value={state:'use',label:'Use study environment',command:'tensortonic.useStudyEnvironment'};
  const controller={dispose(){},onDidChange(listener){change=listener;return disposable();},status(){return ++statusCalls===1?first.promise:Promise.resolve(value);},async use(){useCalls++;value={state:'ready'};return{status:'ready'};},async setup(){setupCalls++;},async repair(){throw new Error('Must not repair automatically');},async offer(){}};
- const h=await harness(t,{environmentController:controller});change();await flushReveals();assert.equal(h.trees[0].options.treeDataProvider.getChildren().at(-1).label,'Use study environment');assert.equal(setupCalls+useCalls,0);
- first.resolve({state:'missing',label:'Create study environment',command:'tensortonic.setupStudyEnvironment'});await flushReveals();assert.equal(h.trees[0].options.treeDataProvider.getChildren().at(-1).label,'Use study environment');
- const result=await h.commands.get('tensortonic.useStudyEnvironment')();assert.equal(result.status,'ready');assert.equal(useCalls,1);assert.equal(setupCalls,0);assert.ok(!h.trees[0].options.treeDataProvider.getChildren().some(item=>item.contextValue==='tensortonicStudyEnvironment'));assert.equal(h.calls.run.length+h.calls.submit.length,0);
+ const h=await harness(t,{environmentController:controller}),status=h.trees.find(tree=>tree.id==='tensortonicStudyStatus');change();await flushReveals();assert.equal(status.options.treeDataProvider.getChildren().at(-1).description,'Use');assert.equal(setupCalls+useCalls,0);
+ first.resolve({state:'missing',label:'Create study environment',command:'tensortonic.setupStudyEnvironment'});await flushReveals();assert.equal(status.options.treeDataProvider.getChildren().at(-1).description,'Use');
+ const result=await h.commands.get('tensortonic.useStudyEnvironment')();assert.equal(result.status,'ready');assert.equal(useCalls,1);assert.equal(setupCalls,0);assert.ok(!h.trees[0].options.treeDataProvider.getChildren().some(item=>item.contextValue?.startsWith('tensortonicStudyEnvironment')));assert.equal(status.options.treeDataProvider.getChildren().at(-1).description,'Ready');assert.equal(status.options.treeDataProvider.getChildren().at(-1).command,undefined);assert.equal(h.calls.run.length+h.calls.submit.length,0);
 });
 
 test('a stale Description metadata failure cannot interrupt a newer panel selection',async t=>{
@@ -1686,7 +1689,7 @@ test('explicit empty memberships stay empty without resurrecting the legacy plan
  const h=await harness(t,{membershipState:{version:1,revision:0,planIds:[],resumeByPlan:{},openedRef:null}});await h.api.refresh();assert.equal(h.calls.list.length,0);assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].command.command,'tensortonic.manageStudyPlans');
 });
 test('focus mode without an owned verified display stays visible without a browser-pausing notification',async t=>{
- const h=await harness(t);const before=h.calls.get.length;const state=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(state.status,'unavailable');assert.equal(h.calls.get.length,before);assert.equal(h.information.length,0);assert.match(h.output.at(-1),/no website styles or browser controls were changed/i);
+ const h=await harness(t);const before=h.calls.get.length;const state=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(state.status,'unavailable');assert.equal(h.calls.get.length,before);assert.equal(h.information.length,0);assert.match(h.output.at(-1),/owned-page verification or visibility confirmation failed/i);
 });
 test('focus mode applies only its pinned owned-page contract and restores before problem navigation',async t=>{
  const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF);
@@ -1736,4 +1739,82 @@ test('closed result source becomes unknown and reopened current document is comp
 test('an old cleanup recovery notification cannot clear a newer connected session',async t=>{
  const native=nativeUiFixture(true),h=await harness(t,{nativeTransport:native}),opened=await h.api.openProblem(DEFAULT_REF);let cleared=0;native.revoke=async()=>{cleared++;};const gate=deferred();h.vscode.window.showErrorMessage=()=>gate.promise;
  h.api.client.submit=async()=>{const error=new Error('Synthetic cleanup pending');error.code='STORAGE_CLEANUP_PENDING';throw error;};await h.commands.get('tensortonic.submit')(opened.uri);native.token='new-session';native.onDidChange();gate.resolve('Retry clear saved session');await new Promise(r=>setTimeout(r,5));assert.equal(cleared,0);
+});
+
+test('Study status is a separate always-populated view and tracks settings without opening files or pages', async t=>{
+ const h=await harness(t,{connected:false});
+ const view=h.trees.find(tree=>tree.id==='tensortonicStudyStatus');assert.ok(view);assert.equal(view.options.showCollapseAll,false);
+ const rows=()=>view.options.treeDataProvider.getChildren();assert.equal(rows().length,3);assert.equal(rows()[0].description,'Off');assert.equal(rows()[1].description,'Markdown');
+ assert.match(view.description,/Focus Off.*Markdown/);const before={...h.calls},files=await fs.readdir(h.root);
+ await h.vscode.workspace.getConfiguration('tensortonic').update('problemView','web');assert.equal(rows()[1].description,'Web');assert.match(view.description,/Web/);
+ h.vscode.window.showQuickPick=async()=>undefined;await h.commands.get('tensortonic.chooseProblemView')();assert.equal(rows()[1].description,'Web');
+ await h.commands.get('tensortonic.showStudyStatus')();assert.ok(h.commandExecutions.some(call=>call.id==='tensortonicStudyStatus.focus'));
+ h.vscode.window.activeBrowserTab=new Proxy({}, {get(){throw Error('Other browser metadata is not part of status');}});assert.equal(h.publicApi.presentationStatus().display.otherBrowserActive,true);
+ assert.deepEqual(h.calls,before);assert.deepEqual(await fs.readdir(h.root),files);assert.equal(h.webviews.length,0);
+ const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));
+ assert.equal(manifest.contributes.views.tensortonic[1].id,'tensortonicStudyStatus');assert.equal(manifest.contributes.views.tensortonic[1].visibility,'visible');
+ assert.ok(manifest.contributes.menus['view/item/context'].some(item=>item.command==='tensortonic.toggleFocusMode'&&item.when.includes('tensortonicStudyStatus')&&item.group==='inline'));
+});
+
+test('Study status follows actual focus apply, explicit Off and owned navigation instead of stale output messages', async t=>{
+ const native=nativeUiFixture(true);let page={id:'owned-status-fixture',owned:true,url:'https://www.tensortonic.com/problems/synthetic',documentId:'doc1',frameId:'top'},contract,css='';
+ native.display={presentationState:{open:true,otherBrowserActive:false},setFocusContract(value){contract=value;},async getFocusPage(){return page;},async inspectFocusContract(){return{...page,contractId:contract.id,counts:Object.fromEntries(contract.targets.map(item=>[item.id,item.count]))};},async createFocusStyleSheet(){return 'own-status-sheet';},async setFocusStyleSheetText(id,text){assert.equal(id,'own-status-sheet');css=text;},async focusStyleSheetExists(){return{exists:true};}};
+ const oldOpen=native.openProblemPage.bind(native);native.openProblemPage=async(url,options)=>{page={...page,url,documentId:page.documentId+'-next'};return oldOpen(url,options);};
+ const h=await harness(t,{nativeTransport:native});h.configuration.set('problemView','web');await h.api.openProblem(DEFAULT_REF);
+ const view=h.trees.find(tree=>tree.id==='tensortonicStudyStatus'),row=()=>view.options.treeDataProvider.getChildren()[0];
+ assert.equal(row().description,'Off');assert.equal((await h.commands.get('tensortonic.toggleFocusMode')()).status,'applied');assert.equal(row().description,'On · Applied');assert.ok(css.includes('display:none'));
+ assert.equal(h.publicApi.presentationStatus().focus.applied,true);assert.ok(!Object.values(h.publicApi.presentationStatus()).includes(native.display));
+ native.display.presentationState.otherBrowserActive=true;h.fireActiveBrowser(new Proxy({}, {get(){throw Error('Foreign browser metadata');}}));assert.equal(row().description,'On · Other tab active');
+ native.display.presentationState.otherBrowserActive=false;h.fireActiveBrowser(undefined);assert.equal(row().description,'On · Applied');
+ await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(row().description,'Off');assert.equal(css,'');
+ await h.commands.get('tensortonic.toggleFocusMode')();await h.api.openProblem(SECOND_REF);assert.equal(row().description,'Off');assert.equal(css,'');assert.equal(h.publicApi.presentationStatus().focus.reason,'page-changed');
+ assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('Study status and Markdown activate when proposed browser getters are denied',async t=>{
+ const h=await harness(t,{deniedBrowserAPI:true,connected:false});const view=h.trees.find(tree=>tree.id==='tensortonicStudyStatus');
+ assert.ok(view);assert.equal(view.options.treeDataProvider.getChildren()[0].description,'Off');assert.equal(h.publicApi.presentationStatus().display.open,false);assert.deepEqual(h.errors,[]);assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('explicit Focus uses owned recovery and late cleanup notification retries Off without rediscovery', async t => {
+ const h=await harness(t); h.configuration.set('problemView','web'); await h.api.openProblem(DEFAULT_REF);
+ const contract=require('../src/focus-contract').FOCUS_CONTRACT;
+ const page={id:'owned-display',owned:true,url:'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics',documentId:'document-1',frameId:'frame-1'};
+ let recoveries=0, applies=0, failEmpty=true, gone=false;
+ h.api.bridge.display={setFocusContract(){},getFocusPage(){return page;},recoverFocusPage(){recoveries++;return page;},
+  inspectFocusContract(){return {...page,contractId:contract.id,counts:Object.fromEntries(contract.targets.map(target=>[target.id,target.count]))};},
+  createFocusStyleSheet(){return {styleSheetId:'own-sheet'};},
+  setFocusStyleSheetText(id,text){if(text)applies++;else if(failEmpty)throw Error('synthetic pending');},
+  focusStyleSheetExists(){return gone?{exists:false,authoritative:true,reason:'sheet-removed',styleSheetId:'own-sheet',documentId:page.documentId}:{exists:true};}};
+ assert.equal((await h.commands.get('tensortonic.toggleFocusMode')()).status,'applied');
+ assert.equal((await h.commands.get('tensortonic.toggleFocusMode')()).status,'restore-pending');
+ gone=true; failEmpty=false;
+ h.api.bridge.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF}); await flushReveals();
+ assert.equal(h.publicApi.presentationStatus().focus.status,'off');
+ assert.equal(recoveries,1); assert.equal(applies,1); assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('pending Focus recovery and legacy getPage cannot override newer navigation, session, Off or disposal', async t => {
+ for (const method of ['recoverFocusPage','getFocusPage']) for (const change of ['navigation','session','off','observation','dispose']) {
+  const h=await harness(t); h.configuration.set('problemView','web'); await h.api.openProblem(DEFAULT_REF);
+  const contract=require('../src/focus-contract').FOCUS_CONTRACT;
+  const page={id:'owned-display',owned:true,url:'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics',documentId:'document-1',frameId:'frame-1'};
+  let release,applies=0,signal;
+  const display={setFocusContract(){},getFocusPage(){return page;},
+   inspectFocusContract(){return {...page,contractId:contract.id,counts:Object.fromEntries(contract.targets.map(target=>[target.id,target.count]))};},
+   createFocusStyleSheet(){return {styleSheetId:'own-sheet'};},setFocusStyleSheetText(id,text){if(text)applies++;},focusStyleSheetExists(){return {exists:true};}};
+  display[method]=options=>{signal=options?.signal;return new Promise(resolve=>release=resolve);};
+  h.api.bridge.display=display;
+  const pending=h.commands.get('tensortonic.toggleFocusMode')(); await flushReveals();
+  assert.equal(typeof release,'function');
+  if(change==='navigation')await h.api.openProblem(DEFAULT_REF);
+  if(change==='session'){h.api.bridge.token='synthetic-new-session';h.api.bridge.onDidChange?.();}
+  if(change==='off')assert.equal((await h.commands.get('tensortonic.toggleFocusMode')()).status,'off');
+  if(change==='observation')h.api.bridge.pageOptions.onDidChangePage({closed:true});
+  if(change==='dispose')await h.extension.deactivate();
+  assert.equal(signal.aborted,true,method+': '+change+' cancels outstanding recovery');
+  display[method]=()=>page; release(page); await pending;
+  assert.equal(applies,0,method+': '+change+' prevents stale styling');
+  assert.equal(h.publicApi.presentationStatus().focus.status,'off');
+ }
 });

@@ -47,10 +47,11 @@ visible for retry and is not silently adopted by a new connection.
 ## Focus mode
 
 Focus starts off and accepts only the reviewed canonical problem-page contract.
-It may hide the matching responsive Prev/Next links and desktop problem-header
-Browse launcher after exact identity, count and semantic checks. It does not hide
-the drawer search input, mobile Browse launcher, global navbar, login/security
-controls, browser chrome or automation indicators.
+It may hide the matching responsive Prev/Next links, desktop and narrow
+problem-header Browse/search launchers, and floating Ask Toni button after exact
+identity, count and semantic checks. It does not hide an already-open drawer or
+assistant conversation, global navbar, login/security controls, browser chrome or
+automation indicators.
 
 The adapter creates a dedicated forced stylesheet. Original view empties it and
 checks cleanup before detaching; disabling the CSS domain is not treated as an
