@@ -1,3 +1,24 @@
+# 0.12.7 session-only Focus preference candidate
+
+This cloud-only candidate separates the user's requested On state from current
+page styling. On a completed extension-opened Web problem, it restores the old
+lease and verifies the exact latest destination before applying. Off, newer
+navigation, session changes, shutdown and Markdown changes fence stale work.
+An unavailable or rejected page keeps the preference but does not claim Applied.
+Cleanup failures continue to block navigation/reapply until explicitly resolved.
+
+Browser refresh/manual navigation, unrelated tabs, Markdown and same-document
+opens do not automatically re-arm Focus. The existing navbar mutation guard stays
+fail-open. The preference is in memory only and resets on extension/session reload.
+
+Serial cloud validation passed 814/814 aggregate tests, 102/102 session checks
+and 76/76 transport checks. New tests cover different owned tabs, same-document
+opens, initial verification failure, delayed lookup/write/restore, Off and On
+during navigation, concurrent opens, stale sessions, cleanup failures, rejected
+security verification, manual refresh and Markdown. No user device was accessed,
+no native rendering was verified, and this candidate was neither installed nor
+published. Historical 0.12.6 and earlier results follow.
+
 # 0.12.6 guarded top navigation capsule candidate
 
 Cloud serial validation passed 800/800 aggregate tests on Node 24.22.1. The

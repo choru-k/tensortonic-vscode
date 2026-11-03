@@ -79,8 +79,10 @@ Browse/search launchers are hidden at both responsive widths.
 
 Original view empties only the extension's dedicated stylesheet, including after
 SPA route changes. Full document destruction, exact stylesheet removal or tab
-closure count as cleanup only with owned lifecycle proof. Navigation turns focus
-off. Failed or late cleanup remains pending for retry; a protocol error alone
+closure count as cleanup only with owned lifecycle proof. The session-only Focus
+request survives extension-opened Web problems; each new destination must pass a
+fresh proof after old styles are restored. Browser refresh/manual navigation clears
+application without automatic requalification. Failed or late cleanup remains pending for retry; a protocol error alone
 never means the page was restored. A full browser-page reload can leave cleanup
 pending even when controls are visibly restored. If Original view cannot confirm
 cleanup, finish any page-local work, close only that owned problem tab, then
@@ -118,7 +120,11 @@ The section header also shows a short summary when collapsed. VS Code still lets
 the user resize, move, collapse or hide native views. Use **TensorTonic: Show study
 status** to focus it again; the extension does not override manual layout choices.
 
-Focus currently resets to Off after extension reload or owned-page navigation.
+Focus preference resets to Off after extension reload or a session change.
+It stays On across extension-opened Web problems but actual application is verified
+separately. After browser refresh/manual navigation it may show On / Not applied.
+Same-document opens never re-arm an observer-revoked capsule. Markdown and unrelated
+tabs are never automatically styled. No global/workspace setting is persisted.
 Its tooltip explains this and why it may not apply: no owned website page, a
 changed or mismatched page, another browser tab active, unverified controls, or
 pending restoration. Markdown is a local renderer and is not styled by website

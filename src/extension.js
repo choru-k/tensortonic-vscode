@@ -190,6 +190,10 @@ function activate(context) {
     styleSheetExists: (id, options) => focusDisplay().focusStyleSheetExists(id, options),
   };
   let studyStatus;
+  // Session-only user intent is separate from the current document's CSS lease.
+  let focusRequested = false;
+  let lastFocusPage;
+  let focusRecovery;
   const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT, onChange: () => studyStatus?.refresh() });
   function presentationSnapshot() {
     let display = { open: state.webPageOpen === true, otherBrowserActive: false };
@@ -198,7 +202,7 @@ function activate(context) {
       else display.otherBrowserActive = !!vscode.window.activeBrowserTab;
     } catch (_) { /* Unavailable host APIs cannot imply ownership. */ }
     return Object.freeze({
-      focus: Object.freeze({ ...focusMode.state, busy: focusMode.busy, reason: state.focusReason }),
+      focus: Object.freeze({ ...focusMode.state, enabled: focusRequested, busy: focusMode.busy || !!focusRecovery, reason: state.focusReason }),
       problemView: getProblemView(),
       display: Object.freeze({ open: display.open === true, otherBrowserActive: display.otherBrowserActive === true, navigating: !!state.webNavigating, mismatch: displayMismatch(state.activeRef) }),
       environment: state.environment ? Object.freeze({ ...state.environment }) : undefined,
@@ -218,7 +222,6 @@ function activate(context) {
   let focusedPage;
   let focusObservation = 0;
   let focusAction = 0;
-  let focusRecovery;
   function invalidateFocusAction() {
     focusAction++;
     focusRecovery?.controller.abort();
@@ -227,6 +230,7 @@ function activate(context) {
   async function observeFocusPage(closed = false) {
     // Even when Focus is still Off, a pending explicit recovery must not
     // outlive a newer owned-page observation.
+    if (state.webNavigating) return; // This explicit navigation owns restore/reapply.
     if (focusRecovery) invalidateFocusAction();
     if (!focusMode.enabled && focusMode.state.status !== 'restore-pending') return;
     if (!focusMode.enabled && focusMode.state.status === 'restore-pending') {
@@ -270,6 +274,7 @@ function activate(context) {
   let observedConnection = bridge.connected;
   let observedToken = bridge.token;
   function clearSessionPresentation() {
+    focusRequested = false; lastFocusPage = undefined;
     invalidateFocusAction();
     state.sessionEpoch++;
     studyEnvironment?.invalidateSession?.();
@@ -608,6 +613,7 @@ function activate(context) {
     if (!input) return search();
     requireConnection();
     const ref = normalizeRef(input);
+    invalidateFocusAction();
     const generation = ++state.openGeneration;
     const presentation = problemWorkspace.capturePresentation();
     const connection = bridge.token;
@@ -800,12 +806,15 @@ function activate(context) {
       state.webNavigating = navigation;
       updateActions();
       try {
+        const previousFocusPage = focusedPage || lastFocusPage;
+        const previousWebUrl = state.webRef ? problemUrl(state.webRef) : undefined;
         invalidateFocusAction();
         focusedPage = undefined;
         focusObservation++;
         state.focusReason = 'page-changed';
         const restored = await focusMode.pageChanged();
         if (restored.status === 'restore-pending') throw new Error('Focus mode cleanup is pending. Retry Original view before navigating this owned page.');
+        if (!isCurrent() || epoch !== state.sessionEpoch) return;
         await bridge.openProblemPage(url, { viewColumn: studyLayout.problemColumn, onDidChangePage: page => {
           if (disposed || epoch !== state.sessionEpoch) return;
           state.webPageOpen = !page.closed;
@@ -813,7 +822,11 @@ function activate(context) {
           state.webRef = page.closed ? undefined : page.ref;
           updateActions();
         } });
-        return isCurrent() ? { ref, target: 'owned-native', requested: true } : undefined;
+        if (!isCurrent() || epoch !== state.sessionEpoch) return;
+        if (focusRequested && getProblemView() === 'web' && (previousFocusPage || previousWebUrl !== url)) {
+          await applyFocusRequest({ expectedUrl: url, previousPage: previousFocusPage, automatic: true, isCurrentNavigation: isCurrent });
+        }
+        return isCurrent() && epoch === state.sessionEpoch ? { ref, target: 'owned-native', requested: true } : undefined;
       } catch (error) {
         if (!isCurrent()) return;
         if (!studyNavigation) throw error;
@@ -1071,39 +1084,69 @@ function activate(context) {
     const freshnessState = freshness.compare(selected.entry.snapshot,{action:selected.entry.action,problem:ref,solutionUri:document.uri.toString(),solutionText:document.getText(),testCases:undefined});
     await vscode.commands.executeCommand('workbench.action.chat.open',{mode:'agent',isPartialQuery:true,query:selectedFailureContext(selected.failure,{explicit:true,problemRef:ref,stale:freshnessState.status!=='unchanged'})});
   }
-  async function toggleFocusMode() {
-    // Retrying an uncertain Off is cleanup-only. It must not restore and then
-    // immediately hide the page again because enabled already became false.
-    const enabled = focusMode.state.status === 'restore-pending' ? false : !(focusRecovery?.enabled ?? focusMode.enabled);
+  async function applyFocusRequest({ expectedUrl, previousPage, automatic = false, isCurrentNavigation = () => true } = {}) {
+    if (!focusRequested || disposed) return focusMode.state;
     invalidateFocusAction();
     const action = focusAction, epoch = state.sessionEpoch, navigation = state.openGeneration, card = state.cardGeneration;
     const controller = new AbortController();
-    const current = () => !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration;
-    focusRecovery = { enabled, controller };
-    let page;
+    const current = () => focusRequested && !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration && isCurrentNavigation() && (!automatic || getProblemView() === 'web');
+    const operation = { enabled: true, automatic, controller };
+    focusRecovery = operation;
+    studyStatus.refresh();
     try {
-      if (enabled) {
+      let page;
+      try {
         const display = focusDisplay();
-        page = typeof display.recoverFocusPage === 'function' ? await display.recoverFocusPage({ signal: controller.signal }) : await focusPort.getPage({ signal: controller.signal });
-      }
-    } catch (_) { /* No access to unrelated tabs. */ }
-    if (!current()) {
-      if (focusRecovery?.controller === controller) focusRecovery = undefined;
-      return focusMode.state;
+        page = !automatic && typeof display.recoverFocusPage === 'function'
+          ? await display.recoverFocusPage({ signal: controller.signal })
+          : await focusPort.getPage({ signal: controller.signal });
+      } catch (_) { /* Unknown or changed structures remain visible. */ }
+      if (!current()) return focusMode.state;
+      if (expectedUrl && page?.url !== expectedUrl) page = undefined;
+      // A title/state notification or same-document open must not re-arm the
+      // navbar after its conservative mutation guard has revoked it.
+      if (automatic && page && previousPage && ['id','url','documentId','frameId'].every(key => page[key] === previousPage[key])) return focusMode.state;
+      state.focusReason = !page ? 'no-owned-page' : undefined;
+      focusedPage = page;
+      if (page) lastFocusPage = page;
+      focusObservation++;
+      const result = await focusMode.setEnabled(true, { page, signal: controller.signal });
+      return result;
+    } finally {
+      if (focusRecovery === operation) focusRecovery = undefined;
+      studyStatus.refresh();
     }
-    focusRecovery = undefined;
-    state.focusReason = enabled && !page ? 'no-owned-page' : undefined;
-    focusedPage = page;
-    focusObservation++;
-    const result = await focusMode.setEnabled(enabled, { page });
-    // A notification pauses browser interaction. Keep this presentation feedback
-    // in Output instead, so switching to Original view works immediately.
+  }
+
+  async function toggleFocusMode() {
+    // The button toggles user intent, not a temporary navigation/cleanup gap.
+    // Retrying uncertain cleanup is always an explicit Off, never reapply.
+    const enabled = focusMode.state.status === 'restore-pending' ? false : !focusRequested;
+    focusRequested = enabled;
+    invalidateFocusAction();
+    let result;
+    if (!enabled) {
+      lastFocusPage = undefined;
+      focusedPage = undefined; focusObservation++;
+      state.focusReason = undefined;
+      result = await focusMode.setEnabled(false);
+    } else if (state.webNavigating) {
+      // An explicit On during the current authorized navigation is applied only
+      // after that destination has completed and passed its own fresh proof.
+      state.focusReason = 'page-changed';
+      result = focusMode.state;
+      studyStatus.refresh();
+    } else {
+      result = await applyFocusRequest();
+    }
+    result = focusMode.state;
+    if (focusRequested !== enabled || disposed) return Object.freeze({ ...result, enabled: focusRequested });
     output.appendLine(result.status === 'applied'
-      ? 'Focus mode: verified Prev/Next links, desktop/narrow Browse problems launchers and floating Ask Toni button hidden. Other website controls are unchanged.'
-      : result.status === 'off' ? 'Focus mode: original website styles restored.'
+      ? 'Focus mode: verified controls and guarded top navigation capsule hidden. New Web problems will be checked independently.'
+      : result.status === 'off' && !focusRequested ? 'Focus mode: original website styles restored.'
       : result.status === 'restore-pending' ? 'Focus mode: stylesheet restoration is pending. Retry Original view or close the owned problem tab.'
-      : 'Focus mode unavailable: owned-page verification or visibility confirmation failed. Original website styles were retained or restored.');
-    return result;
+      : 'Focus preference is on, but application to the current page is not confirmed. Website controls remain visible until verification succeeds.');
+    return Object.freeze({ ...result, enabled: focusRequested });
   }
 
   async function smokeTest(options) {
@@ -1198,13 +1241,21 @@ function activate(context) {
     }));
   }
   let shutdown;stopActiveSession=()=>shutdown??=(async()=>{
+    disposed = true;
+    focusRequested = false; lastFocusPage = undefined;
     invalidateFocusAction();
     try { await focusMode.dispose(); }
     finally { await bridge.dispose().catch(()=>{}); }
   })();
   context.subscriptions.push({ dispose() { void stopActiveSession(); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
-    if (event.affectsConfiguration('tensortonic.problemView')) studyStatus.refresh();
+    if (event.affectsConfiguration('tensortonic.problemView')) {
+      if (focusRecovery?.automatic && getProblemView() !== 'web') {
+        invalidateFocusAction(); focusedPage = undefined; focusObservation++;
+        void focusMode.pageChanged();
+      }
+      studyStatus.refresh();
+    }
     if (event.affectsConfiguration('tensortonic.difficultyDisplay')) { state.difficultyDisplay = vscode.workspace.getConfiguration('tensortonic').get('difficultyDisplay', 'text'); tree.refresh(); }
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
       invalidateProblems();

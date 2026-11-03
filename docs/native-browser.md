@@ -56,7 +56,9 @@ automation indicators.
 
 The adapter creates a dedicated forced stylesheet. Original view empties it and
 checks cleanup before detaching; disabling the CSS domain is not treated as an
-undo operation. Navigation or document changes turn focus off. Transport errors
+undo operation. Extension-opened Web problems retain the in-memory Focus request,
+restore old styles and verify the new destination independently. Other navigation
+or document changes clear application without automatic requalification. Transport errors
 alone never establish that styles disappeared. See [focus boundaries](sidebar-and-results.md#difficulty-and-focus).
 
 ## Validation

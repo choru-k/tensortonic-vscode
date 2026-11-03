@@ -224,14 +224,14 @@ test('Markdown default does not falsely remove application from an existing owne
 test('Focus hover explains scope, reset behavior, and curated reset reasons', () => {
   for (const [reason, expected] of [
     ['reload-default', /starts off after an extension reload/],
-    ['page-changed', /reset after the owned Web page changed/],
+    ['page-changed', /application was cleared after the owned Web page changed/],
     ['session-changed', /reset after the session changed/],
     ['no-owned-page', /No extension-owned Web problem page is open/],
   ]) {
     const row = focusRow({ enabled: false, status: 'off', applied: false, reason });
     assert.equal(row.description, 'Off');
     assert.match(row.tooltip, expected);
-    assert.match(row.tooltip, /resets on reload and navigation/);
+    assert.match(row.tooltip, /preference stays on across verified extension-opened Web problems until Off/);
     assert.match(row.tooltip, /only the verified website Prev\/Next links, desktop\/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule/);
   }
 });
@@ -296,4 +296,8 @@ test('raw paths, URLs, tokens, and control text from DTO labels or reasons are n
   assert.match(h.provider.getChildren()[0].tooltip, /Focus mode is off/);
   const unavailable = fixture(snapshot({ environment: { state: 'unavailable', reason: 'unsupported-window' } })).provider.getChildren()[2];
   assert.match(unavailable.tooltip, /trusted local desktop study workspace/);
+});
+test('retained On intent without a current lease is not presented as Applied',()=>{
+ const row=focusRow({enabled:true,status:'off',applied:false,busy:false});
+ assert.equal(row.description,'On · Not applied');assert.match(row.tooltip,/preference is still on/);assert.doesNotMatch(row.tooltip,/Focus mode is applied/);
 });

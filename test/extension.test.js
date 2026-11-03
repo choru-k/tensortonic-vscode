@@ -1689,7 +1689,7 @@ test('explicit empty memberships stay empty without resurrecting the legacy plan
  const h=await harness(t,{membershipState:{version:1,revision:0,planIds:[],resumeByPlan:{},openedRef:null}});await h.api.refresh();assert.equal(h.calls.list.length,0);assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].command.command,'tensortonic.manageStudyPlans');
 });
 test('focus mode without an owned verified display stays visible without a browser-pausing notification',async t=>{
- const h=await harness(t);const before=h.calls.get.length;const state=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(state.status,'unavailable');assert.equal(h.calls.get.length,before);assert.equal(h.information.length,0);assert.match(h.output.at(-1),/owned-page verification or visibility confirmation failed/i);
+ const h=await harness(t);const before=h.calls.get.length;const state=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(state.status,'unavailable');assert.equal(h.calls.get.length,before);assert.equal(h.information.length,0);assert.match(h.output.at(-1),/preference is on, but application to the current page is not confirmed/i);
 });
 test('focus mode applies only its pinned owned-page contract and restores before problem navigation',async t=>{
  const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF);
@@ -1767,7 +1767,7 @@ test('Study status follows actual focus apply, explicit Off and owned navigation
  native.display.presentationState.otherBrowserActive=true;h.fireActiveBrowser(new Proxy({}, {get(){throw Error('Foreign browser metadata');}}));assert.equal(row().description,'On · Other tab active');
  native.display.presentationState.otherBrowserActive=false;h.fireActiveBrowser(undefined);assert.equal(row().description,'On · Applied');
  await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(row().description,'Off');assert.equal(css,'');
- await h.commands.get('tensortonic.toggleFocusMode')();await h.api.openProblem(SECOND_REF);assert.equal(row().description,'Off');assert.equal(css,'');assert.equal(h.publicApi.presentationStatus().focus.reason,'page-changed');
+ await h.commands.get('tensortonic.toggleFocusMode')();await h.api.openProblem(SECOND_REF);assert.equal(row().description,'On · Applied');assert.ok(css.includes('display:none'));assert.equal(h.publicApi.presentationStatus().focus.reason,undefined);
  assert.equal(h.calls.run.length+h.calls.submit.length,0);
 });
 
@@ -1817,4 +1817,138 @@ test('pending Focus recovery and legacy getPage cannot override newer navigation
   assert.equal(applies,0,method+': '+change+' prevents stale styling');
   assert.equal(h.publicApi.presentationStatus().focus.status,'off');
  }
+});
+
+async function persistentFocusFixture(t) {
+ const native=nativeUiFixture(true), f={events:[], css:'', next:0, page:undefined};
+ const originalOpen=native.openProblemPage.bind(native);
+ native.openProblemPage=async(url,options)=>{
+  f.events.push(['navigate',url]); if(f.openHook)await f.openHook(url);
+  if(f.failOpen)throw Error('Synthetic open failure');
+  f.page={id:'owned-sticky',owned:true,url:f.wrongUrl||url,documentId:'doc-'+(++f.next),frameId:'top'};
+  return originalOpen(url,options);
+ };
+ native.display={presentationState:{open:true,otherBrowserActive:false},setFocusContract(c){f.contract=c;},
+  async getFocusPage(options){ if(f.getHook)return f.getHook(options); return {...f.page}; },
+  async inspectFocusContract(){if(f.failVerify)throw Error('Synthetic security/structure rejection');return {...f.page,contractId:f.contract.id,counts:Object.fromEntries(f.contract.targets.map(t=>[t.id,t.count]))};},
+  async createFocusStyleSheet(){return 'sticky-sheet-'+f.next;},
+  async setFocusStyleSheetText(id,text){
+   if(!text&&f.restoreHook)await f.restoreHook();
+   if(!text&&f.failRestore)throw Error('Synthetic cleanup failure');
+   if(text&&f.applyHook)await f.applyHook();
+   f.css=text;f.events.push([text?'apply':'restore',f.page?.url]);
+  },async focusStyleSheetExists(){return {exists:true};}};
+ const h=await harness(t,{nativeTransport:native}); h.configuration.set('problemView','web'); await h.api.openProblem(DEFAULT_REF);
+ f.h=h;f.native=native;f.toggle=()=>h.commands.get('tensortonic.toggleFocusMode')();f.snapshot=()=>h.publicApi.presentationStatus();
+ await f.toggle();assert.equal(f.snapshot().focus.status,'applied');return f;
+}
+
+test('Focus preference carries to independently verified new owned problems without storage writes', async t=>{
+ const f=await persistentFocusFixture(t);f.events=[];
+ await f.h.api.openProblem(SECOND_REF);
+ assert.deepEqual(f.events.map(e=>e[0]),['restore','navigate','apply']);
+ assert.equal(f.snapshot().focus.enabled,true);assert.equal(f.snapshot().focus.status,'applied');assert.ok(f.css);
+ assert.equal([...f.h.savedState.keys(),...f.h.globalValues.keys()].some(k=>/focus/i.test(k)),false);
+ await f.toggle();await f.h.api.openProblem(DEFAULT_REF);assert.equal(f.snapshot().focus.enabled,false);assert.equal(f.css,'');
+});
+
+test('Off during a pending new-page open prevents reapply but still permits that navigation', async t=>{
+ const f=await persistentFocusFixture(t), gate=deferred(),started=deferred();
+ f.openHook=async()=>{started.resolve();await gate.promise;};
+ const opening=f.h.api.openProblem(SECOND_REF);await started.promise;await f.toggle();gate.resolve();await opening;
+ assert.equal(f.native.pages.at(-1).includes(SECOND_REF.slug),true);assert.equal(f.snapshot().focus.enabled,false);assert.equal(f.css,'');
+ assert.equal(f.events.filter(e=>e[0]==='apply').length,1);
+});
+
+test('session change, shutdown and superseding problem invalidate navigation after delayed restoration', async t=>{
+ for(const action of ['session','shutdown','newer']) {
+  const f=await persistentFocusFixture(t),gate=deferred(),started=deferred(),before=f.native.pages.length;
+  f.restoreHook=async()=>{started.resolve();await gate.promise;};
+  const opening=f.h.api.openProblem(SECOND_REF);await started.promise;
+  let stopping;
+  if(action==='session'){f.native.token='replacement-session';f.native.onDidChange?.();}
+  if(action==='shutdown')stopping=f.h.extension.deactivate();
+  if(action==='newer')await f.h.api.openProblem(DEFAULT_REF);
+  f.restoreHook=undefined;gate.resolve();await opening;await stopping;await flushReveals();
+  assert.equal(f.native.pages.length,before,action+' cannot dispatch stale navigation');
+  assert.equal(f.events.filter(e=>e[0]==='apply').length,1);
+ }
+});
+
+test('cleanup failure preserves On intent but blocks new-page navigation and reapply', async t=>{
+ const f=await persistentFocusFixture(t),before=f.native.pages.length;f.failRestore=true;
+ await f.h.api.openProblem(SECOND_REF);
+ assert.equal(f.native.pages.length,before);assert.equal(f.snapshot().focus.status,'restore-pending');assert.equal(f.snapshot().focus.enabled,true);
+ f.failRestore=false;await f.toggle();assert.equal(f.snapshot().focus.enabled,false);assert.equal(f.css,'');
+ await f.h.api.openProblem(SECOND_REF);assert.equal(f.events.filter(e=>e[0]==='apply').length,1);
+});
+
+test('failed open, security verification and wrong document never claim application or lose user intent', async t=>{
+ for(const mode of ['failOpen','failVerify','wrongUrl']) {
+  const f=await persistentFocusFixture(t);f[mode]=mode==='wrongUrl'?'https://www.tensortonic.com/problems/not-requested':true;
+  await f.h.api.openProblem(SECOND_REF);
+  assert.equal(f.snapshot().focus.enabled,true,mode);assert.notEqual(f.snapshot().focus.status,'applied',mode);assert.equal(f.css,'',mode);
+  f[mode]=false;await f.h.api.openProblem(DEFAULT_REF);assert.equal(f.snapshot().focus.status,'applied',mode+' is freshly checked on next explicit open');
+ }
+});
+
+test('late automatic page lookup cannot reapply after Off, session change, Markdown or newer navigation', async t=>{
+ for(const action of ['off','session','markdown','newer']) {
+  const f=await persistentFocusFixture(t),gate=deferred(),started=deferred();let signal;
+  f.getHook=options=>{signal=options.signal;started.resolve();return gate.promise;};
+  const opening=f.h.api.openProblem(SECOND_REF);await started.promise;
+  if(action==='off')await f.toggle();
+  if(action==='session'){f.native.token='new-session';f.native.onDidChange?.();}
+  if(action==='markdown'){f.h.configuration.set('problemView','markdown');f.h.fireConfiguration('problemView');}
+  if(action==='newer')await f.h.api.openProblem(DEFAULT_REF);
+  assert.equal(signal.aborted,true,action);f.getHook=undefined;gate.resolve({...f.page});await opening;await flushReveals();
+  assert.equal(f.events.filter(e=>e[0]==='apply').length,1,action);assert.equal(f.css,'',action);
+ }
+});
+
+test('browser refresh and unrelated-tab changes keep intent but do not automatically requalify a changed page',async t=>{
+ const f=await persistentFocusFixture(t),before=f.events.filter(e=>e[0]==='apply').length;
+ f.native.display.presentationState.otherBrowserActive=true;f.h.fireActiveBrowser({});assert.equal(f.events.filter(e=>e[0]==='apply').length,before);
+ f.native.display.presentationState.otherBrowserActive=false;
+ f.page={...f.page,documentId:'refreshed-doc'};f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});await settleUntil(()=>f.css==='');
+ assert.equal(f.snapshot().focus.enabled,true);assert.equal(f.snapshot().focus.status,'off');
+ f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});await flushReveals();assert.equal(f.events.filter(e=>e[0]==='apply').length,before);
+ await f.h.api.openProblem(SECOND_REF);assert.equal(f.snapshot().focus.status,'applied');
+});
+
+test('Markdown opens and same-document notifications do not rediscover or reapply Focus',async t=>{
+ const f=await persistentFocusFixture(t),before=f.events.filter(e=>e[0]==='apply').length,pages=f.native.pages.length,css=f.css;
+ f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});await flushReveals();assert.equal(f.events.filter(e=>e[0]==='apply').length,before);
+ f.h.configuration.set('problemView','markdown');f.h.fireConfiguration('problemView');await f.h.api.openProblem(SECOND_REF);
+ assert.equal(f.native.pages.length,pages);assert.equal(f.css,css);assert.equal(f.snapshot().focus.enabled,true);
+ f.h.configuration.set('problemView','web');await f.h.api.openProblem(SECOND_REF);assert.equal(f.snapshot().focus.status,'applied');
+});
+test('initial unavailable On remains eligible for a newly opened problem after verification recovers',async t=>{
+ const f=await persistentFocusFixture(t);await f.toggle();f.failVerify=true;
+ const unavailable=await f.toggle();assert.equal(unavailable.enabled,true);assert.equal(unavailable.status,'unavailable');
+ f.failVerify=false;await f.h.api.openProblem(SECOND_REF);assert.equal(f.snapshot().focus.status,'applied');assert.ok(f.css);
+});
+test('same-URL same-document extension open cannot re-arm an observer-revoked capsule',async t=>{
+ const f=await persistentFocusFixture(t),prior=f.page,before=f.events.filter(e=>e[0]==='apply').length;
+ // Native same-URL confirmation may return the original document before reload.
+ const open=f.native.openProblemPage.bind(f.native);f.native.openProblemPage=async(url,options)=>{await open(url,options);f.page=prior;};
+ await f.h.commands.get('tensortonic.interactiveExplanation')(DEFAULT_REF);
+ assert.equal(f.events.filter(e=>e[0]==='apply').length,before);assert.equal(f.css,'');assert.equal(f.snapshot().focus.enabled,true);assert.equal(f.snapshot().focus.status,'off');
+});
+test('a late automatic stylesheet write after Off is restored and cannot resurrect preference',async t=>{
+ const f=await persistentFocusFixture(t),started=deferred(),gate=deferred();
+ f.applyHook=async()=>{started.resolve();await gate.promise;};const opening=f.h.api.openProblem(SECOND_REF);await started.promise;
+ const off=f.toggle();f.applyHook=undefined;gate.resolve();await opening;await off;await settleUntil(()=>f.css==='');
+ assert.equal(f.snapshot().focus.enabled,false);assert.equal(f.snapshot().focus.status,'off');
+});
+test('an explicitly opened new owned tab can receive Focus only after old-page restoration',async t=>{
+ const f=await persistentFocusFixture(t),open=f.native.openProblemPage.bind(f.native);f.events=[];
+ f.native.openProblemPage=async(url,options)=>{assert.equal(f.css,'');await open(url,options);f.page={...f.page,id:'new-owned-resource'};};
+ await f.h.api.openProblem(SECOND_REF);assert.deepEqual(f.events.map(e=>e[0]),['restore','navigate','apply']);assert.equal(f.snapshot().focus.status,'applied');
+});
+test('explicit On during an authorized navigation waits for that new destination',async t=>{
+ const f=await persistentFocusFixture(t);await f.toggle();const gate=deferred(),started=deferred();
+ f.openHook=async()=>{started.resolve();await gate.promise;};const opening=f.h.api.openProblem(SECOND_REF);await started.promise;
+ const pending=await f.toggle();assert.equal(pending.enabled,true);assert.equal(f.css,'');gate.resolve();await opening;
+ assert.equal(f.snapshot().focus.status,'applied');assert.ok(f.css);
 });

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.7 (cloud-only candidate; not published or installed)
+
+- Keep the session-only Focus preference across extension-opened Web problems. Restore the old page first, then independently verify the exact new owned destination before applying.
+- Separate requested On from current application. Show On / Not applied or unavailable rather than a stale Applied claim when cleanup, navigation or proof fails. Off, session changes, shutdown and newer opens cancel stale work.
+- Preserve conservative boundaries: browser refresh/manual navigation, Markdown, unrelated tabs and same-document opens do not automatically re-arm Focus. Extension reload/session change resets the preference. No durable setting is written.
+- Cover delayed restoration, late writes, canceled page lookup, rejected structures and competing navigation in synthetic tests. Native UI remains unverified.
+
 ## 0.12.6 (cloud candidate; native visual check pending)
 
 - Extend Focus to the entire closed signed-in top navigation capsule, preserving the separate problem tabs. Original view restores the dedicated stylesheet as before.
