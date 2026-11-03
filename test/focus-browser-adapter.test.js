@@ -290,3 +290,12 @@ test('only one apply can own a sheet while creation or cleanup is pending', asyn
   waiting.resolve(); const lease = await pending; await lease.restore();
   assert.equal(h.calls.filter(call => call[0] === 'create').length, 1);
 });
+
+test('late lease cleanup retains its originating diagnostic callback, never the newer attempt',async()=>{
+ const {createFocusDiagnostics}=require('../src/focus-diagnostics');const d=createFocusDiagnostics(),old=d.begin(true),h=harness();
+ h.onSet=async(id,text,options)=>{assert.equal(options.onDiagnostic,old.record);options.onDiagnostic({stage:text?'write-sheet':'restore-sheet',outcome:'ok'});h.styles.set(id,text);};
+ const proof=await h.adapter.verify(h.page,h.contract,{onDiagnostic:old.record});
+ const lease=await h.adapter.apply(proof,h.contract,{onDiagnostic:old.record});
+ const newer=d.begin(true);newer.emit('readiness','start');await lease.restore();
+ assert.deepEqual(d.snapshot().automatic.events,[{stage:'readiness',outcome:'start'}]);
+});

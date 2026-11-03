@@ -1,4 +1,5 @@
 'use strict';
+const { emitDiagnostic, diagnosticErrorCode } = require('./focus-diagnostics');
 const { verifyNavbar, installNavbarGuard, NAVBAR_BASE, NAVBAR_CANDIDATE, NAVBAR_MARKER } = require('./focus-navbar');
 
 const crypto = require('node:crypto');
@@ -211,15 +212,20 @@ class NativeBrowserBridge {
     const documentId = crypto.createHash('sha256').update(JSON.stringify([target.sessionId, target.context.uniqueId || target.context.id, target.epoch])).digest('hex');
     return Object.freeze({ id: resource.focusId, url, documentId, frameId: target.context.frameId, owned: true });
   }
-  async getFocusPage({ signal } = {}) {
+  async getFocusPage({ signal, onDiagnostic } = {}) {
+    let stage = 'identity-target';
+    try {
     const target = this.target, generation = this.generation;
     if (!target) throw fault('No exact owned problem page is available.', 'PAGE_CHANGED');
     this._check(generation, target, signal);
+    stage = 'identity-url';
     const url = target.resource.tab.url;
     if (typeof url !== 'string' || !FOCUS_URL.test(url) || url.length > 2048) throw fault('Focus mode requires the exact owned canonical problem page.', 'PAGE_CHANGED');
+    stage = 'identity-frame';
     const tree = await this._cdp(target.resource, 'Page.getFrameTree', {}, target.sessionId, signal);
     this._check(generation, target, signal);
     if (tree?.frameTree?.frame?.id !== target.context.frameId) throw fault('The owned top frame changed.', 'PAGE_CHANGED');
+    stage = 'identity-location';
     const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(url)}||location.hash)return '';return JSON.stringify({url:location.origin+location.pathname+location.search})})()`;
     const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 2200) throw fault('Invalid owned page metadata.', 'INVALID_RESPONSE');
@@ -227,9 +233,10 @@ class NativeBrowserBridge {
     if (metadata?.url !== url || target.resource.tab.url !== url) throw fault('The owned problem page changed.', 'PAGE_CHANGED');
     this.focusAnchor = { resource: target.resource, sessionId: target.sessionId, frameId: target.context.frameId, url };
     return this._focusPage(target, url);
+    } catch (error) { emitDiagnostic(onDiagnostic, stage, 'fail', diagnosticErrorCode(error)); throw error; }
   }
-  async recoverFocusPage({ signal } = {}) {
-    if (this.target) return this.getFocusPage({ signal });
+  async recoverFocusPage({ signal, onDiagnostic } = {}) {
+    if (this.target) return this.getFocusPage({ signal, onDiagnostic });
     const anchor = this.focusAnchor, generation = this.generation;
     const r = anchor?.resource;
     // Explicit Focus action only: no tab launch, navigation, global discovery,
@@ -258,7 +265,7 @@ class NativeBrowserBridge {
         if (r.tab.url !== anchor.url) throw fault('The owned Focus URL changed.', 'PAGE_CHANGED');
         const recovered = matches[0];
         this.target = recovered;
-        try { return await this.getFocusPage({ signal }); }
+        try { return await this.getFocusPage({ signal, onDiagnostic }); }
         catch (error) {
           // Never retain a partially verified rebind after cancellation or a
           // document/URL change during the final identity checks.
@@ -270,7 +277,7 @@ class NativeBrowserBridge {
     } while (this.now() < deadline);
     throw fault('The owned Focus page is still loading. Try Focus after it loads.', 'PAGE_CHANGED');
   }
-  async waitForFocusReady(page, { signal: externalSignal } = {}) {
+  async waitForFocusReady(page, { signal: externalSignal, onDiagnostic } = {}) {
     const controller = new AbortController(), signal = controller.signal;
     const abort = () => controller.abort();
     externalSignal?.addEventListener('abort', abort, { once: true });
@@ -280,22 +287,27 @@ class NativeBrowserBridge {
       const deadline = this.now() + Math.min(5000, this.discoverTimeout);
       const check = async () => {
         this._check(generation, target, signal);
-        if (!sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The loading Focus document changed.', 'PAGE_CHANGED');
+        if (!sameFocusPage(page, await this.getFocusPage({ signal, onDiagnostic }))) throw fault('The loading Focus document changed.', 'PAGE_CHANGED');
         this._check(generation, target, signal);
       };
       // Read-only loading classification. Only browser document loading and the
       // reviewed public Navbar SSR placeholders may delay verification. Unknown
       // structures, security UI and failed full proofs are never retried.
-      const expression = `(()=>{const base=document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}),safe=document.querySelectorAll(${JSON.stringify(NAVBAR_CANDIDATE)});if(base.length>1||(base.length===1&&(safe.length!==1||safe[0]!==base[0])))return -1;if(document.readyState==='loading'||document.readyState==='interactive')return 0;if(document.readyState!=='complete'||base.length!==1)return -1;const loading=document.querySelectorAll('div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > main.flex-1.overflow-hidden.relative > div.flex.items-center.justify-center.min-h-screen.bg-background > svg[role="status"][aria-label="Loading"][viewBox="10 30 180 140"]');if([...loading].some(e=>e.getClientRects().length))return 0;const n=base[0];const placeholders=[...n.querySelectorAll('div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]')];return placeholders.some(e=>!e.children.length&&!(e.textContent||'').trim())?0:1})()`;
+      const expression = `(()=>{const base=document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}),safe=document.querySelectorAll(${JSON.stringify(NAVBAR_CANDIDATE)});if(base.length>1||(base.length===1&&(safe.length!==1||safe[0]!==base[0])))return -1;if(document.readyState==='loading'||document.readyState==='interactive')return 2;if(document.readyState!=='complete'||base.length!==1)return -1;const loading=document.querySelectorAll('div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > main.flex-1.overflow-hidden.relative > div.flex.items-center.justify-center.min-h-screen.bg-background > svg[role="status"][aria-label="Loading"][viewBox="10 30 180 140"]');if([...loading].some(e=>e.getClientRects().length))return 3;const n=base[0];const placeholders=[...n.querySelectorAll('div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]')];return placeholders.some(e=>!e.children.length&&!(e.textContent||'').trim())?4:1})()`;
       let verified = false;
       for (let attempt = 0; attempt < 25 && this.now() < deadline; attempt++) {
         const remaining = () => Math.max(1, deadline - this.now());
         await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
-        const state = await bounded(this._number(target, expression, generation, signal), remaining(), 'Focus readiness timed out.', signal);
+        emitDiagnostic(onDiagnostic, 'loading', 'start');
+        const loadingState = await bounded(this._number(target, expression, generation, signal), remaining(), 'Focus readiness timed out.', signal);
         await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
+        const state = [2, 3, 4].includes(loadingState) ? 0 : loadingState;
+        emitDiagnostic(onDiagnostic, 'loading', state === 0 ? 'wait' : state === 1 ? 'ok' : 'fail', ({2:'document',3:'body',4:'account-theme',1:'ready'})[loadingState] || 'blocked');
         if (state !== 0 && state !== 1) throw fault('The loading page structure is not recognized.', 'INVALID_PROOF');
         if (state === 1) {
-          await bounded(this.inspectFocusContract(this.focusContract, { signal }), remaining(), 'Focus readiness timed out.', signal);
+          emitDiagnostic(onDiagnostic, 'contract', 'start');
+          try { await bounded(this.inspectFocusContract(this.focusContract, { signal, onDiagnostic }), remaining(), 'Focus readiness timed out.', signal); emitDiagnostic(onDiagnostic, 'contract', 'ok'); }
+          catch (error) { emitDiagnostic(onDiagnostic, 'contract', 'fail', diagnosticErrorCode(error)); throw error; }
           await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
           if (verified) return page;
           verified = true;
@@ -305,16 +317,17 @@ class NativeBrowserBridge {
       throw fault('The problem page is still loading. Focus remains unapplied.', 'TIMEOUT');
     } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
-  async inspectFocusContract(value, { signal } = {}) {
+  async inspectFocusContract(value, { signal, onDiagnostic } = {}) {
     if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
-    const page = await this.getFocusPage({ signal }), target = this.target, generation = this.generation;
+    const page = await this.getFocusPage({ signal, onDiagnostic }), target = this.target, generation = this.generation;
     const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? NAVBAR_CANDIDATE : item.selector, count: item.count, expectation: item.expectation }));
-    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyNavbar.toString()})(e))valid=false;continue}if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
+    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const failures=[];const reject=(target,reason)=>{valid=false;failures.push({target,reason})};const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){reject(t.id,nodes.length===0?'missing':'count');continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyNavbar.toString()})(e))reject(t.id,'shape');continue}if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){reject(t.id,'shape');continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))reject(t.id,'shape')}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)reject(t.id,'shape')}else reject(t.id,'shape')}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts,failures})})()`;
     const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
+    if (Array.isArray(metadata?.failures)) for (const failure of metadata.failures.slice(0, 8)) emitDiagnostic(onDiagnostic, 'contract-target', 'fail', failure?.reason, failure?.target);
     if (!metadata || metadata.valid !== true || metadata.url !== page.url || !metadata.counts || Object.keys(metadata.counts).length !== targets.length || targets.some(item => metadata.counts[item.id] !== item.count)) throw fault('The reviewed problem controls changed. They remain visible.', 'INVALID_PROOF');
-    if (!sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
+    if (!sameFocusPage(page, await this.getFocusPage({ signal, onDiagnostic }))) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
     this.focusProof = { page, target, fingerprint: focusCore(this.focusContract) };
     return Object.freeze({ ...page, contractId: this.focusContract.id, counts: Object.freeze({ ...metadata.counts }) });
   }
@@ -423,12 +436,12 @@ class NativeBrowserBridge {
       if (guardError) throw guardError;
     } finally { pending.then(() => { if (sheet.pending === pending) sheet.pending = undefined; }, () => { if (sheet.pending === pending) sheet.pending = undefined; }); }
   }
-  async setFocusStyleSheetText(id, text, { page, signal } = {}) {
+  async setFocusStyleSheetText(id, text, { page, signal, onDiagnostic } = {}) {
     const sheet = this._focusSheet(id, page);
     if (text === '') { await this._emptyFocusSheet(sheet); return; }
     if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
     if (sheet.gone || sheet.used || !this.focusContract || text !== this.focusContract.cssText || sheet.fingerprint !== focusCore(this.focusContract)) throw fault('Nonempty focus styles require the exact reviewed proof.', 'INVALID_PROOF');
-    await this.inspectFocusContract(this.focusContract);
+    await this.inspectFocusContract(this.focusContract, { onDiagnostic });
     if (!sameFocusPage(page, this.focusProof.page)) throw fault('The owned document changed.', 'PAGE_CHANGED');
     const generation = this.generation;
     this._check(generation, sheet.target, signal);
@@ -439,8 +452,10 @@ class NativeBrowserBridge {
     // document is the safe recovery when its result cannot be established.
     sheet.navbarGuard = 'uncertain';
     const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return (${installNavbarGuard.toString()})(document,${JSON.stringify(NAVBAR_CANDIDATE)},${JSON.stringify(NAVBAR_MARKER)},(${verifyNavbar.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)})()`;
+    emitDiagnostic(onDiagnostic, 'guard-install', 'start');
     const guarded = await this._number(sheet.target, guardExpression, generation);
     sheet.navbarGuard = guarded === 1 ? 'installed' : undefined;
+    emitDiagnostic(onDiagnostic, 'guard-install', guarded === 1 ? 'ok' : 'fail');
     if (guarded !== 1) throw fault('Capsule guard could not be installed. Controls remain visible.', 'INVALID_PROOF');
     this._check(generation, sheet.target, signal);
     const pending = this._focusCall(sheet.resource, 'CSS.setStyleSheetText', { styleSheetId: id, text }, sheet.target.sessionId, signal);
@@ -456,7 +471,10 @@ class NativeBrowserBridge {
       if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed.', 'PAGE_CHANGED');
       const targets = this.focusContract.targets.map(target => ({ selector: target.selector, count: target.count }));
       const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return ${JSON.stringify(targets)}.every(target=>{const nodes=document.querySelectorAll(target.selector);return nodes.length===target.count&&[...nodes].every(element=>getComputedStyle(element).display==='none')})?1:0})()`;
-      if (await this._number(sheet.target, expression, generation, signal) !== 1) throw fault('Focus controls remained visible; original styles will be restored.', 'FOCUS_NOT_APPLIED');
+      emitDiagnostic(onDiagnostic, 'visibility', 'start');
+      const visibleProof = await this._number(sheet.target, expression, generation, signal);
+      emitDiagnostic(onDiagnostic, 'visibility', visibleProof === 1 ? 'ok' : 'fail');
+      if (visibleProof !== 1) throw fault('Focus controls remained visible; original styles will be restored.', 'FOCUS_NOT_APPLIED');
       if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed after visibility verification.', 'PAGE_CHANGED');
       if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
     } catch (error) {

@@ -1,3 +1,29 @@
+# 0.12.9 diagnostic-only candidate
+
+Native testing of both 0.12.7 and 0.12.8 reported On / Unavailable after problem
+switching, while manual On after loading succeeded and Off restored controls.
+The exact failing branch remains unknown. This candidate adds observability;
+it does not claim another fix or change the reviewed hide/restore policy.
+
+Latest automatic and manual traces each hold at most 64 enum-only records.
+Stages distinguish initial lookup, identity frame/location, URL mismatch,
+same-document skip, recognized loading reason, full contract target rejection,
+controller outcome, sheet creation/write, capsule guard, visibility and cleanup.
+Callbacks are bound to operations and leases, not whichever attempt is current.
+
+No diagnostic contains page URLs, problem names, document/frame identifiers,
+page text, code, cookies, credentials, raw errors or timestamps. No diagnostic
+network request or extension storage/file write is added. The local TensorTonic
+Output channel receives one bounded summary for a current automatic failure;
+VS Code controls its normal Output retention. A read-only extension export exposes
+frozen snapshots for local inspection. No clipboard copying or upload occurs.
+
+Serial cloud validation passed 830/830 aggregate tests, 102/102 session checks
+and 84/84 transport checks. Coverage includes enum sanitization, bounded immutable
+snapshots, stale callback/lease isolation, raw-error redaction, target rejection,
+readiness cancellation and single current-failure output. No Mac access, installation
+or publication was performed. Historical results follow.
+
 # 0.12.8 loading-readiness candidate
 
 Mac testing of 0.12.7 reported automatic new-problem Focus as On / Unavailable,

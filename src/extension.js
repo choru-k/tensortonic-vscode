@@ -1,4 +1,5 @@
 'use strict';
+const { createFocusDiagnostics, emitDiagnostic, diagnosticErrorCode } = require('./focus-diagnostics');
 
 const vscode = require('vscode');
 const crypto = require('node:crypto');
@@ -182,11 +183,17 @@ function activate(context) {
     display.setFocusContract(FOCUS_CONTRACT);
     return display;
   }
+  const focusDiagnostics = createFocusDiagnostics();
+  async function focusDiagnosticCall(stage, onDiagnostic, call) {
+    emitDiagnostic(onDiagnostic, stage, 'start');
+    try { const value = await call(); emitDiagnostic(onDiagnostic, stage, 'ok'); return value; }
+    catch (error) { emitDiagnostic(onDiagnostic, stage, 'fail', diagnosticErrorCode(error)); throw error; }
+  }
   const focusPort = {
-    getPage: options => focusDisplay().getFocusPage(options),
-    inspect: contract => focusDisplay().inspectFocusContract(contract),
-    createStyleSheet: (options, request) => focusDisplay().createFocusStyleSheet(options, request),
-    setStyleSheetText: (id, text, options) => focusDisplay().setFocusStyleSheetText(id, text, options),
+    getPage: options => focusDiagnosticCall('lookup', options?.onDiagnostic, () => focusDisplay().getFocusPage(options)),
+    inspect: (contract, options) => focusDiagnosticCall('contract', options?.onDiagnostic, () => focusDisplay().inspectFocusContract(contract, options)),
+    createStyleSheet: (options, request) => focusDiagnosticCall('create-sheet', request?.onDiagnostic, () => focusDisplay().createFocusStyleSheet(options, request)),
+    setStyleSheetText: (id, text, options) => focusDiagnosticCall(text ? 'write-sheet' : 'restore-sheet', options?.onDiagnostic, () => focusDisplay().setFocusStyleSheetText(id, text, options)),
     styleSheetExists: (id, options) => focusDisplay().focusStyleSheetExists(id, options),
   };
   let studyStatus;
@@ -1090,33 +1097,40 @@ function activate(context) {
     const action = focusAction, epoch = state.sessionEpoch, navigation = state.openGeneration, card = state.cardGeneration;
     const controller = new AbortController();
     const current = () => focusRequested && !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration && isCurrentNavigation() && (!automatic || getProblemView() === 'web');
-    const operation = { enabled: true, automatic, controller };
+    const trace = focusDiagnostics.begin(automatic);
+    const operation = { enabled: true, automatic, controller, trace };
     focusRecovery = operation;
     studyStatus.refresh();
     try {
       let page;
+      trace.emit('lookup', 'start');
       try {
         const display = focusDisplay();
         page = !automatic && typeof display.recoverFocusPage === 'function'
-          ? await display.recoverFocusPage({ signal: controller.signal })
-          : await focusPort.getPage({ signal: controller.signal });
-      } catch (_) { /* Unknown or changed structures remain visible. */ }
-      if (!current()) return focusMode.state;
-      if (expectedUrl && page?.url !== expectedUrl) page = undefined;
+          ? await display.recoverFocusPage({ signal: controller.signal, onDiagnostic: trace.record })
+          : await focusPort.getPage({ signal: controller.signal, onDiagnostic: trace.record });
+      } catch (error) { trace.emit('lookup', 'fail', diagnosticErrorCode(error)); }
+      if (!current()) { trace.emit('result', 'canceled'); return focusMode.state; }
+      trace.emit('lookup', page ? 'ok' : 'fail', page ? undefined : 'no-page');
+      if (expectedUrl && page?.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
       // A title/state notification or same-document open must not re-arm the
       // navbar after its conservative mutation guard has revoked it.
-      if (automatic && page && previousPage && ['id','url','documentId','frameId'].every(key => page[key] === previousPage[key])) return focusMode.state;
+      if (automatic && page && previousPage && ['id','url','documentId','frameId'].every(key => page[key] === previousPage[key])) { trace.emit('same-document', 'skip'); return focusMode.state; }
       if (automatic && page && typeof focusDisplay().waitForFocusReady === 'function') {
-        try { page = await focusDisplay().waitForFocusReady(page, { signal: controller.signal }); }
-        catch (_) { page = undefined; }
-        if (!current()) return focusMode.state;
-        if (expectedUrl && page?.url !== expectedUrl) page = undefined;
+        trace.emit('readiness', 'start');
+        try { page = await focusDisplay().waitForFocusReady(page, { signal: controller.signal, onDiagnostic: trace.record }); trace.emit('readiness', 'ok'); }
+        catch (error) { trace.emit('readiness', 'fail', diagnosticErrorCode(error)); page = undefined; }
+        if (!current()) { trace.emit('result', 'canceled'); return focusMode.state; }
+        if (expectedUrl && page?.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
       }
       state.focusReason = !page ? 'no-owned-page' : undefined;
       focusedPage = page;
       if (page) lastFocusPage = page;
       focusObservation++;
-      const result = await focusMode.setEnabled(true, { page, signal: controller.signal });
+      trace.emit('controller', 'start');
+      const result = await focusMode.setEnabled(true, { page, signal: controller.signal, onDiagnostic: trace.record });
+      trace.emit('result', current() ? result.status : 'canceled');
+      if (automatic && current() && result.status !== 'applied') output.appendLine('Focus diagnostic: ' + trace.summary());
       return result;
     } finally {
       if (focusRecovery === operation) focusRecovery = undefined;
@@ -1291,7 +1305,7 @@ function activate(context) {
     output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
   }).finally(updateConnection);
   // Do not export a vault, SecretStorage object, raw transport or CDP capability.
-  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
+  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, focusDiagnostics: focusDiagnostics.snapshot, sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {return stopActiveSession();}

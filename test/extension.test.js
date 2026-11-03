@@ -1968,3 +1968,25 @@ test('automatic Focus waits read-only before one apply and retains Off/session/n
   else assert.equal(f.css,'',action);
  }
 });
+
+test('automatic Focus diagnostics distinguish lookup, readiness and contract failures without raw errors',async t=>{
+ for(const phase of ['lookup','readiness','contract']) {
+  const f=await persistentFocusFixture(t);
+  const error=Object.assign(Error('PRIVATE_SECRET_URL https://private.invalid'),{code:'PRIVATE_SECRET_CODE'});
+  if(phase==='lookup')f.getHook=async()=>{throw error;};
+  if(phase==='readiness')f.native.display.waitForFocusReady=async()=>{throw error;};
+  if(phase==='contract')f.failVerify=true;
+  await f.h.api.openProblem(SECOND_REF);
+  const trace=f.h.publicApi.focusDiagnostics().automatic;
+  assert.ok(trace.events.some(e=>e.stage===phase&&e.outcome==='fail'),phase);
+  assert.equal(trace.events.at(-1).outcome,'unavailable');
+  const lines=f.h.output.filter(x=>x.startsWith('Focus diagnostic:'));assert.equal(lines.length,1);
+  assert.doesNotMatch(JSON.stringify(trace)+lines.join(''),/PRIVATE|private.invalid|https|studyPlan|relu|sigmoid/);
+ }
+});
+test('stale automatic readiness logs no misleading diagnostic failure after Off',async t=>{
+ const f=await persistentFocusFixture(t),gate=deferred(),started=deferred();
+ f.native.display.waitForFocusReady=async()=>{started.resolve();await gate.promise;throw Error('late');};
+ const opening=f.h.api.openProblem(SECOND_REF);await started.promise;await f.toggle();gate.resolve();await opening;
+ assert.equal(f.h.output.filter(x=>x.startsWith('Focus diagnostic:')).length,0);assert.equal(f.css,'');
+});

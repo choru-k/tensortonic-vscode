@@ -772,3 +772,17 @@ test('Focus readiness deadline cancels a stalled read and never creates a styles
  };
  await assert.rejects(h.bridge.waitForFocusReady(h.page),{code:'TIMEOUT'});assert.equal(observed.aborted,true);assert.equal(h.nextSheet,0);
 });
+
+test('native Focus diagnostics expose target/category only and no raw page content',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);const events=[];
+ h.focusElements.set(FOCUS_CONTRACT.targets[0].selector,[]);
+ await assert.rejects(h.bridge.inspectFocusContract(FOCUS_CONTRACT,{onDiagnostic:e=>events.push(e)}));
+ assert.deepEqual(events,[{stage:'contract-target',outcome:'fail',code:'missing',target:'mobile-prev'}]);
+ assert.doesNotMatch(JSON.stringify(events),/https|current|studyPlan|context|frame|cookie/);
+});
+test('native readiness diagnostics distinguish loading reason and preserve behavior with throwing callback',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);const events=[];h.loadingPlaceholder=true;h.onReadyPause=()=>{h.loadingPlaceholder=false;};
+ await h.bridge.waitForFocusReady(h.page,{onDiagnostic:e=>events.push(e)});
+ assert.ok(events.some(e=>e.stage==='loading'&&e.code==='account-theme'));
+ await h.bridge.waitForFocusReady(h.page,{onDiagnostic:()=>{throw Error('PRIVATE_CALLBACK');}});assert.equal(h.nextSheet,0);
+});

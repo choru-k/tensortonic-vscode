@@ -139,7 +139,7 @@ class FocusModeController {
     this._pendingApplies.add(attempt);
     const pending = Promise.resolve().then(() => {
       if (operation.controller.signal.aborted || !this._current(operation)) throw fault('CANCELED');
-      return this.adapter.apply(proof, this.contract, { signal: operation.controller.signal });
+      return this.adapter.apply(proof, this.contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
     }).then(lease => {
       this._pendingApplies.delete(attempt);
       if (!this._remember(lease)) throw fault('MISSING_OWNED_LEASE');
@@ -180,7 +180,7 @@ class FocusModeController {
       const snapshot = Object.freeze({ id: page.id, url: page.url, documentId: page.documentId, frameId: page.frameId });
       const verification = Promise.resolve().then(() => {
         if (operation.controller.signal.aborted || !this._current(operation)) throw fault('CANCELED');
-        return this.adapter.verify(snapshot, this.contract, { signal: operation.controller.signal });
+        return this.adapter.verify(snapshot, this.contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
       });
       const proof = await this._wait(verification, operation);
       if (!this._current(operation)) return this.state;
@@ -205,11 +205,11 @@ class FocusModeController {
     }
   }
 
-  setEnabled(enabled, { page, signal } = {}) {
+  setEnabled(enabled, { page, signal, onDiagnostic } = {}) {
     this._operation?.controller.abort();
     this._activeLease = undefined;
     this.enabled = enabled === true && !this.disposed;
-    const operation = { generation: ++this.generation, controller: new AbortController() };
+    const operation = { generation: ++this.generation, controller: new AbortController(), onDiagnostic };
     this._operation = operation;
     this._pendingOperations.add(operation);
     this._notify();

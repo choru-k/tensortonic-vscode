@@ -1,3 +1,11 @@
+# 0.12.9 (diagnostic-only cloud candidate)
+
+- Add bounded local Focus attempt traces to identify the unresolved automatic carryover failure. No further readiness or selector fix is claimed.
+- Record allowlisted stage/outcome/error-category and fixed contract-target labels only. No URL, problem/document identifiers, DOM text, credentials or raw error content is included.
+- Keep latest automatic and manual traces in memory for comparison. Current automatic failures emit one bounded summary to the TensorTonic Output channel; there is no telemetry or extension file/storage write.
+- Bind diagnostic callbacks to their originating controller operation and cleanup lease, so stale cleanup cannot contaminate a newer trace.
+- Not yet published, installed or verified on Mac.
+
 # 0.12.8 (cloud candidate)
 
 - Wait read-only for initial document loading and reviewed TensorTonic navbar/problem loading placeholders before automatically carrying Focus to a new problem.

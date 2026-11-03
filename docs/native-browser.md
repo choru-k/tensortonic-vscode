@@ -92,3 +92,24 @@ exclusion stops immediately, rather than retrying arbitrary invalid structures.
 A changed document is never adopted during this wait. Slow or differently shaped
 pages can remain On / Unavailable and require explicit user action after loading.
 Native confirmation of this candidate is still pending.
+
+
+## Local Focus diagnostics (0.12.9 candidate)
+
+The underlying automatic application failure remains unresolved. After an approved
+native trial, inspect the single `Focus diagnostic:` line in TensorTonic Output
+and compare the read-only `focusDiagnostics()` extension-export snapshots for the
+latest automatic and manual On attempts. The export contains no browser or session
+capability. It returns copied/frozen bounded metadata only.
+
+The first failed stage or a started stage without completion distinguishes page
+identity, loading classification, full proof, guard installation, style visibility
+or cleanup. Fixed target labels identify which reviewed control failed without
+capturing text or actual counts. `OTHER` means an unrecognized error category was
+redacted. Dropped records are counted, never persisted elsewhere. New same-mode
+attempts replace the old trace; late operations cannot overwrite the new trace.
+
+Do not infer the root cause from elapsed time or Unavailable alone. A diagnostic
+trial should first reproduce one automatic failure, then manual On/Off, and read
+only these sanitized traces. Any new change should follow the actual failing branch.
+This candidate is not a native-verified fix and has not been installed or published.

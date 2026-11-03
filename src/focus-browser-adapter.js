@@ -116,41 +116,41 @@ class FocusBrowserAdapter {
     this.applying = false;
   }
 
-  async current(expected, signal) {
+  async current(expected, signal, onDiagnostic) {
     checkSignal(signal);
     let page;
-    try { page = pageSnapshot(await this.port.getPage()); }
+    try { page = pageSnapshot(await this.port.getPage(onDiagnostic ? { onDiagnostic } : undefined)); }
     catch (_) { checkSignal(signal); throw fault('PAGE_CHANGED'); }
     checkSignal(signal);
     if (expected && !samePage(expected, page)) throw fault('PAGE_CHANGED');
     return page;
   }
 
-  async inspect(page, contract, signal) {
+  async inspect(page, contract, signal, onDiagnostic) {
     checkSignal(signal);
     let result;
-    try { result = await this.port.inspect(contract); }
+    try { result = await this.port.inspect(contract, onDiagnostic ? { onDiagnostic } : undefined); }
     catch (_) { checkSignal(signal); throw fault('UNAVAILABLE'); }
     checkSignal(signal);
     const counts = checkedCounts(result, page, contract);
-    await this.current(page, signal);
+    await this.current(page, signal, onDiagnostic);
     return counts;
   }
 
-  async verify(snapshot, contractValue, { signal } = {}) {
+  async verify(snapshot, contractValue, { signal, onDiagnostic } = {}) {
     checkSignal(signal);
     const { contract, fingerprint } = reviewedContract(contractValue);
     if (!snapshot || !boundedString(snapshot.id) || !boundedString(snapshot.documentId) || !isProblemUrl(snapshot.url) || snapshot.owned === false) throw fault('PAGE_CHANGED');
-    const page = await this.current(undefined, signal);
+    const page = await this.current(undefined, signal, onDiagnostic);
     if (snapshot.id !== page.id || snapshot.url !== page.url || snapshot.documentId !== page.documentId ||
         (snapshot.frameId !== undefined && snapshot.frameId !== page.frameId)) throw fault('PAGE_CHANGED');
-    const counts = await this.inspect(page, contract, signal);
+    const counts = await this.inspect(page, contract, signal, onDiagnostic);
     const proof = Object.freeze({ ...page, contractId: contract.id, counts });
     this.proofs.set(proof, { page, fingerprint, used: false });
     return proof;
   }
 
-  async apply(proof, contractValue, { signal } = {}) {
+  async apply(proof, contractValue, { signal, onDiagnostic } = {}) {
     checkSignal(signal);
     const { contract, fingerprint } = reviewedContract(contractValue);
     const verified = proof && this.proofs.get(proof);
@@ -159,22 +159,22 @@ class FocusBrowserAdapter {
     verified.used = true; this.applying = true;
     let sheet;
     try {
-      await this.current(verified.page, signal);
-      await this.inspect(verified.page, contract, signal);
+      await this.current(verified.page, signal, onDiagnostic);
+      await this.inspect(verified.page, contract, signal, onDiagnostic);
       let created;
-      try { created = await this.port.createStyleSheet({ frameId: verified.page.frameId, force: true, page: verified.page }, { signal }); }
+      try { created = await this.port.createStyleSheet({ frameId: verified.page.frameId, force: true, page: verified.page }, { signal, onDiagnostic }); }
       catch (_) { checkSignal(signal); throw fault('UNAVAILABLE'); }
       const id = typeof created === 'string' ? created : created?.styleSheetId;
       if (!boundedString(id)) throw fault('UNAVAILABLE');
-      sheet = { id, page: verified.page, restored: false, restoring: undefined, lease: undefined };
+      sheet = { id, page: verified.page, onDiagnostic, restored: false, restoring: undefined, lease: undefined };
       sheet.lease = Object.freeze({ restore: () => this.restore(sheet) });
       this.sheets.add(sheet);
-      await this.current(verified.page, signal);
+      await this.current(verified.page, signal, onDiagnostic);
       // Never race an abort against a dispatched mutation. Its late completion
       // stays owned and is emptied before apply can settle as canceled/failed.
-      try { await this.port.setStyleSheetText(id, contract.cssText, { page: verified.page, signal }); }
+      try { await this.port.setStyleSheetText(id, contract.cssText, { page: verified.page, signal, onDiagnostic }); }
       catch (_) { checkSignal(signal); throw fault('APPLY_FAILED'); }
-      await this.current(verified.page, signal);
+      await this.current(verified.page, signal, onDiagnostic);
       return sheet.lease;
     } catch (error) {
       if (sheet) {
@@ -200,7 +200,7 @@ class FocusBrowserAdapter {
     try {
       // Off empties this dedicated stylesheet before the root may detach. Do not
       // use CSS.disable: detaching/disabling does not undo an inspector sheet.
-      await this.port.setStyleSheetText(sheet.id, '', { page: sheet.page });
+      await this.port.setStyleSheetText(sheet.id, '', { page: sheet.page, ...(sheet.onDiagnostic ? { onDiagnostic: sheet.onDiagnostic } : {}) });
     } catch (_) {
       let proof;
       try { if (typeof this.port.styleSheetExists === 'function') proof = await this.port.styleSheetExists(sheet.id, { page: sheet.page }); }
