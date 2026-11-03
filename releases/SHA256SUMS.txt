@@ -2,3 +2,4 @@
 6684a49ab76a92ac7021520bae8ae679fdf5500216580b31925e4da336360c5d  tensortonic-vscode-0.12.5.vsix
 52fc9e03811160c0baa1f5ab841d11027cce2e0b4f85dbadd6af0a69df449329  tensortonic-vscode-0.12.6.vsix
 d36c87b3c7e95149db91a4c6a03eb49b3462a0bd9784a1cfbe686df4fbacefc2  tensortonic-vscode-0.12.7.vsix
+c85d2eaa0cc21c8537aedcd1678a8ea922c200b6bf53301876c030ce2aa21254  tensortonic-vscode-0.12.8.vsix

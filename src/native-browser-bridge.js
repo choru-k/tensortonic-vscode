@@ -1,5 +1,5 @@
 'use strict';
-const { verifyNavbar, installNavbarGuard, NAVBAR_CANDIDATE, NAVBAR_MARKER } = require('./focus-navbar');
+const { verifyNavbar, installNavbarGuard, NAVBAR_BASE, NAVBAR_CANDIDATE, NAVBAR_MARKER } = require('./focus-navbar');
 
 const crypto = require('node:crypto');
 const { isAllowedRequest, validateBody, ORIGINS } = require('./request-policy');
@@ -270,16 +270,51 @@ class NativeBrowserBridge {
     } while (this.now() < deadline);
     throw fault('The owned Focus page is still loading. Try Focus after it loads.', 'PAGE_CHANGED');
   }
-  async inspectFocusContract(value) {
+  async waitForFocusReady(page, { signal: externalSignal } = {}) {
+    const controller = new AbortController(), signal = controller.signal;
+    const abort = () => controller.abort();
+    externalSignal?.addEventListener('abort', abort, { once: true });
+    if (externalSignal?.aborted) abort();
+    try {
+      const target = this.target, generation = this.generation;
+      const deadline = this.now() + Math.min(5000, this.discoverTimeout);
+      const check = async () => {
+        this._check(generation, target, signal);
+        if (!sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The loading Focus document changed.', 'PAGE_CHANGED');
+        this._check(generation, target, signal);
+      };
+      // Read-only loading classification. Only browser document loading and the
+      // reviewed public Navbar SSR placeholders may delay verification. Unknown
+      // structures, security UI and failed full proofs are never retried.
+      const expression = `(()=>{const base=document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}),safe=document.querySelectorAll(${JSON.stringify(NAVBAR_CANDIDATE)});if(base.length>1||(base.length===1&&(safe.length!==1||safe[0]!==base[0])))return -1;if(document.readyState==='loading'||document.readyState==='interactive')return 0;if(document.readyState!=='complete'||base.length!==1)return -1;const loading=document.querySelectorAll('div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > main.flex-1.overflow-hidden.relative > div.flex.items-center.justify-center.min-h-screen.bg-background > svg[role="status"][aria-label="Loading"][viewBox="10 30 180 140"]');if([...loading].some(e=>e.getClientRects().length))return 0;const n=base[0];const placeholders=[...n.querySelectorAll('div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]')];return placeholders.some(e=>!e.children.length&&!(e.textContent||'').trim())?0:1})()`;
+      let verified = false;
+      for (let attempt = 0; attempt < 25 && this.now() < deadline; attempt++) {
+        const remaining = () => Math.max(1, deadline - this.now());
+        await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
+        const state = await bounded(this._number(target, expression, generation, signal), remaining(), 'Focus readiness timed out.', signal);
+        await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
+        if (state !== 0 && state !== 1) throw fault('The loading page structure is not recognized.', 'INVALID_PROOF');
+        if (state === 1) {
+          await bounded(this.inspectFocusContract(this.focusContract, { signal }), remaining(), 'Focus readiness timed out.', signal);
+          await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
+          if (verified) return page;
+          verified = true;
+        } else verified = false;
+        await bounded(this.pause(200), remaining(), 'Focus readiness timed out.', signal);
+      }
+      throw fault('The problem page is still loading. Focus remains unapplied.', 'TIMEOUT');
+    } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
+  }
+  async inspectFocusContract(value, { signal } = {}) {
     if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
-    const page = await this.getFocusPage(), target = this.target, generation = this.generation;
+    const page = await this.getFocusPage({ signal }), target = this.target, generation = this.generation;
     const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? NAVBAR_CANDIDATE : item.selector, count: item.count, expectation: item.expectation }));
     const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const safeHref=e=>{try{const u=new URL(e.getAttribute('href'),location.origin);return u.origin==='https://www.tensortonic.com'&&!u.username&&!u.password&&!u.hash&&/^\\/problems\\/[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(u.pathname)&&u.searchParams.getAll('studyPlan').length<=1&&[...u.searchParams].every(([k,v])=>k==='studyPlan'&&/^[a-zA-Z0-9][a-zA-Z0-9-]{0,199}$/.test(v))}catch{return false}};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){valid=false;continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyNavbar.toString()})(e))valid=false;continue}if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){valid=false;continue}if(x.tag==='a'){if(x.href!=='owned-problem'||!safeHref(e))valid=false}else if(x.tag==='button'){if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)valid=false}else valid=false}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts})})()`;
-    const raw = await this._evaluate(target, expression, generation);
+    const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
     if (!metadata || metadata.valid !== true || metadata.url !== page.url || !metadata.counts || Object.keys(metadata.counts).length !== targets.length || targets.some(item => metadata.counts[item.id] !== item.count)) throw fault('The reviewed problem controls changed. They remain visible.', 'INVALID_PROOF');
-    if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
+    if (!sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
     this.focusProof = { page, target, fingerprint: focusCore(this.focusContract) };
     return Object.freeze({ ...page, contractId: this.focusContract.id, counts: Object.freeze({ ...metadata.counts }) });
   }

@@ -1,3 +1,24 @@
+# 0.12.8 loading-readiness candidate
+
+Mac testing of 0.12.7 reported automatic new-problem Focus as On / Unavailable,
+while manual On after loading succeeded. Source confirms that navigation previously
+returned at URL match, before document or hydrated controls were necessarily ready.
+This is a concrete readiness gap consistent with the symptom; the exact failing
+Mac DOM check was not captured, and this candidate has not been Mac-validated.
+
+The new read-only phase pins the destination document and waits only for browser
+loading or source-reviewed navbar/body placeholders. It requires two successful
+full proofs separated by 200 ms, then invokes the existing apply once. Unknown
+complete structures and security exclusions are not polled. Off, navigation,
+Markdown, session changes and shutdown still fence stale work. Timeout or failure
+leaves controls visible and does not claim Applied. No fallback discovery occurs.
+
+Cloud serial tests passed: 821/821 aggregate, 102/102 session and 82/82 transport.
+Tests cover delayed document/navbar/body hydration, rejected structure/security
+checks, cancellation, changed URL/context, bounded loading and a stalled read,
+plus Off/session/Markdown/newer-navigation fences during readiness. No installation
+or publication was performed for this candidate. Historical results follow.
+
 # 0.12.7 session-only Focus preference candidate
 
 This cloud-only candidate separates the user's requested On state from current

@@ -75,3 +75,20 @@ or grading. Test-host storage can differ from an ordinary development window;
 do not infer secure persistence from an in-memory extension-test host. Keep
 proposed-API access scoped to the owning extension and preserve unrelated windows,
 settings and edits during any native check.
+
+
+## Automatic Focus loading readiness (0.12.8 candidate)
+
+A successful URL navigation is not itself a rendered-page proof. Automatic Focus
+first waits read-only on the same owned document, for at most five seconds. The
+recognized loading shapes are the browser's initial loading/interactive state,
+the public navbar's empty account pulse/disabled theme placeholder, and the visible
+public problem-body dolphin loading screen. Source: the captured 2026-11-03 public
+`/problems/relu` SSR and navbar bundle `2xv1uplc4nzzv.js`.
+
+Once those placeholders clear, two full reviewed contract checks 200 ms apart
+precede the single existing application. A failed full proof or security/menu
+exclusion stops immediately, rather than retrying arbitrary invalid structures.
+A changed document is never adopted during this wait. Slow or differently shaped
+pages can remain On / Unavailable and require explicit user action after loading.
+Native confirmation of this candidate is still pending.

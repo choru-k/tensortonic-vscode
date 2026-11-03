@@ -1952,3 +1952,19 @@ test('explicit On during an authorized navigation waits for that new destination
  const pending=await f.toggle();assert.equal(pending.enabled,true);assert.equal(f.css,'');gate.resolve();await opening;
  assert.equal(f.snapshot().focus.status,'applied');assert.ok(f.css);
 });
+
+test('automatic Focus waits read-only before one apply and retains Off/session/newer-navigation fences',async t=>{
+ for(const action of ['ready','off','session','newer','markdown','fail']) {
+  const f=await persistentFocusFixture(t),gate=deferred(),started=deferred();let calls=0;
+  f.native.display.waitForFocusReady=async(page,{signal})=>{calls++;started.resolve();await gate.promise;if(action==='fail')throw Error('Still loading');return page;};
+  const opening=f.h.api.openProblem(SECOND_REF);await started.promise;assert.equal(f.css,'');
+  if(action==='off')await f.toggle();
+  if(action==='session'){f.native.token='readiness-session';f.native.onDidChange?.();}
+  if(action==='markdown'){f.h.configuration.set('problemView','markdown');}
+  let newer;if(action==='newer'){f.native.display.waitForFocusReady=async page=>page;newer=f.h.api.openProblem(DEFAULT_REF);}
+  gate.resolve();await opening;await newer;
+  assert.equal(calls,1);
+  if(action==='ready'||action==='newer')assert.equal(f.snapshot().focus.status,'applied',action);
+  else assert.equal(f.css,'',action);
+ }
+});

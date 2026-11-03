@@ -1106,6 +1106,12 @@ function activate(context) {
       // A title/state notification or same-document open must not re-arm the
       // navbar after its conservative mutation guard has revoked it.
       if (automatic && page && previousPage && ['id','url','documentId','frameId'].every(key => page[key] === previousPage[key])) return focusMode.state;
+      if (automatic && page && typeof focusDisplay().waitForFocusReady === 'function') {
+        try { page = await focusDisplay().waitForFocusReady(page, { signal: controller.signal }); }
+        catch (_) { page = undefined; }
+        if (!current()) return focusMode.state;
+        if (expectedUrl && page?.url !== expectedUrl) page = undefined;
+      }
       state.focusReason = !page ? 'no-owned-page' : undefined;
       focusedPage = page;
       if (page) lastFocusPage = page;

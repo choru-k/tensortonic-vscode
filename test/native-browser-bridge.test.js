@@ -714,3 +714,61 @@ test('sheet absence never releases unresolved marker cleanup; CSS restores indep
     h.beforeSend = undefined; await lease.restore(); assert.equal(sheet.navbarGuard,undefined);
   }
 });
+
+function readinessFixture(h) {
+ h.bridge.discoverTimeout=5000;
+ const query=h.sandbox.document.querySelectorAll;
+ h.sandbox.document.readyState='complete';
+ h.sandbox.document.querySelectorAll=selector=>selector===require('../src/focus-navbar').NAVBAR_BASE?[h.navbar.nav]:selector.includes('svg[role="status"][aria-label="Loading"]')?(h.bodyLoading?[{getClientRects:()=>[{}]}]:[]):query(selector);
+ const navQuery=h.navbar.nav.querySelectorAll;
+ h.navbar.nav.querySelectorAll=selector=>{
+  if(!selector.startsWith('div.w-8.h-8.rounded-full'))return navQuery(selector);
+  assert.equal(selector,'div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]');
+  return h.loadingPlaceholder?[{children:[],textContent:''}]:[];
+ };
+ let now=0;h.bridge.now=()=>now;h.bridge.pause=async()=>{now+=200;await h.onReadyPause?.();};
+}
+test('Focus readiness waits for initial document and reviewed hydration placeholder, without style writes',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);h.sandbox.document.readyState='loading';let pauses=0;
+ h.onReadyPause=()=>{pauses++;h.sandbox.document.readyState='complete';h.loadingPlaceholder=pauses<3;};
+ const before=h.calls.filter(x=>x.method.startsWith('CSS.')).length;
+ const result=await h.bridge.waitForFocusReady(h.page);assert.equal(result.documentId,h.page.documentId);assert.equal(pauses,4);
+ assert.equal(h.calls.filter(x=>x.method.startsWith('CSS.')).length,before);assert.equal(h.sandbox.document.documentElement.hasAttribute(NAVBAR_MARKER),false);
+});
+test('Focus readiness never retries unknown completed structure or protective navbar rejection',async t=>{
+ for(const kind of ['structure','security','unknown-ready-state']) {
+  const h=await focusHarness(t);readinessFixture(h);let pauses=0;h.onReadyPause=()=>pauses++;
+  if(kind==='structure')h.focusElements.set(FOCUS_CONTRACT.targets[0].selector,[]);
+  if(kind==='security')h.focusElements.set(NAVBAR_SELECTOR,[]);
+  if(kind==='unknown-ready-state')h.sandbox.document.readyState='unrecognized';
+  await assert.rejects(h.bridge.waitForFocusReady(h.page));assert.equal(pauses,0,kind);assert.equal(h.nextSheet,0);
+ }
+});
+test('Focus readiness aborts on cancellation, context change or URL change rather than rediscovering',async t=>{
+ for(const kind of ['cancel','context','url']) {
+  const h=await focusHarness(t);readinessFixture(h);h.loadingPlaceholder=true;const c=new AbortController();
+  h.onReadyPause=()=>{if(kind==='cancel')c.abort();if(kind==='context')h.newDocument();if(kind==='url')h.tab.url='https://www.tensortonic.com/problems/other';};
+  await assert.rejects(h.bridge.waitForFocusReady(h.page,{signal:c.signal}));assert.equal(h.nextSheet,0);
+ }
+});
+test('Focus readiness loading is bounded, and a failed final proof is never polled again',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);h.loadingPlaceholder=true;let pauses=0;h.onReadyPause=()=>pauses++;
+ await assert.rejects(h.bridge.waitForFocusReady(h.page),{code:'TIMEOUT'});assert.ok(pauses<=25);assert.equal(h.nextSheet,0);
+ h.loadingPlaceholder=false;pauses=0;h.onReadyPause=()=>{pauses++;h.focusElements.set(FOCUS_CONTRACT.targets[0].selector,[]);};
+ await assert.rejects(h.bridge.waitForFocusReady(h.page));assert.equal(pauses,1);assert.equal(h.nextSheet,0);
+});
+
+test('Focus readiness recognizes the visible captured problem-body loading screen after document complete',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);h.bodyLoading=true;let pauses=0;h.onReadyPause=()=>{pauses++;h.bodyLoading=pauses<2;};
+ await h.bridge.waitForFocusReady(h.page);assert.equal(pauses,3);assert.equal(h.nextSheet,0);
+});
+
+test('Focus readiness deadline cancels a stalled read and never creates a stylesheet',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);h.bridge.now=Date.now;h.bridge.discoverTimeout=20;
+ const original=h.bridge._number.bind(h.bridge);let observed;
+ h.bridge._number=(target,expression,generation,signal)=>{
+  if(!expression.includes('document.readyState'))return original(target,expression,generation,signal);
+  observed=signal;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('Canceled stalled probe')),{once:true}));
+ };
+ await assert.rejects(h.bridge.waitForFocusReady(h.page),{code:'TIMEOUT'});assert.equal(observed.aborted,true);assert.equal(h.nextSheet,0);
+});

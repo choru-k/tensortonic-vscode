@@ -1,3 +1,10 @@
+# 0.12.8 (cloud candidate)
+
+- Wait read-only for initial document loading and reviewed TensorTonic navbar/problem loading placeholders before automatically carrying Focus to a new problem.
+- Require two successful exact-document contract checks 200 ms apart before the existing single apply. Readiness is bounded to five seconds and canceled by Off, newer navigation or session changes.
+- Unknown structure, security/menu rejection, changed document and failed full proof stop without retrying CSS. Existing fail-open observer and restoration remain unchanged.
+- Not yet published, installed or validated on the native Mac UI.
+
 # Changelog
 
 ## 0.12.7 (cloud-only candidate; not published or installed)
