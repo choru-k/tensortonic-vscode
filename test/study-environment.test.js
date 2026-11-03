@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { StudyEnvironment, cleanEnvironment, defaultCandidates } = require('../src/study-environment');
+const { StudyEnvironment, cleanEnvironment, defaultCandidates, environmentPrompt } = require('../src/study-environment');
 
 async function fixture(t, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tt-env-'));
@@ -46,6 +46,30 @@ test('explicit confirmation is required before processes or filesystem creation'
   const f = await fixture(t);
   await assert.rejects(f.env.ensure({}), /confirmation/);
   assert.equal(f.calls.length, 0); await assert.rejects(fs.stat(f.managedRoot), { code: 'ENOENT' });
+});
+
+test('environment labels identify TensorTonic and bound safe workspace context without exposing storage IDs', () => {
+  assert.equal(environmentPrompt('/study/tensortonic'), 'TensorTonic');
+  assert.equal(environmentPrompt('/study/ML Practice'), 'TensorTonic (ML Practice)');
+  assert.equal(environmentPrompt('/study/학습'), 'TensorTonic (학습)');
+  const label = environmentPrompt('/study/bad\n\u001b[31m$(echo bad)');
+  assert.ok(label.startsWith('TensorTonic ('));
+  assert.doesNotMatch(label, /[\n\u001b$]/);
+  assert.ok(environmentPrompt('/study/' + 'x'.repeat(100)).length < 60);
+});
+
+test('creation supplies the supported venv prompt while retaining the stable hashed path and installed environment', async t => {
+  const f = await fixture(t);
+  const original = f.env.environmentPath;
+  await f.env.ensure({ confirmed: true });
+  const create = f.calls.find(call => call.args.includes('venv'));
+  assert.equal(create.args[create.args.indexOf('--prompt') + 1], f.env.prompt);
+  assert.equal(create.args.at(-1), original);
+  assert.match(path.basename(original), /^[a-f0-9]{64}$/);
+  f.calls.length = 0;
+  await f.env.ensure({ confirmed: true });
+  assert.equal(f.env.environmentPath, original);
+  assert.equal(f.calls.filter(call => call.args.includes('venv') || call.args.includes('install')).length, 0);
 });
 
 test('inspect is filesystem-only and setup uses dedicated external managed storage and fixed package source', async t => {

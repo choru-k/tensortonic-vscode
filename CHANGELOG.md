@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.2 (local candidate)
+
+- Give newly created study environments a supported TensorTonic prompt label, with bounded workspace context. Keep their stable storage path and interpreter identity. Existing environments can receive the same display metadata without moving or reinstalling them.
+
 ## 0.12.1
 
 - Publish Ready immediately after environment setup, without waiting for the completed informational notification to be dismissed.

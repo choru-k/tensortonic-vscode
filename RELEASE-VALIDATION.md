@@ -1,3 +1,12 @@
+# 0.12.2 local label candidate
+
+The display-name change is not published. Its 754/754 aggregate tests pass with zero failures or skips;
+package integrity and source parity are checked for the local candidate. The
+existing environment label was verified in the actual interpreter picker and
+status bar using accessibility state after a supported manager refresh. Current
+screenshot capture returned blank images, so no new pixel evidence is claimed.
+The environment path, selected interpreter and installed packages are preserved.
+
 # 0.12.1 release checks
 
 This page describes reproducible release checks and their limits. It contains no

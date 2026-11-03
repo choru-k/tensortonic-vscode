@@ -14,6 +14,10 @@ const HEALTH = 'import json,sys,torch,numpy; print(json.dumps({"version":list(sy
 function canceled() { const error = new Error('Study environment setup was canceled. No global Python environment was changed.'); error.name = 'AbortError'; return error; }
 function checkSignal(signal) { if (signal && signal.aborted) throw canceled(); }
 function contained(parent, child) { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)); }
+function environmentPrompt(workspaceRoot) {
+  const folder = Array.from(path.basename(workspaceRoot).normalize('NFKC').replace(/[^\p{L}\p{N} ._-]+/gu, '-').replace(/\s+/g, ' ').trim()).slice(0, 36).join('');
+  return !folder || /^tensortonic$/i.test(folder) ? 'TensorTonic' : `TensorTonic (${folder})`;
+}
 function cleanEnvironment(platform = process.platform, source = process.env) {
   const env = {};
   for (const key of ['HOME', 'USERPROFILE', 'SystemRoot', 'WINDIR', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL']) {
@@ -117,6 +121,7 @@ class StudyEnvironment {
     this.fs = filesystem; this.run = run; this.platform = platform;
     this.managedRoot = path.resolve(managedRoot); this.workspaceRoot = path.resolve(workspaceRoot);
     this.id = crypto.createHash('sha256').update(this.workspaceRoot).digest('hex');
+    this.prompt = environmentPrompt(this.workspaceRoot);
     this.environmentPath = path.join(this.managedRoot, this.id);
     this.interpreterPath = path.join(this.environmentPath, platform === 'win32' ? 'Scripts' : 'bin', platform === 'win32' ? 'python.exe' : 'python');
     this.candidates = candidates.slice(); this.env = cleanEnvironment(platform, env);
@@ -290,7 +295,7 @@ class StudyEnvironment {
       const base = await this._canonicalCandidate(marker.basePython, roots.workspace);
       if (!base || base !== marker.basePython) throw new Error(`The selected system Python is no longer available. This partial environment cannot be rebuilt automatically with another runtime. Choose a different study folder, or manually review/remove only this extension-owned environment (${this.environmentPath}) before Setup. No study files were changed.`);
       report('Creating the dedicated virtual environment outside your study files…');
-      await this._invoke(base, ['-I', '-m', 'venv', ...(this.platform === 'win32' ? [] : ['--symlinks']), this.environmentPath], signal);
+      await this._invoke(base, ['-I', '-m', 'venv', '--prompt', this.prompt, ...(this.platform === 'win32' ? [] : ['--symlinks']), this.environmentPath], signal);
       if (this.platform === 'win32') marker.interpreterSha256 = crypto.createHash('sha256').update(await this.fs.readFile(this.interpreterPath)).digest('hex');
       marker.state = 'installing'; await this._writeMarker(marker);
       if (!await this._validateInterpreter(marker, roots.workspace)) throw new Error('Virtual environment creation did not produce the expected interpreter.');
@@ -316,4 +321,4 @@ class StudyEnvironment {
     return { interpreterPath: this.interpreterPath, environmentPath: this.environmentPath, reused: false, pythonVersion: marker.pythonVersion, packages: PACKAGES.slice() };
   }
 }
-module.exports = { StudyEnvironment, runProcess, cleanEnvironment, defaultCandidates, SUPPORTED_MINORS, PACKAGES };
+module.exports = { StudyEnvironment, runProcess, cleanEnvironment, defaultCandidates, environmentPrompt, SUPPORTED_MINORS, PACKAGES };

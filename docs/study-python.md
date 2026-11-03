@@ -45,7 +45,11 @@ extension's separate managed environment exists.
    no supported runtime is found, install one from [python.org](https://www.python.org/downloads/)
    or your trusted package manager. The extension never downloads a Python version.
 5. A dedicated environment is created in extension storage under
-   `python-envs/<study-folder-hash>`. Only **torch**, **numpy** and their required
+   `python-envs/<study-folder-hash>`. The hash is a stable internal storage ID.
+   New environments use Python's supported `--prompt` metadata so the interpreter
+   picker shows **TensorTonic** (with a short workspace name when useful) and the
+   Python version. This display label does not rename or move the environment.
+   Only **torch**, **numpy** and their required
    dependencies are installed from [PyPI](https://pypi.org/), using binary wheels.
    Downloads can be substantial; a tiny or CPU-only distribution is not promised.
 6. After interpreter/prefix and package-import checks, the Python extension's public
@@ -63,6 +67,12 @@ Editor/Pylance selection and terminal activation are separate. Existing terminal
 retain their environment. Open a new Python terminal when terminal activation is
 needed; the extension does not inject activation into a busy terminal or change
 user/global `python.defaultInterpreterPath`.
+
+Older environments can retain the hash as their visible name until their owned
+`pyvenv.cfg` receives a `prompt` label and Python's environment manager is refreshed.
+Keep the interpreter path and other configuration intact; moving a virtual
+environment can break absolute launcher paths. A metadata-only label change does
+not update already-generated terminal activation scripts or existing terminals.
 
 ## Cancellation and safety
 
