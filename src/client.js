@@ -44,7 +44,7 @@ function requirePython(input) {
 
 function successData(response, label) {
   if (!response || response.status !== 'success' || response.data == null) {
-    throw new Error(response && response.message || `TensorTonic returned an unexpected ${label} response.`);
+    throw new Error(`TensorTonic returned an unexpected ${label} response.`);
   }
   return response.data;
 }
@@ -141,7 +141,7 @@ class TensorTonicClient {
           difficulty: item.difficulty || '',
           technology: item.category || 'python',
           source: item.source,
-          solved: item.solved === true,
+          solved: typeof item.solved === 'boolean' ? item.solved : undefined,
         };
         if (item.planId) ref.planId = slug(item.planId, 'study-plan slug');
         if (item.slug && SLUG.test(item.slug)) ref.catalogSlug = item.slug;
@@ -166,11 +166,11 @@ class TensorTonicClient {
     return data;
   }
 
-  async getProblem(input) {
+  async getProblem(input, options = {}) {
     const ref = requirePython(input);
     const id = ref.apiId || ref.slug;
     const path = ref.planId ? `/api/study-plans/${ref.planId}/problems/${id}` : `/api/problems/${id}`;
-    const raw = successData(await this.request(path, { method: 'GET' }), 'problem');
+    const raw = successData(await this.request(path, { method: 'GET', ...(options.signal ? { signal: options.signal } : {}) }), 'problem');
     if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof raw.starterCode !== 'string') {
       throw new Error('TensorTonic returned an unexpected problem detail.');
     }
@@ -204,25 +204,25 @@ class TensorTonicClient {
     return problem;
   }
 
-  async run(problem, code, testCases) {
+  async run(problem, code, testCases, { signal } = {}) {
     const ref = requirePython(problem);
     if (typeof code !== 'string') throw new Error('Solution code must be a string.');
     const body = { code, testCases: runCases(testCases === undefined ? problem.testCases : testCases) };
     const id = ref.apiId || ref.slug;
     const path = ref.planId ? `/api/study-plans/${ref.planId}/problems/${id}/run` : `/api/problems/${id}/run-cases`;
     if (!ref.planId) body.problemType = 'free';
-    return this.request(path, { method: 'POST', body });
+    return this.request(path, { method: 'POST', body, ...(signal ? { signal } : {}) });
   }
 
-  async submit(problem, code) {
+  async submit(problem, code, { signal } = {}) {
     const ref = requirePython(problem);
     if (typeof code !== 'string') throw new Error('Solution code must be a string.');
     const body = { code };
     const id = ref.apiId || ref.slug;
     const path = ref.planId ? `/api/study-plans/${ref.planId}/problems/${id}/submit` : `/api/problems/${id}/submit`;
     if (!ref.planId) body.problemType = 'free';
-    return this.request(path, { method: 'POST', body });
+    return this.request(path, { method: 'POST', body, ...(signal ? { signal } : {}) });
   }
 }
 
-module.exports = { TensorTonicClient };
+module.exports = { TensorTonicClient, runCases };

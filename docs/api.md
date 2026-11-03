@@ -1,33 +1,40 @@
-# Observed TensorTonic API contracts
+# TensorTonic API adapter
 
-These are the first-party browser application's observed contracts, not a published or guaranteed TensorTonic API. Origin: `https://api.tensortonic.com`. The browser sends requests with `credentials: 'include'`; this extension's browser bridge keeps login cookies inside that browser.
+The extension supports Python free problems and Python study-plan problems through
+fixed HTTPS routes on `api.tensortonic.com`. Public study-plan discovery uses
+anonymous `GET /api/study-plans`; catalogue visibility does not establish entitlement.
 
-Source evidence: public asset `work/research/1mh93pi4i6t73.js` (API helpers) and `work/research/2yk0j4p-v9-e3.js` (catalogue pagination and source routing), downloaded from TensorTonic. Live catalogue, free details, and signed-in PyTorch details were inspected during development. The website's PyTorch Run request was captured in browser Network tools.
+| Action | Free route | Study-plan route | Body |
+| --- | --- | --- | --- |
+| List | `/api/problems/list?page={page}&limit=100` | Same list route plus `&planId={plan}` | GET only |
+| Plan order | — | `/api/study-plans/{plan}` | GET only |
+| Detail | `/api/problems/{slug}` | `/api/study-plans/{plan}/problems/{slug}` | GET only |
+| Run | `/api/problems/{slug}/run-cases` | `/api/study-plans/{plan}/problems/{slug}/run` | `{code, testCases:[{id,inputs}]}` |
+| Submit | `/api/problems/{slug}/submit` | `/api/study-plans/{plan}/problems/{slug}/submit` | `{code}` |
 
-| Operation | Method and path | JSON body |
-| --- | --- | --- |
-| Catalogue | `GET /api/problems/list?page=1&limit=100` | None; optional `planId` query parameter |
-| Study plans | `GET /api/study-plans` | None |
-| Ordered study-plan curriculum | `GET /api/study-plans/{planId}` | None |
-| Free Python detail | `GET /api/problems/{id}` | None |
-| Study-plan Python detail | `GET /api/study-plans/{planId}/problems/{id}` | None |
-| Run free Python | `POST /api/problems/{id}/run-cases` | `{code, testCases, problemType: 'free'}` |
-| Submit free Python | `POST /api/problems/{id}/submit` | `{code, problemType: 'free'}` |
-| Run study-plan Python | `POST /api/study-plans/{planId}/problems/{id}/run` | `{code, testCases}` |
-| Submit study-plan Python | `POST /api/study-plans/{planId}/problems/{id}/submit` | `{code}` |
+Account verification uses `GET /api/me`. Route identifiers, methods, payload keys,
+body sizes and response sizes are validated. Study-plan ordering comes from the
+plan sections; ambiguous or inconsistent identities fail explicitly. Unknown solved
+status remains unknown. SQL, CUDA and Triton grading routes are unsupported.
 
-Catalogue/detail responses wrap results in `{status: 'success', data: ...}`. Catalogue data contains `problems` and `pagination: {page, limit, total, totalPages, hasMore}`. Each problem includes `id`, `sourceId`, `slug`, `source`, `category`, `title`, `difficulty`, `planId`, `solved`, and access flags. `source` chooses the runtime route: `free` or `python` are supported. `category` is a technology label such as `numpy` or `pytorch`, not a runtime route. The adapter preserves catalogue `slug` for browser links and stores `sourceId || id` in `apiId` for API requests.
+Public cases retain inputs for explicit local editing. Run excludes cases explicitly
+marked nonpublic and sends only normalized ID/input pairs. Submit sends code only.
+Results remain separate for their captured problem, plan, URI and operation.
 
-Study-plan order was verified with unauthenticated, read-only HTTP 200 responses on 2026-10-30 from the first-party [PyTorch plan endpoint](https://api.tensortonic.com/api/study-plans/pytorch-basics), [NumPy plan endpoint](https://api.tensortonic.com/api/study-plans/numpy-basics), and [Cracking ML plan endpoint](https://api.tensortonic.com/api/study-plans/cracking-ml). These return `data.id` and `data.sections[]`, with each section containing `sortOrder` and `problems[]`. Problems contain `slug`, `title`, `difficulty`, `sortOrder`, `type: 'python'`, and `isFree`. The [public PyTorch plan page](https://www.tensortonic.com/study-plans/pytorch-basics) shows the same curriculum: Tensor Factory, Tensor Operations, and Tensor Shape Manipulation begin the Foundations section.
+Requests use the consented scoped session. No guessed Origin, Referer, Sec-Fetch or
+CSRF headers are added. Redirects, rejection or uncertain outcomes never trigger a
+transport fallback or automatic grading retry. The remote service decides account,
+subscription and security requirements; documented client shape is not a grant of access.
 
-The generic catalogue's order (including its global `sortOrder`) is **not** the curriculum order. For a selected plan, the adapter therefore fetches both the paginated catalogue and that plan's metadata, sorts sections and their problems by their respective `sortOrder`, and joins the plan problem slug to the catalogue API identifier (or canonical browser slug). All 30 PyTorch plan slugs matched catalogue API identifiers during verification. Catalogue API/browser identities and signed-in `solved` flags remain intact. Stable ties preserve the service's array order, and duplicate references are listed once. Missing ordering fields, ambiguous matches, or inconsistent plan/catalogue contents produce an explicit refresh error rather than silently falling back to the wrong order. The free catalogue does not request plan metadata or change order. These checks did not access private details, solutions, or grading endpoints.
+## Presentation and diagnostics
 
-For the Study Plan sidebar, `listProblems(planId)` remains a flat, ordered array and adds two display fields to each reference: `studyPlanTitle` and `section: {id, title, order}`. The source fields are `data.title` and `data.sections[].id/title/sortOrder`; for example, PyTorch's first section is `pytorch-basics-foundations`, `Foundations`, `1`. Labels are plain text with HTML and control/bidirectional-format characters removed, whitespace collapsed, and a 240-Unicode-character limit. Missing titles fall back to the plan ID or `Section N` in curriculum order. A valid service section ID stays stable when arrays are reordered; absent or invalid IDs use the opaque, plan-scoped `index:<original-array-index>` fallback, not a title-derived key. Duplicate service section IDs fail explicitly rather than merging distinct sections. Repeated problems retain their first section, and sections without listed problems do not produce references. Free catalogue references do not gain these fields. Consumers must treat labels as display text, not trusted Markdown or HTML, and must namespace section identities by `planId`.
+The adapter retains whitelisted statement, starter, public-case and function metadata.
+It does not mirror reference solutions, lessons or community content. Original website
+interactive components remain on the optional owned website page; local Markdown
+rendering does not execute downloaded website JavaScript.
 
-Detail data includes Markdown `description`, `requirements`, `constraints`, HTML/Markdown `title`, `starterCode`, string-array `examples`, `testCases`, and `functionMetadata`. Public cases have `{id, name, inputs, isPublic: true}`. The captured study-plan Run request sends `{id, inputs}` wrappers in `testCases`, not bare inputs. The adapter strips `name`/`isPublic` from outgoing cases and excludes explicitly nonpublic cases. Cases entered by the user must have an `inputs` object. Examples are display text, not runnable cases.
-
-The website also consumes a separate `visualizationComponent` field, independently of Markdown `description`. Its public [problem renderer asset](https://www.tensortonic.com/_next/static/immutable/chunks/3ur3xoqq08uzr.js), inspected read-only on 2026-10-30, passes that field to a name-to-component registry and dynamically loads a client-side component. For example, the registry contains `SoftmaxFromScratchViz`; the public [chunk mapping](https://www.tensortonic.com/_next/static/immutable/chunks/09jg8wslsct-j.js) resolves it to a [separate JavaScript component](https://www.tensortonic.com/_next/static/immutable/chunks/3fldupzcvz7rj.js) with local row-selection state, logits, probability bars, stability calculation, and a sum check. This is not static HTML embedded in the statement. The current adapter deliberately whitelists statement/starter/public-test fields and does not retain or execute visualization components. Markdown and math rendering does not reproduce those interactive cards. No website JavaScript is copied into the extension or remotely executed by its preview.
-
-Run and Submit responses are returned unchanged so that results, tracebacks and service error fields are not guessed or discarded. HTTP failures are handled by the transport. The adapter does not request theory, reference solutions, community solutions, account settings or billing endpoints. SQL, CUDA and Triton routes are intentionally unsupported and rejected before execution.
-
-The live captured study-plan request used `/api/study-plans/pytorch-basics/problems/pytorch-manual-weight-update/run`, with cases such as `{id: 'test-1', inputs: {X: [[1, 0], [0, 1]], y: [[1], [0]], lr: 0.1, seed: 42}}`.
+The safe activation facade exposes bounded connection/read diagnostics. It exports
+no vault, SecretStorage, raw transport or browser/CDP handle. A diagnostic verifies
+an existing saved session and reads a catalogue/problem without acquiring a new
+session or grading. Diagnostic output contains bounded booleans/counts/public
+problem metadata, never credentials or private account identity.

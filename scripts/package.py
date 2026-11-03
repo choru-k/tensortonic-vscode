@@ -41,6 +41,8 @@ def manifest(package):
         "Microsoft.VisualStudio.Services.GitHubFlavoredMarkdown": "true",
     }.items():
         element(properties, "Property", Id=key, Value=value)
+    if package.get("icon"):
+        element(metadata, "Icon", "extension/" + package["icon"])
     installation = element(root, "Installation")
     element(installation, "InstallationTarget", Id="Microsoft.VisualStudio.Code")
     element(root, "Dependencies")
@@ -52,6 +54,8 @@ def manifest(package):
         ("Microsoft.VisualStudio.Services.Content.License", "extension/LICENSE"),
     ]:
         element(assets, "Asset", Type=asset_type, Path=path, Addressable="true")
+    if package.get("icon"):
+        element(assets, "Asset", Type="Microsoft.VisualStudio.Services.Icons.Default", Path="extension/" + package["icon"], Addressable="true")
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
@@ -60,7 +64,7 @@ def content_types():
     root = ET.Element("{" + CT + "}Types")
     for extension, content in {
         "json": "application/json", "js": "application/javascript",
-        "md": "text/markdown", "svg": "image/svg+xml",
+        "md": "text/markdown", "svg": "image/svg+xml", "png": "image/png",
         "txt": "text/plain", "vsixmanifest": "text/xml",
     }.items():
         ET.SubElement(root, "{" + CT + "}Default", {"Extension": extension, "ContentType": content})
@@ -69,7 +73,7 @@ def content_types():
 
 
 def files_to_package():
-    result = [ROOT / name for name in ("package.json", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE")]
+    result = [ROOT / name for name in ("package.json", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "RELEASE-VALIDATION.md", "LICENSE")]
     for directory, suffixes in (("src", {".js"}), ("media", {".svg", ".png"}), ("docs", {".md"})):
         base = ROOT / directory
         if base.exists():

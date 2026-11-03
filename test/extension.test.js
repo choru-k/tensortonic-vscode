@@ -10,6 +10,7 @@ const Module = require('node:module');
 const EXTENSION_PATH = path.resolve(__dirname, '../src/extension.js');
 const DEFAULT_REF = { slug: 'pytorch-mini-training', planId: 'pytorch-basics', technology: 'PyTorch' };
 const SECOND_REF = { slug: 'pytorch-dropout', planId: 'pytorch-basics', technology: 'PyTorch' };
+const fixtureKey = ref => JSON.stringify([ref.planId || '', ref.slug]);
 
 class Uri {
   constructor(filePath) { this.fsPath = filePath; this.path = filePath; this.scheme = 'file'; this.authority = ''; this.query = ''; this.fragment = ''; }
@@ -23,10 +24,11 @@ class Uri {
 
 function disposable() { return { dispose() {} }; }
 
-async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, nativeTransport } = {}) {
+async function harness(t, { connected = true, externalCommands = ['workbench.action.chat.open', 'chatgpt.addFileToThread', 'chatgpt.openSidebar'], markdownExtension, globalStateForRoot = () => new Map(), trusted = true, nativeTransport, environmentController, editorLayout, membershipState } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'tensortonic-ui-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const documents = new Map();
+  const changeListeners=[],closeListeners=[],openListeners=[];
   const commands = new Map();
   const contexts = new Map();
   const webviews = [];
@@ -40,12 +42,12 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   const codeLens = [];
   const tools = new Map();
   const commandExecutions = [];
-  const configuration = new Map([['studyPlan', 'pytorch-basics'], ['solutionDirectory', 'tensortonic']]);
+  const configuration = new Map([['studyPlan', 'pytorch-basics'], ['solutionDirectory', 'tensortonic'], ['problemView', 'markdown']]);
   const configurationListeners = [];
   const activeEditorListeners = [];
   const fireConfiguration = key => configurationListeners.forEach(listener => listener({ affectsConfiguration: name => name === `tensortonic.${key}` }));
   const calls = { list: [], get: [], run: [], submit: [] };
-  const fixtures = new Map([DEFAULT_REF, SECOND_REF].map((ref, i) => [ref.slug, {
+  const fixtures = new Map([DEFAULT_REF, SECOND_REF].map((ref, i) => [fixtureKey(ref), {
     ref,
     title: i ? 'Dropout' : 'Mini training',
     description: '<p>Implement the requested operation.</p>\n\n## Requirements\nUse float32.\n\n## Constraints\nPreserve shape.',
@@ -124,10 +126,11 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     TreeItem: class TreeItem { constructor(label, collapsibleState) { this.label = label; this.collapsibleState = collapsibleState; } },
     TreeItemCollapsibleState: { None: 0, Collapsed: 1, Expanded: 2 },
     StatusBarAlignment: { Left: 1 },
-    ViewColumn: { One: 1, Beside: -2 },
+    ViewColumn: { One: 1, Two: 2, Beside: -2 },
     ConfigurationTarget: { Workspace: 2, Global: 1 },
     ProgressLocation: { Notification: 15 },
     workspace: {
+      get textDocuments() { return [...documents.values()]; },
       workspaceFolders: [{ name: 'fixture', uri: Uri.file(root) }],
       isTrusted: trusted,
       fs: {
@@ -138,6 +141,9 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         createDirectory: uri => fs.mkdir(uri.fsPath, { recursive: true }),
       },
       openTextDocument: openDocument,
+      onDidChangeTextDocument: listener => {changeListeners.push(listener);return disposable();},
+      onDidCloseTextDocument: listener => {closeListeners.push(listener);return disposable();},
+      onDidOpenTextDocument: listener => {openListeners.push(listener);return disposable();},
       getConfiguration: () => ({ get: (key, fallback) => configuration.has(key) ? configuration.get(key) : fallback, update: async (key, value) => { configuration.set(key, value); fireConfiguration(key); } }),
       onDidChangeConfiguration: listener => { configurationListeners.push(listener); return disposable(); },
       async applyEdit(edit) {
@@ -167,6 +173,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       },
     },
     window: {
+      ...(editorLayout ? {tabGroups:{all:[{viewColumn:1}]},visibleTextEditors:[]} : {}),
       activeTextEditor: undefined,
       createStatusBarItem() { const status = { show() {}, dispose() {} }; statuses.push(status); return status; },
       createOutputChannel() { return { appendLine: line => output.push(line), dispose() {} }; },
@@ -180,15 +187,20 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
         trees.push(tree); return tree;
       },
       createWebviewPanel(type, title, column, options) {
-        let onDispose;
-        const panel = { type, title, options, webview: { html: '' },
+        let onDispose, onMessage;
+        const panel = { type, title, options, viewColumn: typeof column === 'object' ? column.viewColumn : column, reveals: [], messages: [],
+          webview: { html: '', onDidReceiveMessage(listener) { onMessage = listener; return disposable(); },
+            async postMessage(message) { panel.messages.push(message); return true; } },
+          receive(message) { onMessage?.(message); },
           onDidDispose(listener) { onDispose = listener; return disposable(); },
-          dispose() { this.disposed = true; if (onDispose) onDispose(); }, reveal() {} };
+          dispose() { this.disposed = true; if (onDispose) onDispose(); },
+          reveal(...args) { this.reveals.push(args); } };
         webviews.push(panel);
         return panel;
       },
-      async showTextDocument(document) {
-        this.activeTextEditor = { document };
+      async showTextDocument(document, options) {
+        this.activeTextEditor = { document, ...(options?.viewColumn ? {viewColumn:options.viewColumn} : {}) };
+        if(editorLayout)this.visibleTextEditors=[this.activeTextEditor];
         for (const listener of activeEditorListeners) listener(this.activeTextEditor);
         return this.activeTextEditor;
       },
@@ -205,8 +217,12 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
       async getCommands() { return [...commands.keys(), ...externalCommands]; },
       async executeCommand(id, ...args) {
         if (id === 'setContext') { contexts.set(args[0], args[1]); return; }
+        if(editorLayout && id==='vscode.getEditorLayout') return editorLayout;
+        if(editorLayout && id==='vscode.setEditorLayout') vscode.window.tabGroups.all=[{viewColumn:1},{viewColumn:2}];
         commandExecutions.push({ id, args, activeDocument: vscode.window.activeTextEditor && vscode.window.activeTextEditor.document });
+        if(editorLayout && id==='vscode.setEditorLayout') return;
         if (externalCommands.includes(id)) {
+          if (id === 'markdown.api.render') return '<p>' + String(args[0]).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') + '</p>' + (String(args[0]).includes('$') ? '<math xmlns="http://www.w3.org/1998/Math/MathML"><mi>x</mi></math>'.repeat(20) : '');
           if (id === 'workbench.action.chat.open' || id === 'chatgpt.openSidebar') vscode.window.activeTextEditor = undefined;
           return;
         }
@@ -223,18 +239,23 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
   vscode.window.withProgress = async (_options, callback) => callback({ report() {} }, { isCancellationRequested: false, onCancellationRequested() { return disposable(); } });
 
   const transport = nativeTransport || nativeUiFixture(connected);
+  // Existing grading UI regressions use an explicitly capable synthetic bridge.
+  // The production factory has separate fixed-contract capability coverage.
+  transport.supportsGrading??=true;
   transport.pageCalls = [];
   const openOwnedPage = transport.openProblemPage.bind(transport);
-  transport.openProblemPage = async url => {
+  transport.openProblemPage = async (url, options) => {
     transport.pageCalls.push({ url, activeDocument: vscode.window.activeTextEditor?.document });
-    return openOwnedPage(url);
+    return openOwnedPage(url, options);
   };
+  let fixtureClient;
   class TensorTonicClient {
+    constructor(){fixtureClient=this;}
     async listProblems(planId) {
       calls.list.push(planId);
       return [...fixtures.values()].map((problem,index) => ({ ...problem.ref, title: problem.title, difficulty: 'Easy', solved: index===0, studyPlanTitle:'PyTorch Sheet', section:{id:index===0?'foundations':'training',title:index===0?'Foundations':'Training',order:index+1} }));
     }
-    async getProblem(ref) { calls.get.push(ref); return structuredClone(fixtures.get(ref.slug)); }
+    async getProblem(ref) { calls.get.push(ref); return structuredClone(fixtures.get(fixtureKey(ref))); }
     async run(problem, code, cases) {
       calls.run.push({ problem, code, cases });
       return { passed: true, stdout: '</pre><script>globalThis.compromised = true</script>' };
@@ -248,8 +269,15 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     Module._load = function load(request, parent, ...args) {
       if (parent && parent.filename === EXTENSION_PATH) {
         if (request === 'vscode') return vscode;
-        if (request === './native-browser-bridge') return { NativeBrowserBridge: class { constructor() { return transport; } } };
-        if (request === './client') return { TensorTonicClient };
+        if (request === './session/tensortonic') return { createSessionBridge: () => transport };
+        if (request === './client') return { TensorTonicClient, runCases: originalLoad.call(this, request, parent, ...args).runCases };
+        if (request === './study-environment-ui' && environmentController) return { StudyEnvironmentUI: class { constructor() { return environmentController; } } };
+        if (request === './study-plans') {
+          const { StudyPlanPicker } = originalLoad.call(this, request, parent, ...args);
+          return { StudyPlanPicker: class extends StudyPlanPicker {
+            constructor(api) { super(api, { loadCatalog: async () => [{ id: 'pytorch-basics', title: 'PyTorch Sheet' }, { id: 'numpy-basics', title: 'NumPy Sheet' }] }); }
+          } };
+        }
       }
       return originalLoad.call(this, request, parent, ...args);
     };
@@ -262,6 +290,7 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     Module._load = originalLoad;
   }
   const savedState = new Map();
+  if(membershipState)savedState.set('tensortonic.studyPlanMembership.v1',membershipState);
   const globalValues = globalStateForRoot(root);
   const globalState = { keys: () => [...globalValues.keys()], get: key => globalValues.get(key), update: async (key,value) => { if(value===undefined) globalValues.delete(key); else globalValues.set(key,value); } };
   const secretCalls = [];
@@ -272,10 +301,30 @@ async function harness(t, { connected = true, externalCommands = ['workbench.act
     async delete(key) { secretCalls.push(['delete', key]); legacySecrets.delete(key); },
   };
   const context = { secrets, globalState, subscriptions: [], extensionUri: Uri.file(path.resolve(__dirname, '..')), workspaceState: { get: key => savedState.get(key), update: async (key, value) => savedState.set(key, value) } };
-  const api = extension.activate(context);
+  const publicApi = extension.activate(context);
+  const api = {...publicApi,bridge:transport,client:fixtureClient};
   await api.studyWorkspaceReady;
+  await api.sessionReady;
   t.after(() => { for (const subscription of context.subscriptions.reverse()) subscription.dispose(); });
-  return { root, extension, api, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues, secretCalls, legacySecrets };
+  return { fireClose: document=>closeListeners.forEach(fn=>fn(document)), fireOpen: document=>openListeners.forEach(fn=>fn(document)), fireText: document => changeListeners.forEach(fn=>fn({document})), savedState, root, extension, api, publicApi, vscode, documents, commands, contexts, webviews, errors, output, statuses, trees, codeLens, calls, fixtures, configuration, tools, commandExecutions, fireConfiguration, information, informationChoices, clipboardWrites, globalValues, secretCalls, legacySecrets };
+}
+
+function panelConfig(panel) { const match=panel.webview.html.match(/const config = (\{[^\n]+\});/); return match ? JSON.parse(match[1]) : undefined; }
+function panelMessage(panel, payload) { const {token,modelKey} = panelConfig(panel); panel.receive({token,modelKey,...payload}); }
+async function settleUntil(predicate) { const deadline=Date.now()+1000; while(!predicate()) { if(Date.now()>deadline) assert.fail('Expected asynchronous UI action did not settle'); await new Promise(resolve=>setTimeout(resolve,5)); } }
+function deferred() { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes;reject=no; }); return {promise,resolve,reject}; }
+
+function panelHtml(panel) {
+  const results = {};
+  let description;
+  const config = panelConfig(panel);
+  for (const message of panel.messages || []) {
+    if (config && message.token !== config.token) continue;
+    if (message.results) Object.assign(results, message.results);
+    if (message.descriptionHtml !== undefined) description = message.descriptionHtml;
+  }
+  if (Object.keys(results).length) return Object.values(results).join('');
+  return description === undefined ? panel.webview.html : description;
 }
 
 function problemRows(view) {
@@ -360,7 +409,7 @@ test('reopening a problem preserves the learner’s solution and edited test cas
   const learnerTests = '[{"input":{"x":[99]},"expected":[1683]}]\n';
   tests.setText(learnerTests);
   await tests.save();
-  h.fixtures.get(DEFAULT_REF.slug).starterCode = 'replacement_from_new_server_version = True\n';
+  h.fixtures.get(fixtureKey(DEFAULT_REF)).starterCode = 'replacement_from_new_server_version = True\n';
   const reopened = await h.api.openProblem(DEFAULT_REF);
   assert.equal(reopened.uri.toString(), opened.uri.toString());
   assert.equal(await fs.readFile(opened.uri.fsPath, 'utf8'), learnerCode);
@@ -377,7 +426,7 @@ test('Run uses the selected solution and current unsaved code and test cases', a
   const unsavedCode = persistedCode.replace('    pass', '    return x + 123');
   document.setText(unsavedCode);
   const tests = await h.vscode.workspace.openTextDocument(first.testsUri);
-  const unsavedCases = [{ input: { x: [7] }, expected: [130] }];
+  const unsavedCases = [{ id:'case-1', inputs: { x: [7] }, isPublic: true }];
   tests.setText(JSON.stringify(unsavedCases));
   await h.api.openProblem(SECOND_REF); // A different solution now has editor focus.
   const result = await h.commands.get('tensortonic.run')(first.uri);
@@ -387,10 +436,14 @@ test('Run uses the selected solution and current unsaved code and test cases', a
   assert.equal(h.calls.run[0].code, unsavedCode);
   assert.deepEqual(h.calls.run[0].cases, unsavedCases);
   assert.equal(await fs.readFile(first.uri.fsPath, 'utf8'), persistedCode, 'Run must not save or replace the learner’s file');
-  const panel = h.webviews.find(panel => panel.type === 'tensortonic.results');
-  assert.equal(panel.options.enableScripts, false);
-  assert.ok(panel.webview.html.includes('&lt;script&gt;'));
-  assert.ok(!panel.webview.html.includes('<script>'));
+  const panel = h.webviews.find(panel => panel.type === 'tensorTonic.problemWorkspace');
+  assert.ok(panel.messages.some(message => message.notice?.message.includes('Mini training')));
+  assert.match(panel.title, /Dropout/);
+  await h.commands.get('tensortonic.resultsView')(first.uri);
+  assert.equal(panel.options.enableScripts, true);
+  assert.equal(panel.options.enableCommandUris, false);
+  assert.ok(panelHtml(panel).includes('&lt;script&gt;'));
+  assert.ok(!panelHtml(panel).includes('<script>'));
   assert.deepEqual(h.errors, []);
 });
 
@@ -403,39 +456,40 @@ test('observed Run and Submit response shapes become readable, script-free resul
     actual: [[0.09, 0.2447, 0.6652]], logs: '',
   }] });
   await h.commands.get('tensortonic.run')(opened.uri);
-  const panel = h.webviews.find(value => value.type === 'tensortonic.results');
-  assert.match(panel.webview.html, /<h2>Passed<\/h2>/);
-  for (const label of ['Case 1', 'Input', 'Expected', 'Actual']) assert.ok(panel.webview.html.includes(label));
-  assert.match(panel.webview.html, /<details class="result-case result-passed">/);
-  assert.match(panel.webview.html, /<details class="result-debug"><summary>Raw response \(JSON\)<\/summary>/);
-  assert.doesNotMatch(panel.webview.html, /0 \/ 0/);
+  const panel = h.webviews.find(value => value.type === 'tensorTonic.problemWorkspace');
+  assert.match(panelHtml(panel), /<h2>Passed<\/h2>/);
+  for (const label of ['Case 1', 'Input', 'Expected', 'Actual']) assert.ok(panelHtml(panel).includes(label));
+  assert.match(panelHtml(panel), /<details class="result-case result-passed">/);
+  assert.match(panelHtml(panel), /<details class="result-debug"><summary>Raw response \(JSON\)<\/summary>/);
+  assert.doesNotMatch(panelHtml(panel), /0 \/ 0/);
   h.api.client.submit = async () => ({ status: 'passed', tests: [], passed: 43, total: 43, duration_ms: 1006, newBadges: [] });
   await h.commands.get('tensortonic.submit')(opened.uri);
-  assert.match(panel.webview.html, /43 \/ 43/);
-  assert.match(panel.webview.html, /1006 ms/);
-  assert.match(panel.webview.html, /Individual test details were not returned/);
-  assert.doesNotMatch(panel.webview.html, /zero test cases|No tests executed/);
-  assert.equal(panel.options.enableScripts, false);
+  assert.match(panelHtml(panel), /43 \/ 43/);
+  assert.match(panelHtml(panel), /1006 ms/);
+  assert.match(panelHtml(panel), /Individual test details were not returned/);
+  assert.doesNotMatch(panelHtml(panel), /zero test cases|No tests executed/);
+  assert.equal(panel.options.enableScripts, true);
+  assert.equal(panel.options.enableCommandUris, false);
   assert.deepEqual(panel.options.localResourceRoots, []);
   assert.match(panel.webview.html, /default-src 'none'/);
-  assert.doesNotMatch(panel.webview.html, /<script|<iframe|<img/);
+  assert.doesNotMatch(panelHtml(panel), /<script|<iframe|<img/);
 });
 
 test('a failed grading request replaces an earlier pass with a visible uncertain-outcome error without retry', async t => {
   const h = await harness(t);
   const opened = await h.api.openProblem(DEFAULT_REF);
   await h.commands.get('tensortonic.submit')(opened.uri);
-  const panel = h.webviews.find(value => value.type === 'tensortonic.results');
-  assert.match(panel.webview.html, /<h2>Passed<\/h2>/);
+  const panel = h.webviews.find(value => value.type === 'tensorTonic.problemWorkspace');
+  assert.match(panelHtml(panel), /<h2>Passed<\/h2>/);
   let requests = 0;
   h.api.client.submit = async () => { requests++; throw new Error('Timed out <script>alert(1)</script>'); };
   assert.equal(await h.commands.get('tensortonic.submit')(opened.uri), undefined);
   assert.equal(requests, 1);
-  assert.match(panel.webview.html, /Request error/);
-  assert.match(panel.webview.html, /No confirmed grading result was received/);
-  assert.match(panel.webview.html, /Check TensorTonic before submitting again/);
-  assert.match(panel.webview.html, /&lt;script&gt;/);
-  assert.doesNotMatch(panel.webview.html, /<script|<h2>Passed<\/h2>|Raw response \(JSON\)|0 \/ 0/);
+  assert.match(panelHtml(panel), /Request error/);
+  assert.match(panelHtml(panel), /No confirmed grading result was received/);
+  assert.match(panelHtml(panel), /Check TensorTonic before submitting again/);
+  assert.match(panelHtml(panel), /&lt;script&gt;/);
+  assert.doesNotMatch(panelHtml(panel), /<script|<h2>Passed<\/h2>|Raw response \(JSON\)|0 \/ 0/);
   assert.equal(h.errors.length, 1, 'the existing error notification is retained');
 });
 
@@ -460,20 +514,21 @@ test('an unrelated file or invalid test JSON is never sent for execution', async
 
 test('remote statements and examples remain inert text with browser scripts disabled', async t => {
   const h = await harness(t);
-  const fixture = h.fixtures.get(DEFAULT_REF.slug);
+  const fixture = h.fixtures.get(fixtureKey(DEFAULT_REF));
   fixture.title = '<img src=x onerror="alert(1)">';
   fixture.description = '<p>Hello &amp; welcome</p><script>globalThis.compromised = true</script><img src=x onerror="alert(1)"><p>&#60;script&#62;encoded&#60;/script&#62;</p>';
   fixture.examples = [{ input: '</pre><script>alert(2)</script>' }];
   await h.api.openProblem(DEFAULT_REF);
-  const panel = h.webviews.find(panel => panel.type === 'tensortonic.description');
-  assert.equal(panel.options.enableScripts, false);
+  const panel = h.webviews.find(panel => panel.type === 'tensorTonic.problemWorkspace');
+  assert.equal(panel.options.enableScripts, true);
+  assert.equal(panel.options.enableCommandUris, false);
   assert.deepEqual(panel.options.localResourceRoots, []);
-  assert.ok(!panel.webview.html.includes('<script'));
-  assert.ok(!panel.webview.html.includes('<img'));
-  assert.ok(!panel.webview.html.includes('globalThis.compromised'));
-  assert.ok(panel.webview.html.includes('Hello &amp; welcome'));
-  assert.ok(panel.webview.html.includes('&lt;script&gt;encoded&lt;/script&gt;'));
-  assert.ok(panel.webview.html.includes("default-src 'none'"));
+  assert.doesNotMatch(panelHtml(panel), /<script(?! nonce=)/);
+  assert.ok(!panelHtml(panel).includes('<img'));
+  assert.ok(panelHtml(panel).includes('&lt;script&gt;globalThis.compromised'));
+  assert.ok(panelHtml(panel).includes('Hello &amp;amp; welcome'));
+  assert.ok(panelHtml(panel).includes('&amp;#60;script&amp;#62;encoded'));
+  assert.ok(panelHtml(panel).includes("default-src 'none'"));
 });
 
 test('problem references cannot escape the solution folder or retain untrusted metadata', async t => {
@@ -495,7 +550,7 @@ test('disconnected browsing has a connection action and sends no API requests', 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].command.command, 'tensortonic.connect');
   assert.equal(h.contexts.get('tensortonic.connected'), false);
-  await assert.rejects(h.api.refresh(), /Connect browser/);
+  await assert.rejects(h.api.refresh(), /Connect session/);
   assert.deepEqual(h.calls.list, []);
   const report = await h.api.smokeTest();
   assert.equal(report.activated, true);
@@ -597,7 +652,7 @@ test('dirty edits to generated problem context are preserved instead of overwrit
   const original = document.getText();
   const notes = original + '\nMy unsaved personal notes\n';
   document.setText(notes);
-  h.fixtures.get(DEFAULT_REF.slug).description = 'Server changed statement';
+  h.fixtures.get(fixtureKey(DEFAULT_REF)).description = 'Server changed statement';
   await assert.rejects(h.api.openProblem(DEFAULT_REF), /has been edited/);
   assert.equal(document.getText(), notes);
   assert.equal(document.isDirty, true);
@@ -612,7 +667,7 @@ test('saved personal edits retaining the generated marker are preserved on conte
   document.setText(notes);
   await document.save();
   assert.equal(document.isDirty, false);
-  h.fixtures.get(DEFAULT_REF.slug).description = 'Server changed statement';
+  h.fixtures.get(fixtureKey(DEFAULT_REF)).description = 'Server changed statement';
   await assert.rejects(h.api.openProblem(DEFAULT_REF), /has been edited/);
   assert.equal(document.getText(), notes);
   assert.equal(await fs.readFile(opened.contextUri.fsPath, 'utf8'), notes);
@@ -674,7 +729,7 @@ test('disconnect cancels a pending problem open before file and editor side effe
   h.api.client.getProblem = () => new Promise(resolve => { complete = resolve; });
   const opening = h.api.openProblem(DEFAULT_REF);
   await h.commands.get('tensortonic.disconnect')();
-  complete(structuredClone(h.fixtures.get(DEFAULT_REF.slug)));
+  complete(structuredClone(h.fixtures.get(fixtureKey(DEFAULT_REF))));
   assert.equal(await opening, undefined);
   assert.deepEqual(await fs.readdir(h.root), []);
   assert.equal(h.vscode.window.activeTextEditor, undefined);
@@ -720,7 +775,7 @@ test('grading command lock releases on validation errors and upstream failures',
 });
 
 test('explicit Description targets its own solution after another editor was selected', async t => {
-  const h = await harness(t, { externalCommands: ['markdown.showPreviewToSide'] });
+  const h = await harness(t, { externalCommands: ['markdown.api.render'] });
   const first = await h.api.openProblem(DEFAULT_REF);
   const firstDocument = await h.vscode.workspace.openTextDocument(first.uri);
   const firstContext = await fs.readFile(first.contextUri.fsPath, 'utf8');
@@ -728,60 +783,50 @@ test('explicit Description targets its own solution after another editor was sel
   await h.vscode.window.showTextDocument(firstDocument);
   await h.commands.get('tensortonic.description')(second.uri);
   assert.equal(await fs.readFile(first.contextUri.fsPath, 'utf8'), firstContext);
-  const preview = h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide').at(-1);
-  assert.equal(preview.args[0].fsPath, second.contextUri.fsPath);
+  assert.match(panelHtml(h.webviews[0]), /Dropout/);
   assert.match(await fs.readFile(second.contextUri.fsPath, 'utf8'), /# Dropout/);
+  assert.equal(h.webviews.length, 1);
 });
 
-test('first problem open activates native Markdown before checking its preview command', async t => {
+test('first problem open activates native Markdown render API inside the reusable panel', async t => {
   const externalCommands = [];
   let activations = 0;
-  const markdownExtension = { async activate() {
-    activations++;
-    externalCommands.push('markdown.showPreviewToSide');
-  } };
-  const h = await harness(t, { externalCommands, markdownExtension });
-  h.fixtures.get(DEFAULT_REF.slug).description = '## Requirements\n\nKeep $y_0$.\n\n$$\ns(y)=\\sum_{t=1}^{T} \\log P(y_t)\n$$';
-  assert.ok(!(await h.vscode.commands.getCommands()).includes('markdown.showPreviewToSide'));
+  const h = await harness(t, { externalCommands, markdownExtension: { async activate() { activations++; externalCommands.push('markdown.api.render'); } } });
+  h.fixtures.get(fixtureKey(DEFAULT_REF)).description = '## Requirements\n\nKeep $y_0$.';
   const opened = await h.api.openProblem(DEFAULT_REF);
   assert.equal(activations, 1);
-  const preview = h.commandExecutions.find(call => call.id === 'markdown.showPreviewToSide');
-  assert.equal(preview.args[0].fsPath, opened.contextUri.fsPath);
-  const markdown = await fs.readFile(opened.contextUri.fsPath, 'utf8');
-  assert.match(markdown, /## Requirements/);
-  assert.ok(markdown.includes('$y_0$'));
-  assert.ok(markdown.includes('$$\ns(y)=\\sum_{t=1}^{T} \\log P(y_t)\n$$'));
-  assert.equal(h.webviews.length, 0, 'first use must not silently select the unformatted fallback');
+  assert.ok(h.commandExecutions.some(call => call.id === 'markdown.api.render'));
+  assert.ok(!h.commandExecutions.some(call => call.id === 'markdown.showPreviewToSide'));
+  assert.match(await fs.readFile(opened.contextUri.fsPath, 'utf8'), /Keep \$y_0\$/);
+  assert.match(panelHtml(h.webviews[0]), /<math/);
+  assert.doesNotMatch(panelHtml(h.webviews[0]), /Formatted Markdown and math are unavailable/);
 });
 
-test('unavailable native Markdown clearly labels its inert plain-text fallback', async t => {
+test('unavailable native Markdown labels inert source inside the nonce-bound panel', async t => {
   const h = await harness(t);
-  const opened = await h.api.openProblem(DEFAULT_REF);
-  assert.ok(opened.uri && opened.contextUri);
+  await h.api.openProblem(DEFAULT_REF);
   const panel = h.webviews[0];
-  assert.match(panel.webview.html, /Plain-text fallback/);
-  assert.match(panel.webview.html, /Enable the built-in Markdown Language Features extension/);
-  assert.equal(panel.options.enableScripts, false);
+  assert.match(panelHtml(panel), /Formatted Markdown and math are unavailable/);
+  assert.equal(panel.options.enableScripts, true);
+  assert.equal(panel.options.enableCommandUris, false);
   assert.deepEqual(panel.options.localResourceRoots, []);
   assert.match(panel.webview.html, /default-src 'none'/);
-  assert.doesNotMatch(panel.webview.html, /<script|<iframe|<link\b/);
+  assert.match(panelHtml(panel), /script-src 'nonce-/);
+  assert.doesNotMatch(panelHtml(panel), /<iframe|<link\b|<script(?! nonce=)/);
 });
 
-test('native Markdown activation or preview failure does not prevent opening a solution', async t => {
-  for (const stage of ['activate', 'preview']) {
+test('native Markdown activation or renderer failure does not prevent opening a solution', async t => {
+  for (const stage of ['activate', 'render']) {
     await t.test(stage, async t => {
-      const externalCommands = ['markdown.showPreviewToSide'];
-      const h = await harness(t, { externalCommands, markdownExtension: { async activate() {
-        if (stage === 'activate') throw new Error('UNTRUSTED_RENDERER_EXCEPTION');
-      } } });
+      const h = await harness(t, { externalCommands: ['markdown.api.render'], markdownExtension: { async activate() { if (stage === 'activate') throw new Error('UNTRUSTED_RENDERER_EXCEPTION'); } } });
       const execute = h.vscode.commands.executeCommand;
       h.vscode.commands.executeCommand = async (id, ...args) => {
-        if (id === 'markdown.showPreviewToSide') throw new Error('UNTRUSTED_RENDERER_EXCEPTION');
+        if (id === 'markdown.api.render') throw new Error('UNTRUSTED_RENDERER_EXCEPTION');
         return execute(id, ...args);
       };
       const opened = await h.api.openProblem(DEFAULT_REF);
       assert.ok(opened.uri && opened.testsUri && opened.contextUri);
-      assert.match(h.webviews[0].webview.html, /Plain-text fallback/);
+      assert.match(panelHtml(h.webviews[0]), /Formatted Markdown and math are unavailable|local Markdown renderer could not format/);
       assert.doesNotMatch(h.output.join('\n'), /UNTRUSTED_RENDERER_EXCEPTION/);
       assert.equal(h.errors.length, 0);
     });
@@ -794,30 +839,30 @@ test('late native Markdown activation cannot show an older problem after newer n
   const started = new Promise(resolve => { startedActivation = resolve; });
   const externalCommands = [];
   const h = await harness(t, { externalCommands, markdownExtension: { async activate() {
-    if (++count === 1) {
-      startedActivation();
-      await new Promise(resolve => { finishActivation = resolve; });
-    } else externalCommands.push('markdown.showPreviewToSide');
+    if (++count === 1) { startedActivation(); await new Promise(resolve => { finishActivation = resolve; }); }
+    else externalCommands.push('markdown.api.render');
   } } });
   const old = h.api.openProblem(DEFAULT_REF);
   await started;
-  const current = await h.api.openProblem(SECOND_REF);
+  await h.api.openProblem(SECOND_REF);
   finishActivation();
   assert.equal(await old, undefined);
-  const previews = h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide');
-  assert.deepEqual(previews.map(call => call.args[0].fsPath), [current.contextUri.fsPath]);
-  assert.equal(h.webviews.length, 0);
+  assert.equal(h.webviews.length, 1);
+  assert.match(panelHtml(h.webviews[0]), /Dropout/);
+  assert.doesNotMatch(panelHtml(h.webviews[0]), /<h1>Mini training/);
 });
 
-test('a recovered native preview disposes the previous degraded problem panel', async t => {
+test('a recovered native renderer updates the same auxiliary panel', async t => {
   const externalCommands = [];
-  const h = await harness(t, { externalCommands });
+  const h = await harness(t, { externalCommands, markdownExtension: { async activate() {} } });
   const opened = await h.api.openProblem(DEFAULT_REF);
-  const fallback = h.webviews[0];
-  externalCommands.push('markdown.showPreviewToSide');
+  const panel = h.webviews[0];
+  externalCommands.push('markdown.api.render');
   await h.commands.get('tensortonic.description')(opened.uri);
-  assert.equal(fallback.disposed, true);
-  assert.equal(h.commandExecutions.filter(call => call.id === 'markdown.showPreviewToSide').length, 1);
+  assert.notEqual(panel.disposed, true);
+  assert.equal(h.webviews.length, 1);
+  assert.equal(h.commandExecutions.filter(call => call.id === 'markdown.api.render').length, 1);
+  assert.doesNotMatch(panelHtml(panel), /Formatted Markdown and math are unavailable/);
 });
 
 test('reconnecting while a grading command reads inputs cannot send code to a new session', async t => {
@@ -840,22 +885,13 @@ test('reconnecting while a grading command reads inputs cannot send code to a ne
   finishRead();
   assert.equal(await running, undefined);
   assert.equal(h.calls.run.length, 0);
-  assert.match(h.errors.at(-1), /browser connection changed/);
+  assert.match(h.errors.at(-1), /session connection changed/);
 });
 
-test('overlapping native Connect gestures launch only once without clipboard or secret documents', async t => {
-  const h = await harness(t, { connected: false });
-  let choose;
-  h.informationChoices.push(new Promise(resolve => { choose = resolve; }));
-  const first = h.commands.get('tensortonic.connect')();
-  assert.equal(await h.commands.get('tensortonic.connect')(), undefined);
-  assert.equal(h.information.length, 1);
-  choose('Connect built-in browser');
-  await first;
-  assert.equal(h.api.bridge.starts, 1);
-  assert.deepEqual(h.clipboardWrites, []);
-  assert.equal(h.documents.size, 0);
-  assert.deepEqual(h.secretCalls, []);
+test('overlapping Connect gestures launch only once without clipboard or secret documents', async t => {
+  const native=nativeUiFixture(false);let release;const gate=new Promise(resolve=>{release=resolve;});t.after(()=>release());const start=native.start.bind(native);native.start=async()=>{await gate;return start();};
+  const h=await harness(t,{nativeTransport:native});const first=h.commands.get('tensortonic.connect')();assert.equal(await h.commands.get('tensortonic.connect')(),undefined);release();await first;
+  assert.equal(native.starts,1);assert.equal(h.information.length,0);assert.deepEqual(h.clipboardWrites,[]);assert.equal(h.documents.size,0);assert.deepEqual(h.secretCalls,[]);
 });
 
 test('Previous and Next follow the active solution plan and preserve unsaved work', async t => {
@@ -866,7 +902,7 @@ test('Previous and Next follow the active solution plan and preserve unsaved wor
   const code = document.getText() + '\n# My unsaved work\n';
   const tests = '[{"id":"mine","inputs":{"x":42}}]';
   document.setText(code); cases.setText(tests);
-  h.configuration.set('studyPlan', 'unrelated-sidebar-plan');
+  h.configuration.set('studyPlan', 'pytorch-basics');
   const next = await h.commands.get('tensortonic.nextProblem')(first.uri);
   assert.equal(h.calls.list.at(-1), DEFAULT_REF.planId);
   assert.equal(next.problem.ref.slug, SECOND_REF.slug);
@@ -874,7 +910,7 @@ test('Previous and Next follow the active solution plan and preserve unsaved wor
   assert.equal(previous.problem.ref.slug, DEFAULT_REF.slug);
   assert.equal(document.getText(), code);
   assert.equal(cases.getText(), tests);
-  assert.equal(h.configuration.get('studyPlan'), 'unrelated-sidebar-plan', 'navigation must not silently change sidebar settings');
+  assert.equal(h.configuration.get('studyPlan'), 'pytorch-basics', 'navigation must not silently change sidebar settings');
   assert.equal(h.calls.run.length + h.calls.submit.length, 0);
 });
 
@@ -884,15 +920,15 @@ test('study-plan navigation has non-wrapping boundaries and handles missing curr
   let reads = h.calls.get.length;
   assert.equal(await h.commands.get('tensortonic.previousProblem')(first.uri), undefined);
   assert.equal(h.calls.get.length, reads);
-  assert.match(h.information.at(-1)[0], /first problem/);
+  assert.match(h.information.at(-1)[0], /No adjacent problem/);
   const last = await h.api.openProblem(SECOND_REF);
   reads = h.calls.get.length;
   assert.equal(await h.commands.get('tensortonic.nextProblem')(last.uri), undefined);
   assert.equal(h.calls.get.length, reads);
-  assert.match(h.information.at(-1)[0], /last problem/);
+  assert.match(h.information.at(-1)[0], /No adjacent problem/);
   h.api.client.listProblems = async () => [{ ...DEFAULT_REF, planId: 'other-plan' }];
   assert.equal(await h.commands.get('tensortonic.nextProblem')(last.uri), undefined);
-  assert.match(h.information.at(-1)[0], /not found/);
+  assert.match(h.information.at(-1)[0], /No adjacent problem/);
   assert.equal(h.calls.get.length, reads);
 });
 
@@ -901,13 +937,13 @@ test('free problem files have no study-plan navigation CodeLens or catalogue req
   const opened = await h.api.openProblem(DEFAULT_REF);
   const document = await h.vscode.workspace.openTextDocument(opened.uri);
   const provider = h.codeLens[0].provider;
-  assert.ok(provider.provideCodeLenses(document).some(lens => lens.command.command === 'tensortonic.nextProblem'));
+  assert.deepEqual(provider.provideCodeLenses(document).map(lens => lens.command.command), ['tensortonic.description', 'tensortonic.testsView', 'tensortonic.discussWithAgent']);
   document.setText('# tensortonic: {"slug":"free-problem"}\npass\n');
   assert.ok(!provider.provideCodeLenses(document).some(lens => /(?:previous|next)Problem/.test(lens.command.command)));
   const requests = h.calls.list.length;
   assert.equal(await h.commands.get('tensortonic.nextProblem')(document.uri), undefined);
-  assert.equal(h.calls.list.length, requests);
-  assert.match(h.information.at(-1)[0], /available for study-plan problems/);
+  assert.equal(h.calls.list.length, requests + 1);
+  assert.match(h.information.at(-1)[0], /No adjacent problem/);
 });
 
 test('late navigation responses cannot override a newer problem open or a changed connection', async t => {
@@ -961,7 +997,7 @@ test('study navigation prefers API identity over a reused browser slug', async t
   assert.equal(next.problem.ref.slug,SECOND_REF.slug);
   h.api.client.listProblems = async () => [{...DEFAULT_REF,apiId:'different-api-id'},SECOND_REF];
   assert.equal(await h.commands.get('tensortonic.nextProblem')(opened.uri),undefined);
-  assert.match(h.information.at(-1)[0],/not found/);
+  assert.match(h.information.at(-1)[0],/No adjacent problem/);
 });
 
 test('Study plan tree exposes ordered sections, solved progress and clickable problems without Explorer changes', async t => {
@@ -986,7 +1022,7 @@ test('Study plan tree exposes ordered sections, solved progress and clickable pr
   await h.commands.get(rows[1].command.command)(...rows[1].command.arguments);
   await h.commands.get(rows[0].command.command)(...rows[0].command.arguments);
   assert.equal(document.getText(),code);assert.equal(tests.getText(),cases);
-  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory','problemView']);
   assert.equal(h.calls.run.length+h.calls.submit.length,0);
 });
 
@@ -998,7 +1034,7 @@ test('Current problem follows solution tabs and reveals only a visible Study pla
   const first = await h.api.openProblem(DEFAULT_REF);
   await flushReveals();
   assert.equal(view.reveals.length,0,'hidden sidebar must not be forced open');
-  assert.match(tree.findProblem(DEFAULT_REF).description,/Current/);
+  assert.match(tree.findProblem(DEFAULT_REF).description || '',/Current/);
   const selectedEditor = h.vscode.window.activeTextEditor;
   view.setVisible(true);
   await flushReveals();
@@ -1007,8 +1043,8 @@ test('Current problem follows solution tabs and reveals only a visible Study pla
   assert.equal(h.vscode.window.activeTextEditor,selectedEditor);
   await h.api.openProblem(SECOND_REF);
   await flushReveals();
-  assert.match(tree.findProblem(SECOND_REF).description,/Current/);
-  assert.doesNotMatch(tree.findProblem(DEFAULT_REF).description,/Current/);
+  assert.match(tree.findProblem(SECOND_REF).description || '',/Current/);
+  assert.doesNotMatch(tree.findProblem(DEFAULT_REF).description || '',/Current/);
   await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(first.uri));
   await flushReveals();
   assert.equal(view.reveals.at(-1).item.problemRef.slug,DEFAULT_REF.slug);
@@ -1044,7 +1080,7 @@ test('plan selection replaces the section tree and does not highlight another pl
   const h = await harness(t);
   await h.api.refresh();
   await h.api.openProblem(DEFAULT_REF);
-  h.vscode.window.showInputBox = async () => 'numpy-basics';
+  h.vscode.window.showQuickPick = async items => items.find(item => item.id === 'numpy-basics');
   h.api.client.listProblems = async planId => [{...DEFAULT_REF,planId,studyPlanTitle:'NumPy Sheet',section:{id:'arrays',title:'Arrays',order:1},title:'Another plan problem'}];
   await h.commands.get('tensortonic.chooseStudyPlan')();
   await flushReveals();
@@ -1052,7 +1088,7 @@ test('plan selection replaces the section tree and does not highlight another pl
   assert.equal(tree.getChildren()[0].label,'NumPy Sheet');
   assert.equal(tree.getChildren(tree.getChildren()[0])[0].label,'Arrays');
   assert.equal(tree.findProblem(DEFAULT_REF),undefined);
-  assert.doesNotMatch(problemRows(h.trees[0])[0].description,/Current/);
+  assert.doesNotMatch(problemRows(h.trees[0])[0].description || '',/Current/);
   assert.equal(h.configuration.get('studyPlan'),'numpy-basics');
   assert.equal(h.vscode.window.activeTextEditor.document.getText().includes(DEFAULT_REF.planId),true);
 });
@@ -1082,7 +1118,7 @@ test('only the explicit Show study plan command focuses its sidebar; Explorer se
   await h.commands.get('tensortonic.showStudyPlan')();
   assert.equal(h.commandExecutions[0].id,'tensortonicProblems.focus');
   assert.equal(h.calls.list.length,1);
-  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory','problemView']);
   h.api.bridge.connected=false;
   await h.commands.get('tensortonic.showStudyPlan')();
   assert.equal(h.calls.list.length,1,'disconnected sidebar shows connection action without an API request');
@@ -1101,7 +1137,7 @@ test('sidebar refresh updates solved progress while retaining the selected solut
   const tree = h.trees[0].options.treeDataProvider;
   assert.match(tree.getChildren()[0].description,/2\s*\/\s*2/);
   assert.equal(tree.findProblem(SECOND_REF).iconPath.id,'pass-filled');
-  assert.match(tree.findProblem(SECOND_REF).description,/Current/);
+  assert.match(tree.findProblem(SECOND_REF).description || '',/Current/);
   assert.equal(document.getText(),code);assert.equal(document.isDirty,true);
 });
 
@@ -1129,7 +1165,7 @@ test('Start studying opens a dedicated folder in a new window without redirectin
   assert.deepEqual(await fs.readdir(studyRoot),[],'Start must not create, move or copy problem files');
   const next = await h.api.openProblem(SECOND_REF);
   assert.equal(path.dirname(next.uri.fsPath),path.join(h.root,'tensortonic',DEFAULT_REF.planId));
-  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory']);
+  assert.deepEqual([...h.configuration.keys()],['studyPlan','solutionDirectory','problemView']);
   assert.equal(h.calls.run.length+h.calls.submit.length,0);
 });
 
@@ -1172,18 +1208,18 @@ test('a recent matching Start request restores only the new study sidebar, never
 test('interactive explanation is explicit, offline, isolated, and does not touch statement/solution/network',async t=>{
  const h=await harness(t,{connected:false});const command=h.commands.get('tensortonic.offlineExploration');
  const result=await command(DEFAULT_REF);assert.equal(result.cardId,'training-loop');assert.equal(result.supported,true);
- const panel=h.webviews[0];assert.equal(panel.type,'tensortonic.explanation');assert.deepEqual(panel.options,{enableScripts:true,localResourceRoots:[]});assert.match(panel.webview.html,/data-card="training-loop"/);
+ const panel=h.webviews[0];assert.equal(panel.type,'tensortonic.explanation');assert.deepEqual(panel.options,{enableScripts:true,localResourceRoots:[]});assert.match(panelHtml(panel),/data-card="training-loop"/);
  assert.deepEqual(h.calls,{list:[],get:[],run:[],submit:[]});assert.deepEqual(await fs.readdir(h.root),[]);
- await command({slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'});assert.equal(h.webviews.length,1);assert.match(panel.webview.html,/data-card="softmax"/);
+ await command({slug:'pytorch-softmax-from-scratch',planId:'pytorch-basics'});assert.equal(h.webviews.length,1);assert.match(panelHtml(panel),/data-card="softmax"/);
  panel.dispose();await command(DEFAULT_REF);assert.equal(h.webviews.length,2);panel.dispose();await command(DEFAULT_REF);assert.equal(h.webviews.length,2,'late old disposal cannot clear replacement');
 });
 test('unsupported explanation is honest, inert, and refuses misleading aliases',async t=>{
  const h=await harness(t);const result=await h.commands.get('tensortonic.offlineExploration')({...DEFAULT_REF,apiId:'unknown'});
- assert.equal(result.supported,false);assert.match(h.webviews[0].webview.html,/not a completed interactive card/);assert.doesNotMatch(h.webviews[0].webview.html,/<script/);assert.deepEqual(h.calls.get,[]);
+ assert.equal(result.supported,false);assert.match(panelHtml(h.webviews[0]),/not a completed interactive card/);assert.doesNotMatch(panelHtml(h.webviews[0]),/<script/);assert.deepEqual(h.calls.get,[]);
 });
 test('explanation is discoverable from code lens and sidebar and remains usable from generated context',async t=>{
  const h=await harness(t);const opened=await h.api.openProblem(DEFAULT_REF);const document=await h.vscode.workspace.openTextDocument(opened.uri);
- const lenses=h.codeLens[0].provider.provideCodeLenses(document);assert.ok(lenses.some(l=>l.command.command==='tensortonic.interactiveExplanation'));
+ const lenses=h.codeLens[0].provider.provideCodeLenses(document);assert.equal(lenses.length,3);assert.ok(require('../package.json').contributes.menus['editor/title'].some(item=>item.command==='tensortonic.interactiveExplanation'));
  const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.ok(manifest.contributes.menus['view/item/context'].some(m=>m.command==='tensortonic.offlineExploration'));
  assert.match(await fs.readFile(opened.contextUri.fsPath,'utf8'),/Interactive explanation/);
  await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(opened.contextUri));
@@ -1274,7 +1310,7 @@ test('Web preference opens canonical pages in the owned browser and preserves di
   assert.equal(h.commandExecutions.some(call => call.id === native), false);
   assert.equal(document.getText(), dirty);
   assert.equal(document.isDirty, true);
-  assert.equal(h.webviews.some(panel => panel.type === 'tensortonic.description'), false);
+  assert.equal(h.webviews.some(panel => panel.type === 'tensorTonic.problemWorkspace'), false);
   assert.equal(h.calls.run.length + h.calls.submit.length, 0);
 });
 
@@ -1285,7 +1321,7 @@ test('Web preference falls back locally to Markdown when native browser is unava
   let external = 0; h.vscode.env.openExternal = async () => { external++; return true; };
   const result = await h.api.openProblem(DEFAULT_REF);
   assert.ok(result.uri);
-  assert.equal(h.webviews.filter(panel => panel.type === 'tensortonic.description').length, 1);
+  assert.equal(h.webviews.filter(panel => panel.type === 'tensorTonic.problemWorkspace').length, 1);
   assert.ok(h.output.some(line => /Showing Markdown/.test(line)));
   assert.equal(h.information.length, 0, 'Web fallback must not show a notification that pauses browser login');
   assert.equal(h.configuration.get('problemView'), 'web');
@@ -1298,7 +1334,7 @@ test('Web preference keeps explicit Description as Markdown and returning to Mar
   h.configuration.set('problemView', 'web');
   const first = await h.api.openProblem(DEFAULT_REF);
   await h.commands.get('tensortonic.description')(first.uri);
-  assert.ok(h.webviews.some(panel => panel.type === 'tensortonic.description'));
+  assert.ok(h.webviews.some(panel => panel.type === 'tensorTonic.problemWorkspace'));
   assert.equal(h.api.bridge.pages.length, 1);
   h.configuration.set('problemView', 'markdown');
   await h.commands.get('tensortonic.nextProblem')();
@@ -1338,20 +1374,20 @@ test('Web preference ignores an owned-page completion after view mode changes', 
   h.configuration.set('problemView', 'markdown'); release(); await opening;
   assert.equal(pages, 1);
   assert.equal(h.commandExecutions.some(call => call.id === 'workbench.action.browser.open'), false);
-  assert.equal(h.webviews.some(panel => panel.type === 'tensortonic.description'), false);
+  assert.equal(h.webviews.some(panel => panel.type === 'tensorTonic.problemWorkspace'), false);
 });
 
-test('problem view setting is discoverable, bounded, Markdown by default, and cannot inject URLs', async t => {
+test('problem view setting is discoverable, bounded, Web by default, and cannot inject URLs', async t => {
   const manifest = JSON.parse(await fs.readFile(path.resolve(__dirname, '../package.json'), 'utf8'));
   const setting = manifest.contributes.configuration.properties['tensortonic.problemView'];
-  assert.equal(setting.default, 'markdown'); assert.deepEqual(setting.enum, ['markdown', 'web']);
+  assert.equal(setting.default, 'web'); assert.deepEqual(setting.enum, ['markdown', 'web']);
   assert.equal(setting.scope, 'window');
   assert.ok(manifest.contributes.menus['view/title'].some(item => item.command === 'tensortonic.chooseProblemView'));
   const native = 'workbench.action.browser.open'; const h = await harness(t, { externalCommands: [native] });
   h.configuration.set('problemView', 'https://evil.example');
   await h.api.openProblem(DEFAULT_REF);
   assert.equal(h.commandExecutions.filter(call => call.id === native).length, 0);
-  assert.ok(h.webviews.some(panel => panel.type === 'tensortonic.description'));
+  assert.ok(h.webviews.some(panel => panel.type === 'tensorTonic.problemWorkspace'));
 });
 
 function nativeUiFixture(connected = false) {
@@ -1359,33 +1395,32 @@ function nativeUiFixture(connected = false) {
     async start() { this.starts++; this.connected = true; this.token = 'owned-native-fixture'; this.onDidChange?.(); },
     async stop() { this.stops++; this.connected = false; this.token = undefined; this.onDidChange?.(); },
     async dispose() { await this.stop(); },
-    async openProblemPage(url) { this.pages.push(url); }, async request() { throw new Error('Unexpected direct transport request'); },
+    async openProblemPage(url,options) { this.pages.push(url); this.pageOptions=options; options?.onDidChangePage?.({ref:{slug:new URL(url).pathname.split('/').at(-1),planId:new URL(url).searchParams.get('studyPlan')||undefined}}); }, async request() { throw new Error('Unexpected direct transport request'); },
   };
 }
 test('native mode is inert on activation and explicit Connect never creates/copies companion pairing code', async t => {
   const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   assert.equal(native.starts, 0); assert.deepEqual(h.clipboardWrites, []);
-  h.informationChoices.push('Connect built-in browser');
+  h.informationChoices.push('Connect session');
   await h.commands.get('tensortonic.connect')();
   assert.equal(native.starts, 1); assert.equal(h.api.bridge.connected, true);
   assert.deepEqual(h.clipboardWrites, []); assert.ok(h.calls.list.length > 0);
-  assert.ok(h.information.some(x => JSON.stringify(x).includes('without copying cookies, passwords, or tokens')));
+  assert.equal(h.information.length,0,'scope consent belongs to the acquirer, not a second notification');
 });
 test('native Connect and reconnect log guidance without a post-launch notification that pauses login', async t => {
   const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
-  h.informationChoices.push('Connect built-in browser');
+  h.informationChoices.push('Connect session');
   await h.commands.get('tensortonic.connect')();
-  assert.equal(h.information.length, 1, 'only the pre-launch consent is shown');
-  assert.ok(h.output.some(line => line.includes('Sign in normally on the dedicated page')));
+  assert.equal(h.information.length, 0, 'no outer action notification pauses sign-in');
+  assert.ok(h.output.some(line => line.includes('Requests use encrypted local session storage')));
   await h.commands.get('tensortonic.connect')();
-  assert.equal(h.information.length, 1, 'reconnect must not pause the browser with another notification');
-  assert.equal(h.output.filter(line => line.includes('TensorTonic browser connected.')).length, 2);
+  assert.equal(h.information.length, 0, 'reconnect must not pause the browser with another notification');
+  assert.equal(h.output.filter(line => line.includes('TensorTonic session connected.')).length, 2);
 });
-test('canceling native Connect does not launch a browser or access stored credentials', async t => {
-  const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
-  await h.commands.get('tensortonic.connect')(); assert.equal(native.starts, 0);
-  assert.deepEqual(h.clipboardWrites, []); assert.deepEqual(h.errors, []);
+test('canceling scoped acquisition stops Connect quietly without refreshing problems', async t => {
+ const native=nativeUiFixture();native.start=async()=>{const error=new Error('Canceled');error.code='CANCELED';throw error;};const h=await harness(t,{nativeTransport:native});await h.commands.get('tensortonic.connect')();assert.equal(h.calls.list.length,0);assert.deepEqual(h.secretCalls,[]);assert.deepEqual(h.errors,[]);
 });
+
 test('native Web mode uses the owned browser page and never dispatches a broad browser open command', async t => {
   const native = nativeUiFixture(); const h = await harness(t, { nativeTransport: native });
   await native.start(); h.configuration.set('problemView', 'web');
@@ -1397,7 +1432,7 @@ test('native-only activation ignores obsolete connection settings and never read
   const h = await harness(t, { connected: false });
   h.configuration.set('connectionMode', 'browserCompanion');
   h.fireConfiguration('connectionMode');
-  h.informationChoices.push('Connect built-in browser');
+  h.informationChoices.push('Connect session');
   await h.commands.get('tensortonic.connect')();
   await h.commands.get('tensortonic.disconnect')();
   assert.deepEqual(h.secretCalls, []);
@@ -1414,7 +1449,7 @@ test('untrusted or remote native Connect fails closed without launching a page o
   for (const mode of ['untrusted', 'remote']) {
     const h = await harness(t, { connected: false, trusted: mode !== 'untrusted' });
     if (mode === 'remote') h.vscode.env.remoteName = 'ssh-remote';
-    h.informationChoices.push('Connect built-in browser');
+    h.informationChoices.push('Connect session');
     await h.commands.get('tensortonic.connect')();
     assert.equal(h.api.bridge.starts, 0);
     assert.deepEqual(h.secretCalls, []);
@@ -1423,30 +1458,282 @@ test('untrusted or remote native Connect fails closed without launching a page o
   }
 });
 
-test('canceling native connection progress before startup never launches the owned browser', async t => {
-  const h = await harness(t, { connected: false });
-  h.informationChoices.push('Connect built-in browser');
-  h.vscode.window.withProgress = async (_options, callback) => callback({ report() {} }, {
-    isCancellationRequested: true, onCancellationRequested() { return disposable(); },
-  });
-  await h.commands.get('tensortonic.connect')();
-  assert.equal(h.api.bridge.starts, 0);
-  assert.equal(h.calls.list.length, 0);
-  assert.deepEqual(h.secretCalls, []);
-  assert.deepEqual(h.errors, []);
+test('Connect uses no notification progress that can pause the login page', async t => {
+ const h=await harness(t,{connected:false});h.vscode.window.withProgress=async()=>{throw Error('No notification progress during sign-in');};await h.commands.get('tensortonic.connect')();assert.equal(h.api.bridge.starts,1);assert.equal(h.calls.list.length,1);assert.deepEqual(h.errors,[]);
 });
 
-test('personal browser API release declares only its explicit proposal and explains owned page control', async t => {
-  const manifest = JSON.parse(await fs.readFile(path.resolve(__dirname, '../package.json'), 'utf8'));
-  assert.deepEqual(manifest.enabledApiProposals, ['browser']);
-  assert.equal(`${manifest.publisher}.${manifest.name}`, 'choru-local.tensortonic-vscode');
-  assert.equal(manifest.contributes.configuration.properties['tensortonic.connectionMode'], undefined);
-  const h = await harness(t, { connected: false });
-  h.informationChoices.push('Connect built-in browser');
-  await h.commands.get('tensortonic.connect')();
-  const consent = JSON.stringify(h.information);
-  assert.match(consent, /experimental browser API/);
-  assert.match(consent, /without starting a VS Code debug session/);
-  assert.match(consent, /owned page/);
-  assert.deepEqual(h.secretCalls, []);
+test('read-only release gates grading and exports no credential or browser capability', async t => {
+ const manifest=JSON.parse(await fs.readFile(path.resolve(__dirname,'../package.json'),'utf8'));assert.deepEqual(manifest.enabledApiProposals,['browser']);assert.equal(`${manifest.publisher}.${manifest.name}`,'choru-local.tensortonic-vscode');
+ const native=nativeUiFixture(false);native.supportsGrading=false;const h=await harness(t,{nativeTransport:native});await h.commands.get('tensortonic.connect')();
+ assert.equal(h.publicApi.bridge,undefined);assert.equal(h.publicApi.client,undefined);assert.equal(h.publicApi.vault,undefined);assert.equal(h.publicApi.sessionStatus().readOnly,true);assert.equal(h.contexts.get('tensortonic.gradingAvailable'),false);
+ for(const name of ['run','submit']){assert.equal(manifest.contributes.commands.find(c=>c.command==='tensortonic.'+name).enablement,'tensortonic.gradingAvailable && !tensortonic.executing && !tensortonic.displayMismatch && !tensortonic.displayNavigating');const before=h.calls.get.length;await h.commands.get('tensortonic.'+name)();assert.equal(h.calls.get.length,before);assert.match(h.errors.at(-1),/unavailable in this read-only candidate/);}
+ assert.equal(h.calls.run.length,0);assert.equal(h.calls.submit.length,0);assert.deepEqual(h.secretCalls,[]);
+});
+test('read-only CodeLens explains unavailable grading while preserving local problem actions',async t=>{
+ const native=nativeUiFixture(true);native.supportsGrading=false;const h=await harness(t,{nativeTransport:native});const opened=await h.api.openProblem(DEFAULT_REF),document=await h.vscode.workspace.openTextDocument(opened.uri);const lenses=h.codeLens[0].provider.provideCodeLenses(document),commands=lenses.map(lens=>lens.command.command);
+ assert.equal(commands.includes('tensortonic.run'),false);assert.equal(commands.includes('tensortonic.submit'),false);for(const name of ['description','testsView','discussWithAgent'])assert.equal(commands.includes('tensortonic.'+name),true);await h.commands.get('tensortonic.gradingStatus')();assert.match(h.information.at(-1)[0],/unavailable in this read-only candidate/);
+});
+test('pending cleanup remains visible while disconnected and reports success only after a confirmed retry',async t=>{
+ const native=nativeUiFixture(false);native.supportsGrading=false;native.cleanupPending=true;let attempts=0;native.revoke=async()=>{attempts++;if(attempts===1){const error=new Error('Synthetic cleanup remains pending');error.code='ACQUISITION_CLEANUP_PENDING';error.cleanup={credentials:{activeCredentialCleared:true,credentialsDeleted:true},acquisition:{closed:false}};throw error;}native.cleanupPending=false;native.onDidChange?.();};
+ const h=await harness(t,{nativeTransport:native});assert.equal(h.contexts.get('tensortonic.cleanupPending'),true);assert.equal(h.statuses[0].command,'tensortonic.disconnect');await h.commands.get('tensortonic.disconnect')();assert.equal(h.publicApi.sessionStatus().cleanupPending,true);assert.equal(h.output.some(line=>line.startsWith('Saved session deleted')),false);await h.commands.get('tensortonic.disconnect')();assert.equal(h.publicApi.sessionStatus().cleanupPending,false);assert.equal(h.output.filter(line=>line.startsWith('Saved session deleted')).length,1);
+});
+
+test('grading cancellation before dispatch sends no code and releases the operation latch', async t => {
+ const h=await harness(t), opened=await h.api.openProblem(DEFAULT_REF);let disposed=0;
+ h.vscode.window.withProgress=async(options,callback)=>{assert.equal(options.cancellable,true);return callback({}, {isCancellationRequested:true,onCancellationRequested(){return{dispose(){disposed++;}};}});};
+ await h.commands.get('tensortonic.run')(opened.uri);assert.equal(h.calls.run.length,0);assert.equal(disposed,1);
+ h.vscode.window.withProgress=async(_,callback)=>callback({}, {isCancellationRequested:false,onCancellationRequested(){return disposable();}});
+ await h.commands.get('tensortonic.run')(opened.uri);assert.equal(h.calls.run.length,1);
+});
+test('grading cancellation after dispatch preserves uncertain outcome without automatic replay',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF);let cancel,posts=0,disposed=0;
+ h.vscode.window.withProgress=async(options,callback)=>{assert.equal(options.cancellable,true);return callback({}, {isCancellationRequested:false,onCancellationRequested(fn){cancel=fn;return{dispose(){disposed++;}};}});};
+ h.api.client.submit=async(_problem,_code,{signal})=>{posts++;cancel();assert.equal(signal.aborted,true);const error=new Error('Synthetic uncertain result; not replayed');error.code='UNCERTAIN_RESULT';throw error;};
+ await h.commands.get('tensortonic.submit')(opened.uri);assert.equal(posts,1);assert.equal(disposed,1);assert.equal(h.calls.submit.length,0);assert.match(h.errors.at(-1),/uncertain/);assert.match(panelHtml(h.webviews.find(p=>p.type==='tensorTonic.problemWorkspace')),/Check TensorTonic before submitting again/);
+});
+
+test('grading status reflects an enabled direct transport instead of claiming read-only',async t=>{
+ const h=await harness(t);await h.commands.get('tensortonic.gradingStatus')();assert.match(h.information.at(-1)[0],/Explicit Python Run and Submit/);assert.match(h.information.at(-1)[0],/uncertain actions are never replayed/);assert.match(h.statuses[0].tooltip,/Choose a TensorTonic study plan/);const manifest=require('../package.json');for(const name of ['run','submit'])assert.doesNotMatch(manifest.contributes.commands.find(c=>c.command==='tensortonic.'+name).title,/unavailable|read-only/);
+});
+
+test('sidebar navigation and native editor actions reflect only recognized current solution resources', async t => {
+  const h=await harness(t);await h.api.refresh();const opened=await h.api.openProblem(DEFAULT_REF);
+  assert.equal(h.contexts.get('tensortonic.hasPrevious'),false);assert.equal(h.contexts.get('tensortonic.hasNext'),true);assert.equal(h.contexts.get('tensortonic.hasNextUnsolved'),true);
+  assert.deepEqual(h.contexts.get('tensortonic.solutionResources'),[opened.uri.toString()]);
+  const foreign=Uri.file(path.join(h.root,'unrelated.txt'));await fs.writeFile(foreign.fsPath,'# tensortonic: '+JSON.stringify(SECOND_REF)+'\npass\n');
+  await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(foreign));
+  assert.deepEqual(h.contexts.get('tensortonic.solutionResources'),[opened.uri.toString()]);
+  assert.equal(h.trees[0].options.treeDataProvider.findProblem(DEFAULT_REF).description,'Easy · Current');
+  assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].command.command,'tensortonic.chooseStudyPlan');
+  const manifest=require('../package.json');const actions=manifest.contributes.menus['editor/title'];
+  for(const name of ['run','submit','cancelExecution'])assert.match(actions.find(item=>item.command==='tensortonic.'+name).when,/resource in tensortonic.solutionResources/);
+  const header=manifest.contributes.menus['view/title'].filter(item=>item.group.startsWith('navigation'));
+  assert.deepEqual(header.filter(item=>!item.command.endsWith('connect')).map(item=>item.command),['tensortonic.previousProblem','tensortonic.nextProblem','tensortonic.nextUnsolved','tensortonic.manageStudyPlans']);
+});
+
+test('Next unsolved uses explicit progress and skips unknown rows without wrapping',async t=>{
+ const h=await harness(t);const third={slug:'third',planId:DEFAULT_REF.planId,technology:'PyTorch'};h.fixtures.set(fixtureKey(third),{...structuredClone(h.fixtures.get(fixtureKey(DEFAULT_REF))),ref:third,title:'Third'});
+ h.api.client.listProblems=async()=>[{...DEFAULT_REF,solved:true},{...SECOND_REF},{...third,solved:false}];await h.api.refresh();await h.api.openProblem(DEFAULT_REF);
+ const opened=await h.commands.get('tensortonic.nextUnsolved')();assert.equal(opened.problem.ref.slug,'third');assert.equal(h.contexts.get('tensortonic.hasNextUnsolved'),false);
+ const before=h.calls.get.length;await h.commands.get('tensortonic.nextUnsolved')();assert.equal(h.calls.get.length,before);assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('selected-plan navigation never silently follows a solution from another plan',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF);await h.vscode.workspace.getConfiguration('tensortonic').update('studyPlan','numpy-basics');
+ const before=h.calls.get.length;await h.commands.get('tensortonic.nextProblem')(opened.uri);assert.equal(h.calls.get.length,before);assert.equal(h.calls.list.at(-1),'numpy-basics');assert.equal(h.configuration.get('studyPlan'),'numpy-basics');
+});
+
+test('metadata reads and their late failures cannot adopt a newer editor selection',async t=>{
+ for(const reject of [false,true])await t.test(String(reject),async t=>{
+  const h=await harness(t),a=await h.api.openProblem(DEFAULT_REF),b=await h.api.openProblem(SECOND_REF);await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(a.uri));
+  const original=h.vscode.workspace.openTextDocument,gate=deferred(),started=deferred();
+  h.vscode.workspace.openTextDocument=async uri=>{const document=await original(uri);if(uri.toString()===a.uri.toString()){started.resolve();await gate.promise;}return document;};
+  const pending=h.commands.get('tensortonic.nextProblem')(a.uri);await started.promise;await h.vscode.window.showTextDocument(await original(b.uri));
+  if(reject)gate.reject(new Error('Stale metadata failure'));else gate.resolve();assert.equal(await pending,undefined);assert.equal(h.vscode.window.activeTextEditor.document.uri.toString(),b.uri.toString());assert.deepEqual(h.errors,[]);
+ });
+});
+
+test('Description is fenced by panel closure during its metadata request',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),panel=h.webviews[0],gate=deferred();h.api.client.getProblem=()=>gate.promise;
+ const pending=h.commands.get('tensortonic.description')(opened.uri);await flushReveals();panel.dispose();gate.resolve(structuredClone(h.fixtures.get(fixtureKey(DEFAULT_REF))));await pending;
+ assert.equal(h.webviews.length,1);assert.equal(panel.disposed,true);assert.deepEqual(h.errors,[]);
+});
+
+test('a late Description rejection stays silent after plan navigation',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),gate=deferred(),original=h.api.client.getProblem.bind(h.api.client);h.api.client.getProblem=()=>gate.promise;
+ const pending=h.commands.get('tensortonic.description')(opened.uri);await flushReveals();h.api.client.getProblem=original;await h.api.openProblem(SECOND_REF);gate.reject(new Error('Stale Description failed'));await pending;
+ assert.match(h.webviews[0].title,/Dropout/);assert.deepEqual(h.errors,[]);
+});
+
+test('same browser slug in two plans has separate description and result ownership',async t=>{
+ const h=await harness(t),other={...DEFAULT_REF,planId:'numpy-basics'};
+ h.fixtures.set(fixtureKey(other),{...structuredClone(h.fixtures.get(fixtureKey(DEFAULT_REF))),ref:other,title:'NumPy owner'});
+ const a=await h.api.openProblem(DEFAULT_REF);await h.commands.get('tensortonic.run')(a.uri);
+ await h.vscode.workspace.getConfiguration('tensortonic').update('studyPlan',other.planId);const b=await h.api.openProblem(other);const panel=h.webviews[0];
+ assert.match(panel.title,/NumPy owner/);assert.match(panel.webview.html,/No result recorded/);assert.doesNotMatch(panel.webview.html,/<h2>Passed<\/h2>/);
+ await h.commands.get('tensortonic.resultsView')(a.uri);assert.match(panel.title,/Mini training/);assert.match(panel.webview.html,/<h2>Passed<\/h2>/);assert.equal(h.webviews.length,1);assert.notEqual(a.uri.toString(),b.uri.toString());
+});
+
+test('closed execution results stay cached and never recreate a closed panel',async t=>{
+ for(const reject of [false,true])await t.test(String(reject),async t=>{
+  const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),panel=h.webviews[0],gate=deferred(),started=deferred();
+  h.api.client.run=async()=>{started.resolve();return gate.promise;};const pending=h.commands.get('tensortonic.run')(opened.uri);await started.promise;panel.dispose();
+  if(reject)gate.reject(new Error('Uncertain synthetic outcome'));else gate.resolve({status:'passed'});await pending;assert.equal(h.webviews.length,1);assert.equal(panel.disposed,true);
+  await h.commands.get('tensortonic.resultsView')(opened.uri);assert.equal(h.webviews.length,2);assert.match(h.webviews[1].webview.html,reject?/No confirmed grading result/:/<h2>Passed<\/h2>/);assert.equal(h.contexts.get('tensortonic.executing'),false);
+ });
+});
+
+test('background completion preserves the current owner HTML and reveal count',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),panel=h.webviews[0],gate=deferred(),started=deferred();h.api.client.run=async()=>{started.resolve();return gate.promise;};
+ const pending=h.commands.get('tensortonic.run')(opened.uri);await started.promise;await h.api.openProblem(SECOND_REF);const html=panel.webview.html,reveals=panel.reveals.length;
+ gate.resolve({status:'passed'});await pending;assert.equal(panel.webview.html,html);assert.equal(panel.reveals.length,reveals);assert.match(panel.title,/Dropout/);assert.ok(panel.messages.at(-1).notice.message.includes('Mini training'));
+});
+
+test('explicit Tests selection during preflight is not replaced by result completion',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),panel=h.webviews[0],original=h.api.client.getProblem.bind(h.api.client),gate=deferred(),started=deferred();
+ h.api.client.getProblem=async ref=>{started.resolve();await gate.promise;return original(ref);};
+ const pending=h.commands.get('tensortonic.run')(opened.uri);await started.promise;panelMessage(panel,{type:'tab',tab:'tests'});const count=panel.messages.length;
+ gate.resolve();await pending;const updates=panel.messages.slice(count);assert.ok(updates.some(message=>message.results));assert.ok(!updates.some(message=>message.tab==='results'));
+});
+
+test('panel actions use captured solution URI and accept preserved legacy metadata safely',async t=>{
+ const h=await harness(t),a=await h.api.openProblem(DEFAULT_REF),b=await h.api.openProblem(SECOND_REF);await h.commands.get('tensortonic.description')(a.uri);
+ await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(b.uri));const panel=h.webviews[0];
+ panelMessage(panel,{type:'action',action:'editTests',solutionUri:b.uri.toString(),ref:SECOND_REF});await settleUntil(()=>h.vscode.window.activeTextEditor.document.uri.toString()===a.testsUri.toString());assert.equal(h.vscode.window.activeTextEditor.document.uri.toString(),a.testsUri.toString());
+ const original=h.api.client.getProblem.bind(h.api.client);h.api.client.getProblem=async ref=>({...await original(ref),ref});await h.api.openProblem({...DEFAULT_REF,apiId:'stable-api-id'});
+ panelMessage(panel,{type:'action',action:'editTests'});await settleUntil(()=>h.vscode.window.activeTextEditor.document.uri.toString()===a.testsUri.toString());assert.equal(h.vscode.window.activeTextEditor.document.uri.toString(),a.testsUri.toString());
+ const document=await h.vscode.workspace.openTextDocument(a.uri);document.setText('# tensortonic: '+JSON.stringify({...DEFAULT_REF,apiId:'conflicting-id'})+'\npass\n');
+ await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(b.uri));panelMessage(panel,{type:'action',action:'editTests'});await flushReveals();assert.equal(h.vscode.window.activeTextEditor.document.uri.toString(),b.uri.toString());assert.match(panel.messages.at(-1).notice.message,/could not be completed/);
+});
+
+test('native Cancel before dispatch prevents a POST and clears duplicate-execution state',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),gate=deferred(),started=deferred(),original=h.api.client.getProblem.bind(h.api.client);
+ h.api.client.getProblem=async ref=>{started.resolve();await gate.promise;return original(ref);};const pending=h.commands.get('tensortonic.run')(opened.uri);await started.promise;
+ assert.equal(h.contexts.get('tensortonic.executing'),true);assert.deepEqual(h.contexts.get('tensortonic.executingResources'),[opened.uri.toString()]);assert.equal(await h.commands.get('tensortonic.cancelExecution')(),true);gate.resolve();await pending;
+ assert.equal(h.calls.run.length+h.calls.submit.length,0);assert.equal(h.contexts.get('tensortonic.executing'),false);assert.deepEqual(h.contexts.get('tensortonic.executingResources'),[]);assert.deepEqual(h.errors,[]);
+});
+
+test('native Cancel after dispatch preserves uncertain result without replay',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),started=deferred();let posts=0;
+ h.api.client.submit=async(_problem,_code,{signal})=>{posts++;started.resolve();return new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Object.assign(new Error('Synthetic uncertain outcome'),{code:'UNCERTAIN_RESULT'})),{once:true}));};
+ const pending=h.commands.get('tensortonic.submit')(opened.uri);await started.promise;await h.commands.get('tensortonic.cancelExecution')();await pending;
+ assert.equal(posts,1);assert.equal(h.contexts.get('tensortonic.executing'),false);assert.match(panelHtml(h.webviews[0]),/Check TensorTonic before submitting again/);assert.equal(await h.commands.get('tensortonic.cancelExecution')(),false);
+});
+
+test('connected footer opens searchable plan selection and cancellation preserves work',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),document=await h.vscode.workspace.openTextDocument(opened.uri);document.setText(document.getText()+'# unsaved\n');const html=h.webviews[0].webview.html;
+ assert.equal(h.statuses[0].command,'tensortonic.chooseStudyPlan');let choices;h.vscode.window.showQuickPick=async items=>{choices=items;return undefined;};await h.commands.get(h.statuses[0].command)();
+ assert.ok(choices.some(item=>item.id==='numpy-basics'));assert.ok(choices.some(item=>item.action==='manual'));assert.equal(h.configuration.get('studyPlan'),'pytorch-basics');assert.equal(document.isDirty,true);assert.equal(h.webviews[0].webview.html,html);
+});
+
+test('plan picker supports manual fallback and ignores selections made stale by external configuration',async t=>{
+ const h=await harness(t);h.vscode.window.showQuickPick=async items=>items.find(item=>item.action==='manual');h.vscode.window.showInputBox=async()=> 'https://www.tensortonic.com/study-plans/numpy-basics';await h.commands.get('tensortonic.chooseStudyPlan')();assert.equal(h.configuration.get('studyPlan'),'numpy-basics');
+ const answer=deferred(),started=deferred();h.vscode.window.showQuickPick=async items=>{started.resolve();await answer.promise;return items.find(item=>item.id==='pytorch-basics');};const pending=h.commands.get('tensortonic.chooseStudyPlan')();await started.promise;await h.vscode.workspace.getConfiguration('tensortonic').update('studyPlan','custom-plan');answer.resolve();await pending;assert.equal(h.configuration.get('studyPlan'),'custom-plan');
+});
+
+test('Tests view reports invalid unsaved JSON without rewriting or saving it',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),document=await h.vscode.workspace.openTextDocument(opened.testsUri);const disk=await fs.readFile(opened.testsUri.fsPath,'utf8');document.setText('{broken');await h.commands.get('tensortonic.testsView')(opened.uri);
+ const panel=h.webviews[0];assert.ok(panel.messages.some(message=>message.testsHtml?.includes('not a JSON array')));assert.equal(document.getText(),'{broken');assert.equal(document.isDirty,true);assert.equal(await fs.readFile(opened.testsUri.fsPath,'utf8'),disk);assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('environment footer refresh is read-only, stale-safe and explicit Use shares existing controller',async t=>{
+ const first=deferred();let change,statusCalls=0,useCalls=0,setupCalls=0;
+ let value={state:'use',label:'Use study environment',command:'tensortonic.useStudyEnvironment'};
+ const controller={dispose(){},onDidChange(listener){change=listener;return disposable();},status(){return ++statusCalls===1?first.promise:Promise.resolve(value);},async use(){useCalls++;value={state:'ready'};return{status:'ready'};},async setup(){setupCalls++;},async repair(){throw new Error('Must not repair automatically');},async offer(){}};
+ const h=await harness(t,{environmentController:controller});change();await flushReveals();assert.equal(h.trees[0].options.treeDataProvider.getChildren().at(-1).label,'Use study environment');assert.equal(setupCalls+useCalls,0);
+ first.resolve({state:'missing',label:'Create study environment',command:'tensortonic.setupStudyEnvironment'});await flushReveals();assert.equal(h.trees[0].options.treeDataProvider.getChildren().at(-1).label,'Use study environment');
+ const result=await h.commands.get('tensortonic.useStudyEnvironment')();assert.equal(result.status,'ready');assert.equal(useCalls,1);assert.equal(setupCalls,0);assert.ok(!h.trees[0].options.treeDataProvider.getChildren().some(item=>item.contextValue==='tensortonicStudyEnvironment'));assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+
+test('a stale Description metadata failure cannot interrupt a newer panel selection',async t=>{
+ const h=await harness(t),a=await h.api.openProblem(DEFAULT_REF),b=await h.api.openProblem(SECOND_REF),original=h.vscode.workspace.openTextDocument,gate=deferred(),started=deferred();
+ h.vscode.workspace.openTextDocument=async uri=>{const document=await original(uri);if(uri.toString()===a.uri.toString()){started.resolve();await gate.promise;}return document;};
+ const pending=h.commands.get('tensortonic.description')(a.uri);await started.promise;await h.api.openProblem(SECOND_REF);gate.reject(new Error('Stale Description metadata failed'));await pending;assert.match(h.webviews[0].title,/Dropout/);assert.deepEqual(h.errors,[]);
+});
+
+test('session identity changes clear cached verdicts without changing local solution edits',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),document=await h.vscode.workspace.openTextDocument(opened.uri);document.setText(document.getText()+'# private unsaved work\n');const text=document.getText();
+ h.api.client.run=async()=>({status:'passed',message:'ACCOUNT_A_VERDICT'});await h.commands.get('tensortonic.run')(opened.uri);assert.match(panelHtml(h.webviews.at(-1)),/ACCOUNT_A_VERDICT/);
+ const old=h.webviews.at(-1);await h.commands.get('tensortonic.disconnect')();assert.equal(old.disposed,true);h.api.bridge.connected=true;h.api.bridge.token='synthetic-account-b';h.api.bridge.onDidChange?.();
+ await h.commands.get('tensortonic.resultsView')(opened.uri);assert.doesNotMatch(panelHtml(h.webviews.at(-1)),/ACCOUNT_A_VERDICT/);assert.match(panelHtml(h.webviews.at(-1)),/No result recorded/);assert.equal(document.getText(),text);assert.equal(document.isDirty,true);
+});
+
+test('delayed old-session success or failure cannot populate a new session result or refresh its catalogue',async t=>{
+ for(const reject of [false,true])await t.test(String(reject),async t=>{
+  const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),gate=deferred(),started=deferred();h.api.client.submit=async()=>{started.resolve();return gate.promise;};
+  const pending=h.commands.get('tensortonic.submit')(opened.uri);await started.promise;h.api.bridge.token='synthetic-account-c';h.api.bridge.onDidChange?.();await h.commands.get('tensortonic.resultsView')(opened.uri);const listCount=h.calls.list.length;
+  if(reject)gate.reject(new Error('LATE_OLD_SESSION_ERROR'));else gate.resolve({status:'passed',message:'LATE_OLD_SESSION_VERDICT'});assert.equal(await pending,undefined);
+  assert.doesNotMatch(panelHtml(h.webviews.at(-1)),/LATE_OLD_SESSION/);assert.ok(!h.webviews.at(-1).messages.some(message=>JSON.stringify(message).includes('LATE_OLD_SESSION')));assert.equal(h.calls.list.length,listCount);assert.deepEqual(h.errors,[]);assert.equal(h.contexts.get('tensortonic.executing'),false);
+ });
+});
+
+test('default presentation opens original Web while explicit Markdown remains available',async t=>{
+ const h=await harness(t);h.configuration.delete('problemView');const opened=await h.api.openProblem(DEFAULT_REF);assert.ok(opened.uri);assert.equal(h.api.bridge.pageCalls.length,1);assert.equal(h.webviews.length,0);
+ await h.commands.get('tensortonic.description')(opened.uri);assert.equal(h.webviews.at(-1).type,'tensorTonic.problemWorkspace');assert.equal(h.configuration.has('problemView'),false);
+});
+
+test('first explicit study open places original Web left and native code right only once',async t=>{
+ const h=await harness(t,{editorLayout:{orientation:0,groups:[{}]}});h.configuration.delete('problemView');const a=await h.api.openProblem(DEFAULT_REF);assert.equal(h.vscode.window.activeTextEditor.viewColumn,2);assert.equal(h.api.bridge.pageOptions.viewColumn,1);assert.equal(h.webviews.length,0);
+ const sets=h.commandExecutions.filter(call=>call.id==='vscode.setEditorLayout');assert.equal(sets.length,1);assert.deepEqual(sets[0].args[0],{orientation:0,groups:[{},{}]});
+ h.vscode.window.activeTextEditor.viewColumn=1;await h.api.openProblem(SECOND_REF);assert.equal(h.vscode.window.activeTextEditor.viewColumn,1);assert.equal(h.commandExecutions.filter(call=>call.id==='vscode.setEditorLayout').length,1);assert.ok(a.uri);assert.ok(!h.commandExecutions.some(call=>call.id==='workbench.action.chat.open'));
+});
+
+test('owned website navigation mismatch blocks grading without adopting its target or polling',async t=>{
+ const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF);await h.api.refresh();const notify=h.api.bridge.pageOptions.onDidChangePage;
+ notify({closed:false,ref:SECOND_REF});assert.equal(h.contexts.get('tensortonic.displayMismatch'),true);const gets=h.calls.get.length;await h.commands.get('tensortonic.run')(opened.uri);assert.equal(h.calls.get.length,gets);assert.equal(h.calls.run.length+h.calls.submit.length,0);assert.match(h.errors.at(-1),/website is showing another problem/);assert.equal(h.vscode.window.activeTextEditor.document.uri.toString(),opened.uri.toString());
+ notify({closed:true});assert.equal(h.contexts.get('tensortonic.displayMismatch'),false);await h.commands.get('tensortonic.run')(opened.uri);assert.equal(h.calls.run.length,1);assert.equal(h.api.bridge.pageCalls.length,1);
+});
+
+test('website navigation and its late callback cannot clear a newer session or strand grading state',async t=>{
+ const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF),old=h.api.bridge.pageOptions.onDidChangePage;
+ h.api.bridge.token='different-account';h.api.bridge.onDidChange?.();old({closed:false,ref:SECOND_REF});assert.equal(h.contexts.get('tensortonic.displayMismatch'),false);
+ const gate=deferred(),started=deferred();h.api.bridge.openProblemPage=async()=>{started.resolve();await gate.promise;};const pending=h.commands.get('tensortonic.interactiveExplanation')(opened.uri);await started.promise;assert.equal(h.contexts.get('tensortonic.displayNavigating'),true);
+ await h.vscode.window.showTextDocument(await h.vscode.workspace.openTextDocument(opened.uri));h.configuration.set('problemView','markdown');await h.api.openProblem(SECOND_REF);gate.resolve();await pending;assert.equal(h.contexts.get('tensortonic.displayNavigating'),false);
+});
+
+test('an unknown owned browser target blocks grading until that tab is closed',async t=>{
+ const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF),notify=h.api.bridge.pageOptions.onDidChangePage;notify({closed:false});await h.commands.get('tensortonic.submit')(opened.uri);assert.equal(h.calls.submit.length,0);assert.match(h.errors.at(-1),/no verified problem target/);notify({closed:true});assert.equal(h.contexts.get('tensortonic.displayMismatch'),false);
+});
+
+test('saved sidebar memberships restore offline and removal preserves open solution and history',async t=>{
+ const membershipState={version:1,revision:0,planIds:['pytorch-basics','numpy-basics'],resumeByPlan:{'pytorch-basics':DEFAULT_REF.slug},openedRef:DEFAULT_REF};
+ const h=await harness(t,{membershipState});await h.api.refresh();assert.deepEqual(h.calls.list.slice(-2),['pytorch-basics','numpy-basics']);
+ const opened=await h.api.openProblem(DEFAULT_REF),doc=await h.vscode.workspace.openTextDocument(opened.uri);doc.setText(doc.getText()+'\n# dirty');
+ const before=doc.getText();await h.commands.get('tensortonic.removeStudyPlan')('pytorch-basics');assert.equal(doc.getText(),before);assert.equal(doc.isDirty,true);
+ const saved=h.savedState.get('tensortonic.studyPlanMembership.v1');assert.deepEqual(saved.planIds,['numpy-basics']);assert.equal(saved.resumeByPlan['pytorch-basics'],DEFAULT_REF.slug);assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+test('explicit empty memberships stay empty without resurrecting the legacy plan',async t=>{
+ const h=await harness(t,{membershipState:{version:1,revision:0,planIds:[],resumeByPlan:{},openedRef:null}});await h.api.refresh();assert.equal(h.calls.list.length,0);assert.equal(h.trees[0].options.treeDataProvider.getChildren()[0].command.command,'tensortonic.manageStudyPlans');
+});
+test('focus mode without an owned verified display stays visible without a browser-pausing notification',async t=>{
+ const h=await harness(t);const before=h.calls.get.length;const state=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(state.status,'unavailable');assert.equal(h.calls.get.length,before);assert.equal(h.information.length,0);assert.match(h.output.at(-1),/no website styles or browser controls were changed/i);
+});
+test('focus mode applies only its pinned owned-page contract and restores before problem navigation',async t=>{
+ const h=await harness(t);h.configuration.set('problemView','web');const opened=await h.api.openProblem(DEFAULT_REF);
+ const contract=require('../src/focus-contract').FOCUS_CONTRACT, styles=new Map(),events=[];let failEmpty=false;
+ const page={id:'owned-display',owned:true,url:'https://www.tensortonic.com/problems/pytorch-mini-training?studyPlan=pytorch-basics',documentId:'document-1',frameId:'frame-1'};
+ h.api.bridge.display={setFocusContract(value){assert.equal(value,contract);},getFocusPage(){return {...page};},
+  inspectFocusContract(value){return {...page,contractId:value.id,counts:Object.fromEntries(value.targets.map(target=>[target.id,target.count]))};},
+  createFocusStyleSheet(){styles.set('own-sheet','');return {styleSheetId:'own-sheet'};},
+  setFocusStyleSheetText(id,text){assert.equal(id,'own-sheet');assert.ok(text===''||text===contract.cssText);if(text===''&&failEmpty){failEmpty=false;throw new Error('SYNTHETIC_EMPTY_FAILURE');}styles.set(id,text);events.push(text?'apply':'restore');return {};},
+  focusStyleSheetExists(){return {exists:true};}};
+ const enabled=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(enabled.status,'applied');assert.equal(styles.get('own-sheet'),contract.cssText);assert.equal(h.information.length,0);
+ h.api.bridge.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});await flushReveals();assert.equal(styles.get('own-sheet'),contract.cssText,'a title/state update does not undo focus');
+ failEmpty=true;const pending=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(pending.status,'restore-pending');assert.equal(pending.enabled,false);
+ const retried=await h.commands.get('tensortonic.toggleFocusMode')();assert.equal(retried.status,'off');assert.equal(events.filter(event=>event==='apply').length,1,'retry Original view never reapplies CSS');
+ assert.equal((await h.commands.get('tensortonic.toggleFocusMode')()).status,'applied');
+ const open=h.api.bridge.openProblemPage.bind(h.api.bridge);h.api.bridge.openProblemPage=async(...args)=>{assert.equal(styles.get('own-sheet'),'');events.push('navigate');return open(...args);};
+ await h.commands.get('tensortonic.interactiveExplanation')(opened.uri);assert.deepEqual(events,['apply','restore','apply','restore','navigate']);assert.equal(h.calls.run.length+h.calls.submit.length,0);
+});
+test('Discuss selected failure drafts only one public case and never runs or submits',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF);h.api.client.submit=async()=>({tests:[{name:'hidden',ok:false,isPublic:false,actual:'private'},{name:'public',ok:false,isPublic:true,actual:3,expected:4}]});
+ await h.commands.get('tensortonic.submit')(opened.uri);h.vscode.window.showQuickPick=async items=>{assert.equal(items.length,1);assert.equal(items[0].label,'public');return items[0];};
+ await h.commands.get('tensortonic.discussSelectedFailure')(opened.uri);const call=h.commandExecutions.filter(c=>c.id==='workbench.action.chat.open').at(-1);assert.ok(call);const value=JSON.stringify(call);assert.match(value,/public/);assert.doesNotMatch(value,/private/);assert.equal(h.calls.run.length,0);
+});
+
+test('result freshness follows unsaved source edits and exact reverts without grading',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),doc=await h.vscode.workspace.openTextDocument(opened.uri);await h.commands.get('tensortonic.resultsView')(opened.uri);await h.commands.get('tensortonic.submit')(opened.uri);
+ const panel=h.webviews.find(p=>p.type==='tensorTonic.problemWorkspace'),before=doc.getText(),sent=h.calls.submit.length;
+ const wait=()=>new Promise(resolve=>setTimeout(resolve,10));await wait();assert.match(JSON.stringify(panel.messages),/Unchanged since this submission/);
+ doc.setText(before+'\n# changed');h.fireText(doc);await wait();assert.match(JSON.stringify(panel.messages.at(-1)),/Changed since this submission/);
+ doc.setText(before);h.fireText(doc);await wait();assert.match(JSON.stringify(panel.messages.at(-1)),/Unchanged since this submission/);assert.equal(h.calls.submit.length,sent);
+});
+
+test('Resume cannot open an older plan after a newer problem selection while loading',async t=>{
+ const h=await harness(t,{membershipState:{version:1,revision:0,planIds:['pytorch-basics'],resumeByPlan:{'pytorch-basics':DEFAULT_REF.slug},openedRef:null}});const gate=deferred();h.api.client.listProblems=()=>gate.promise;
+ const pending=h.commands.get('tensortonic.resumeStudyPlan')('pytorch-basics');await h.api.openProblem(SECOND_REF);const gets=h.calls.get.length;gate.resolve([{...DEFAULT_REF,title:'Old'}]);await pending;assert.equal(h.calls.get.length,gets);
+});
+test('changing solution metadata cannot relabel an older problem failure for Agent discussion',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF);h.api.client.submit=async()=>({tests:[{name:'old failure',ok:false,isPublic:true,actual:1}]});await h.commands.get('tensortonic.submit')(opened.uri);
+ const document=await h.vscode.workspace.openTextDocument(opened.uri);document.setText(document.getText().replace(DEFAULT_REF.slug,SECOND_REF.slug));let picked=false;h.vscode.window.showQuickPick=async()=>{picked=true;throw Error('Old failure must not be offered');};await h.commands.get('tensortonic.discussSelectedFailure')(opened.uri);assert.equal(picked,false);assert.equal(h.commandExecutions.filter(c=>c.id==='workbench.action.chat.open').length,0);
+});
+
+test('closed result source becomes unknown and reopened current document is compared',async t=>{
+ const h=await harness(t),opened=await h.api.openProblem(DEFAULT_REF),doc=await h.vscode.workspace.openTextDocument(opened.uri);await h.commands.get('tensortonic.resultsView')(opened.uri);await h.commands.get('tensortonic.submit')(opened.uri);const panel=h.webviews.find(p=>p.type==='tensorTonic.problemWorkspace');const wait=()=>new Promise(r=>setTimeout(r,10));
+ h.fireClose(doc);await wait();assert.match(JSON.stringify(panel.messages.at(-1)),/could not be compared/);const reopened={...doc,getText:()=>doc.getText()+'\n# reopened changed'};h.fireOpen(reopened);await wait();assert.match(JSON.stringify(panel.messages.at(-1)),/Changed since this submission/);
+});
+
+test('an old cleanup recovery notification cannot clear a newer connected session',async t=>{
+ const native=nativeUiFixture(true),h=await harness(t,{nativeTransport:native}),opened=await h.api.openProblem(DEFAULT_REF);let cleared=0;native.revoke=async()=>{cleared++;};const gate=deferred();h.vscode.window.showErrorMessage=()=>gate.promise;
+ h.api.client.submit=async()=>{const error=new Error('Synthetic cleanup pending');error.code='STORAGE_CLEANUP_PENDING';throw error;};await h.commands.get('tensortonic.submit')(opened.uri);native.token='new-session';native.onDidChange();gate.resolve('Retry clear saved session');await new Promise(r=>setTimeout(r,5));assert.equal(cleared,0);
 });

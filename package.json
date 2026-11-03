@@ -1,8 +1,8 @@
 {
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
-  "description": "Personal experimental TensorTonic study extension using VS Code\u2019s proposed browser API without a debug session.",
-  "version": "0.10.0",
+  "description": "TensorTonic study with a consented encrypted session, direct HTTPS Python Run/Submit, and optional browser presentation.",
+  "version": "0.12.1",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {
@@ -30,17 +30,18 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
-      "description": "TensorTonic writes solution files and sends code to its execution service."
+      "description": "TensorTonic writes study files and uses an explicitly saved website session for HTTPS reads."
     },
     "virtualWorkspaces": {
       "supported": false,
-      "description": "The browser connection requires a local VS Code extension host."
+      "description": "Saved-session storage and the optional browser require a local VS Code desktop extension host."
     }
   },
   "scripts": {
     "test": "node --test test/*.test.js",
     "package": "python3 scripts/package.py",
-    "test:transport": "node --test test/native-browser-bridge.test.js test/request-policy.test.js"
+    "test:transport": "node --test test/native-browser-bridge.test.js test/request-policy.test.js",
+    "test:session": "node --test test/session-*.test.js"
   },
   "contributes": {
     "viewsContainers": {
@@ -63,15 +64,15 @@
     "commands": [
       {
         "command": "tensortonic.connect",
-        "title": "Connect browser",
+        "title": "Connect session",
         "category": "TensorTonic",
         "icon": "$(plug)"
       },
       {
         "command": "tensortonic.disconnect",
-        "title": "Disconnect browser",
+        "title": "Clear saved session",
         "category": "TensorTonic",
-        "icon": "$(debug-disconnect)"
+        "icon": "$(sign-out)"
       },
       {
         "command": "tensortonic.openProblem",
@@ -82,13 +83,15 @@
         "command": "tensortonic.previousProblem",
         "title": "Previous study-plan problem",
         "category": "TensorTonic",
-        "icon": "$(arrow-left)"
+        "icon": "$(arrow-left)",
+        "enablement": "tensortonic.hasPrevious"
       },
       {
         "command": "tensortonic.nextProblem",
         "title": "Next study-plan problem",
         "category": "TensorTonic",
-        "icon": "$(arrow-right)"
+        "icon": "$(arrow-right)",
+        "enablement": "tensortonic.hasNext"
       },
       {
         "command": "tensortonic.search",
@@ -104,15 +107,17 @@
       },
       {
         "command": "tensortonic.run",
-        "title": "Run test cases",
+        "title": "TensorTonic: Run public test cases",
         "category": "TensorTonic",
-        "icon": "$(play)"
+        "icon": "$(beaker)",
+        "enablement": "tensortonic.gradingAvailable && !tensortonic.executing && !tensortonic.displayMismatch && !tensortonic.displayNavigating"
       },
       {
         "command": "tensortonic.submit",
-        "title": "Submit solution",
+        "title": "TensorTonic: Submit current solution",
         "category": "TensorTonic",
-        "icon": "$(cloud-upload)"
+        "icon": "$(cloud-upload)",
+        "enablement": "tensortonic.gradingAvailable && !tensortonic.executing && !tensortonic.displayMismatch && !tensortonic.displayNavigating"
       },
       {
         "command": "tensortonic.description",
@@ -206,14 +211,86 @@
         "title": "Choose problem view (Markdown / Web)",
         "category": "TensorTonic",
         "icon": "$(browser)"
+      },
+      {
+        "command": "tensortonic.gradingStatus",
+        "title": "Grading availability",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.nextUnsolved",
+        "category": "TensorTonic",
+        "title": "Next unsolved problem",
+        "icon": "$(debug-step-over)",
+        "enablement": "tensortonic.hasNextUnsolved"
+      },
+      {
+        "command": "tensortonic.testsView",
+        "category": "TensorTonic",
+        "title": "Show tests",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "tensortonic.resultsView",
+        "category": "TensorTonic",
+        "title": "Show Run / Submit results",
+        "icon": "$(output)"
+      },
+      {
+        "command": "tensortonic.cancelExecution",
+        "category": "TensorTonic",
+        "title": "Cancel TensorTonic Run / Submit",
+        "icon": "$(debug-stop)",
+        "enablement": "tensortonic.executing"
+      },
+      {
+        "command": "tensortonic.useStudyEnvironment",
+        "title": "Use study Python environment",
+        "category": "TensorTonic",
+        "icon": "$(snake)"
+      },
+      {
+        "command": "tensortonic.manageStudyPlans",
+        "title": "Manage sidebar study plans",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.removeStudyPlan",
+        "title": "Remove plan from sidebar",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.resumeStudyPlan",
+        "title": "Resume study plan",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.discussSelectedFailure",
+        "title": "Discuss a selected failed case",
+        "category": "TensorTonic"
+      },
+      {
+        "command": "tensortonic.toggleFocusMode",
+        "title": "Focus mode / Original view",
+        "category": "TensorTonic"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "tensortonic.startStudying",
-          "when": "view == tensortonicProblems",
-          "group": "navigation@0"
+          "command": "tensortonic.previousProblem",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "navigation@1"
+        },
+        {
+          "command": "tensortonic.nextProblem",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "navigation@2"
+        },
+        {
+          "command": "tensortonic.nextUnsolved",
+          "when": "view == tensortonicProblems && tensortonic.connected",
+          "group": "navigation@3"
         },
         {
           "command": "tensortonic.connect",
@@ -221,29 +298,44 @@
           "group": "navigation@1"
         },
         {
-          "command": "tensortonic.search",
-          "when": "view == tensortonicProblems && tensortonic.connected",
-          "group": "navigation@2"
-        },
-        {
           "command": "tensortonic.chooseStudyPlan",
           "when": "view == tensortonicProblems",
-          "group": "navigation@3"
+          "group": "plans@1"
+        },
+        {
+          "command": "tensortonic.search",
+          "when": "view == tensortonicProblems",
+          "group": "plans@2"
         },
         {
           "command": "tensortonic.refresh",
           "when": "view == tensortonicProblems && tensortonic.connected",
-          "group": "navigation@4"
+          "group": "plans@3"
         },
         {
-          "command": "tensortonic.disconnect",
-          "when": "view == tensortonicProblems && tensortonic.connected",
-          "group": "connection@1"
+          "command": "tensortonic.startStudying",
+          "when": "view == tensortonicProblems",
+          "group": "workspace@1"
         },
         {
           "command": "tensortonic.chooseProblemView",
           "when": "view == tensortonicProblems",
-          "group": "settings@2"
+          "group": "workspace@2"
+        },
+        {
+          "command": "tensortonic.disconnect",
+          "when": "view == tensortonicProblems && (tensortonic.connected || tensortonic.cleanupPending)",
+          "group": "connection@1"
+        },
+        {
+          "command": "tensortonic.manageStudyPlans",
+          "when": "view == tensortonicProblems",
+          "group": "navigation@9"
+        },
+        {
+          "command": "tensortonic.toggleFocusMode",
+          "when": "view == tensortonicProblems",
+          "group": "presentation@9"
         }
       ],
       "view/item/context": [
@@ -261,6 +353,78 @@
           "command": "tensortonic.offlineExploration",
           "when": "view == tensortonicProblems && viewItem == tensortonicProblem",
           "group": "learning@1"
+        },
+        {
+          "command": "tensortonic.removeStudyPlan",
+          "when": "view == tensortonicProblems && viewItem == tensortonicStudyPlan",
+          "group": "management@1"
+        },
+        {
+          "command": "tensortonic.resumeStudyPlan",
+          "when": "view == tensortonicProblems && viewItem == tensortonicStudyPlan",
+          "group": "management@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "tensortonic.run",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources && !tensortonic.executing",
+          "group": "navigation@91"
+        },
+        {
+          "command": "tensortonic.submit",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources && !tensortonic.executing",
+          "group": "navigation@92"
+        },
+        {
+          "command": "tensortonic.cancelExecution",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources && tensortonic.executing && resource in tensortonic.executingResources",
+          "group": "navigation@91"
+        },
+        {
+          "command": "tensortonic.description",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@1"
+        },
+        {
+          "command": "tensortonic.testsView",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@2"
+        },
+        {
+          "command": "tensortonic.resultsView",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@3"
+        },
+        {
+          "command": "tensortonic.interactiveExplanation",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@4"
+        },
+        {
+          "command": "tensortonic.offlineExploration",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@5"
+        },
+        {
+          "command": "tensortonic.openTests",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@6"
+        },
+        {
+          "command": "tensortonic.openAgentContext",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@7"
+        },
+        {
+          "command": "tensortonic.discussWithCodex",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "tensortonic@8"
+        },
+        {
+          "command": "tensortonic.toggleFocusMode",
+          "when": "resourceScheme == file && resource in tensortonic.solutionResources",
+          "group": "presentation@9"
         }
       ]
     },
@@ -270,7 +434,7 @@
         "tensortonic.studyPlan": {
           "type": "string",
           "default": "pytorch-basics",
-          "description": "TensorTonic studyPlan slug. Leave empty to browse free problems.",
+          "description": "Choose a study plan from the sidebar plan label or TensorTonic status bar. Manual slug/URL entry remains available in the picker; leave empty for free problems.",
           "scope": "window"
         },
         "tensortonic.solutionDirectory": {
@@ -285,13 +449,23 @@
             "markdown",
             "web"
           ],
-          "default": "markdown",
+          "default": "web",
           "enumDescriptions": [
             "Show the local formatted Markdown statement and math.",
             "Open the canonical original TensorTonic page in VS Code Integrated Browser beside the solution. Website login is separate."
           ],
           "description": "Default presentation for explicit problem opens, sidebar selection, and Previous/Next. Choose problem view command changes this workspace only when one is open. Description always opens Markdown.",
           "scope": "window"
+        },
+        "tensortonic.difficultyDisplay": {
+          "type": "string",
+          "enum": [
+            "text",
+            "color",
+            "hidden"
+          ],
+          "default": "text",
+          "description": "Difficulty in extension-owned UI: subtle text, themed color indicator, or hidden. Original website is unchanged."
         }
       }
     },
@@ -321,5 +495,6 @@
   "homepage": "https://github.com/choru-k/tensortonic-vscode#readme",
   "enabledApiProposals": [
     "browser"
-  ]
+  ],
+  "icon": "media/tensortonic-icon.png"
 }

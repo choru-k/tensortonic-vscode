@@ -2,10 +2,21 @@
 
 const vscode = require('vscode');
 const crypto = require('node:crypto');
-const { TensorTonicClient } = require('./client');
-const { NativeBrowserBridge } = require('./native-browser-bridge');
+const { TensorTonicClient, runCases } = require('./client');
+const { createResultFreshness, resultFreshnessLabel } = require('./result-freshness-ui');
+const { StudyMembershipController } = require('./study-membership-ui');
+const { recoveryFor, selectedFailureContext } = require('./result-recovery');
+const { FocusModeController } = require('./focus-mode');
+const { FocusBrowserAdapter } = require('./focus-browser-adapter');
+const { FOCUS_CONTRACT } = require('./focus-contract');
+const { createSessionBridge } = require('./session/tensortonic');
+const { fault: sessionFault } = require('./session/fault');
 const { buildProblemMarkdown, buildDiscussionPrompt, formatAgentContext } = require('./context');
-const { renderResult } = require('./results');
+const { ProblemWorkspace } = require('./problem-workspace');
+const { StudyPlanPicker } = require('./study-plans');
+const { navigationTargets, findProblemIndex, problemKey, recognizedSolution } = require('./study-navigation');
+const { renderDescription } = require('./description-renderer');
+const { StudyLayout } = require('./study-layout');
 const { ProblemTreeProvider } = require('./tree');
 const { StudyWorkspace } = require('./study-workspace');
 const { StudyEnvironmentUI } = require('./study-environment-ui');
@@ -13,9 +24,10 @@ const { resolveCard } = require('./cards');
 const { buildCardHtml } = require('./cards/webview');
 
 const COMMANDS = [
-  'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit',
-  'description', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
-  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'repairStudyEnvironment', 'chooseProblemView',
+  'manageStudyPlans', 'removeStudyPlan', 'resumeStudyPlan', 'discussSelectedFailure', 'toggleFocusMode',
+  'connect', 'disconnect', 'openProblem', 'search', 'refresh', 'run', 'submit', 'gradingStatus',
+  'description', 'testsView', 'resultsView', 'cancelExecution', 'interactiveExplanation', 'openOriginalInVSCode', 'offlineExploration', 'openTests', 'openInBrowser', 'chooseStudyPlan', 'smokeTest',
+  'openAgentContext', 'discussWithAgent', 'discussWithCodex', 'previousProblem', 'nextProblem', 'nextUnsolved', 'showStudyPlan', 'startStudying', 'changeStudyFolder', 'setupStudyEnvironment', 'useStudyEnvironment', 'repairStudyEnvironment', 'chooseProblemView',
 ].map(name => `tensortonic.${name}`);
 const VIEW_ID = 'tensortonicProblems';
 const METADATA_PATTERN = /^(?:#|\/\/|--)\s*tensortonic:\s*(\{[^\r\n]*\})\s*$/m;
@@ -103,41 +115,15 @@ function contextUriFor(uri) {
 const CONTEXT_MARKER = '<!-- TensorTonic generated problem context -->';
 const contextHash = text => crypto.createHash('sha256').update(text).digest('hex');
 
-function buildHtml(title, body) {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-<title>${escapeHtml(title)}</title><style>
-body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);padding:20px 28px;max-width:960px;line-height:1.6}
-h1{font-size:24px;line-height:1.3}h2{font-size:17px;margin-top:28px}.meta{color:var(--vscode-descriptionForeground)}
-a{color:var(--vscode-textLink-foreground)}pre{white-space:pre-wrap;overflow-wrap:anywhere;padding:14px;border:1px solid var(--vscode-panel-border);border-radius:6px;font-family:var(--vscode-editor-font-family);font-size:var(--vscode-editor-font-size)}
-.statement{white-space:pre-wrap;overflow-wrap:anywhere}.notice{border-left:3px solid var(--vscode-focusBorder);padding:8px 14px;background:var(--vscode-textBlockQuote-background)}
-.result-summary{border:1px solid var(--vscode-panel-border);border-left:4px solid var(--vscode-descriptionForeground);padding:20px 24px;border-radius:8px;margin:22px 0}
-.result-summary h2{font-size:28px;line-height:1.2;margin:0 0 20px}.result-passed{--result-color:var(--vscode-testing-iconPassed,#73c991)}.result-failed,.result-error{--result-color:var(--vscode-testing-iconFailed,#f48771)}.result-pending,.result-unknown{--result-color:var(--vscode-descriptionForeground,#aaa)}
-.result-summary{border-left-color:var(--result-color)}.result-summary h2,.result-badge{color:var(--result-color)}
-.result-metrics{display:flex;flex-wrap:wrap;gap:18px 40px;margin:0}.result-metrics dt{color:var(--vscode-descriptionForeground);font-size:12px}.result-metrics dd{font-size:22px;font-weight:600;margin:4px 0 0;font-variant-numeric:tabular-nums}
-.result-cases>h3{font-size:16px;margin:28px 0 12px}.result-case,.result-debug{border:1px solid var(--vscode-panel-border);border-radius:6px;margin:10px 0;overflow:hidden}
-.result-case summary,.result-debug summary{padding:12px 14px;cursor:pointer;line-height:1.5}.result-case summary:focus-visible,.result-debug summary:focus-visible{outline:2px solid var(--vscode-focusBorder);outline-offset:-2px}
-.case-title{font-weight:600;margin-right:12px;overflow-wrap:anywhere}.result-badge{font-weight:600;margin-right:12px}.result-case[open]>summary,.result-debug[open]>summary{border-bottom:1px solid var(--vscode-panel-border)}
-.result-value{margin:16px 14px}.result-value h4{font-size:12px;color:var(--vscode-descriptionForeground);margin:0 0 6px}.result-value pre{margin:0;max-height:360px;overflow:auto;tab-size:2}.result-case>.notice,.result-case>.meta{margin:14px}
-.result-debug{margin-top:24px;color:var(--vscode-descriptionForeground)}.result-debug>pre{margin:0;border:0;max-height:420px;overflow:auto;color:var(--vscode-foreground)}
-@media(max-width:480px){body{padding:16px}h1{font-size:20px}.result-summary{padding:16px}.result-summary h2{font-size:24px}.result-metrics{gap:16px 24px}.result-metrics dd{font-size:20px}}
-</style></head><body>${body}</body></html>`;
-}
 
 class SolutionCodeLensProvider {
+  constructor(gradingAvailable=false) { this.gradingAvailable=gradingAvailable; }
   provideCodeLenses(document) {
-    let ref;
-    try {
-      ref = readRef(document.getText());
-    } catch (_) {
-      return [];
-    }
+    if (!recognizedSolution(document, { readRef })) return [];
     const range = new vscode.Range(0, 0, 0, 0);
-    const actions = ['run', 'submit', 'description', 'interactiveExplanation', 'openTests', 'discussWithAgent'];
-    if (ref.planId) actions.push('previousProblem', 'nextProblem');
+    const actions = ['description', 'testsView', 'discussWithAgent'];
     return actions.map(name => new vscode.CodeLens(range, {
-      title: { run: 'Run', submit: 'Submit', description: 'Description', interactiveExplanation: 'Interactive explanation', openTests: 'Test cases', discussWithAgent: 'Discuss with Agent', previousProblem: 'Previous problem', nextProblem: 'Next problem' }[name],
+      title: { description: 'Problem', testsView: 'Tests', discussWithAgent: 'Discuss with Agent' }[name],
       command: `tensortonic.${name}`,
       arguments: [document.uri],
     }));
@@ -169,18 +155,127 @@ async function createTextFile(uri, content) {
   return true;
 }
 
+let stopActiveSession=()=>Promise.resolve();
 function activate(context) {
-  const bridge = new NativeBrowserBridge(vscode);
+  const bridge = createSessionBridge(vscode, context);
+  let studyEnvironment;
   const client = new TensorTonicClient((path, options) => bridge.request(path, options));
-  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, cardGeneration: 0, cardPanel: undefined, lastSolutionUri: undefined, statementPanel: undefined, resultsPanel: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
+  const state = { bridge, problems: [], loading: false, refreshGeneration: 0, openGeneration: 0, planPickGeneration: 0, cardGeneration: 0, sessionEpoch: 0, cardPanel: undefined, lastSolutionUri: undefined, currentProblem: undefined, activeRef: undefined, selectedPlanId: undefined };
+  state.difficultyDisplay = vscode.workspace.getConfiguration('tensortonic').get('difficultyDisplay', 'text');
   const tree = new ProblemTreeProvider(vscode, state);
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 10);
   status.command = 'tensortonic.connect';
   status.show();
   const output = vscode.window.createOutputChannel('TensorTonic');
   const treeView = vscode.window.createTreeView(VIEW_ID, { treeDataProvider: tree, showCollapseAll: true });
-  context.subscriptions.push(tree, status, output, treeView);
+  const planPicker = new StudyPlanPicker(vscode);
+  const membership = new StudyMembershipController(vscode, context, { legacyPlanId: getPlanId, onError: showError });
+  const freshness = createResultFreshness({ normalizeRunCases: runCases });
+  const resultSnapshots = new Map();
+  function focusDisplay() {
+    const display = bridge.display;
+    if (!display || typeof display.setFocusContract !== 'function') throw new Error('The owned problem display is unavailable.');
+    display.setFocusContract(FOCUS_CONTRACT);
+    return display;
+  }
+  const focusPort = {
+    getPage: () => focusDisplay().getFocusPage(),
+    inspect: contract => focusDisplay().inspectFocusContract(contract),
+    createStyleSheet: (options, request) => focusDisplay().createFocusStyleSheet(options, request),
+    setStyleSheetText: (id, text, options) => focusDisplay().setFocusStyleSheetText(id, text, options),
+    styleSheetExists: (id, options) => focusDisplay().focusStyleSheetExists(id, options),
+  };
+  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT });
+  let focusedPage;
+  let focusObservation = 0;
+  async function observeFocusPage(closed = false) {
+    if (!focusMode.enabled && focusMode.state.status !== 'restore-pending') return;
+    const observation = ++focusObservation;
+    let page;
+    try { if (!closed) page = await focusPort.getPage(); } catch (_) { /* Unknown structures stay visible. */ }
+    if (observation !== focusObservation || !focusedPage) return;
+    if (!page || ['id', 'url', 'documentId', 'frameId'].some(key => page[key] !== focusedPage[key])) {
+      focusedPage = undefined;
+      await focusMode.pageChanged();
+    }
+  }
+  context.subscriptions.push(focusMode);
+  const studyLayout = new StudyLayout(vscode);
+  const problemWorkspace = new ProblemWorkspace(vscode, { getViewColumn: () => studyLayout.problemColumn, onDidChangeColumn: column => studyLayout.rememberProblemColumn(column), onAction: async payload => {
+    if (payload.action === 'cancelExecution') return cancelExecution(payload.operation?.id);
+    const epoch = state.sessionEpoch;
+    // The panel supplies a captured URI. Never resolve actions through whichever
+    // editor happens to be active after a panel click or Agent interaction.
+    if (!payload.solutionUri) {
+      if (payload.action === 'openOriginal') return interactiveExplanation(payload.ref);
+      throw new Error('Open this problem as a solution before editing tests or discussing its code.');
+    }
+    const selected = await managedDocument(payload.solutionUri);
+    synchronizeSession();
+    if (epoch !== state.sessionEpoch) return;
+    if (findProblemIndex([payload.ref], selected.ref) !== 0) throw new Error('The solution no longer matches this problem panel. Reopen the problem.');
+    if (payload.action === 'editTests') return openTests(selected.document.uri);
+    if (payload.action === 'discuss') return discussWithAgent(selected.document.uri);
+    if (payload.action === 'discussFailure') return discussSelectedFailure(selected.document.uri, payload.resultAction);
+    if (payload.action === 'openOriginal') return interactiveExplanation(selected.document.uri);
+  } });
+  context.subscriptions.push(tree, status, output, treeView, planPicker, problemWorkspace, studyLayout, membership);
   let disposed = false;
+  let observedConnection = bridge.connected;
+  let observedToken = bridge.token;
+  function clearSessionPresentation() {
+    state.sessionEpoch++;
+    studyEnvironment?.invalidateSession?.();
+    state.currentProblem = undefined;
+    state.webRef = undefined;
+    state.webPageOpen = false;
+    state.webNavigating = false;
+    resultSnapshots.clear();
+    focusedPage = undefined;
+    focusObservation++;
+    void focusMode.pageChanged();
+    problemWorkspace.resetSession();
+    invalidateProblems();
+  }
+  function synchronizeSession() {
+    if (observedConnection === bridge.connected && observedToken === bridge.token) return;
+    observedConnection = bridge.connected;
+    observedToken = bridge.token;
+    clearSessionPresentation();
+  }
+  let executionInProgress = false;
+  let activeExecution;
+  const knownDocuments = new Map();
+  const closedDocuments = new Set();
+  function displayMismatch(ref) {
+    if (!ref) return false;
+    if (state.webPageOpen && !state.webRef) return true;
+    if (!state.webRef) return false;
+    const webIndex = findProblemIndex(state.problems, state.webRef);
+    const codeIndex = findProblemIndex(state.problems, ref);
+    if (webIndex >= 0 && codeIndex >= 0) return webIndex !== codeIndex;
+    return (state.webRef.planId || '') !== (ref.planId || '') || state.webRef.slug !== ref.slug;
+  }
+  function updateActions() {
+    const targets = navigationTargets(state.problems, state.activeRef, { selectedPlanId: membership.initialized ? state.activeRef?.planId || '' : state.selectedPlanId || '' });
+    for (const [name, value] of Object.entries({
+      hasPrevious: !!targets.previous && !state.loading && bridge.connected,
+      hasNext: !!targets.next && !state.loading && bridge.connected,
+      hasNextUnsolved: !!targets.nextUnsolved && !state.loading && bridge.connected,
+      executing: executionInProgress,
+      displayMismatch: displayMismatch(state.activeRef),
+      displayNavigating: !!state.webNavigating,
+      executingResources: activeExecution?.uri ? [activeExecution.uri.toString()] : [],
+      solutionResources: [...new Map([...(vscode.workspace.textDocuments || []), ...knownDocuments.values()]
+        .filter(document => recognizedSolution(document, { readRef }))
+        .map(document => [document.uri.toString(), document])).keys()],
+    })) void vscode.commands.executeCommand('setContext', `tensortonic.${name}`, value);
+  }
+  function presentationCurrent(captured) {
+    const current = problemWorkspace.capturePresentation();
+    return !disposed && captured.closeEpoch === current.closeEpoch && captured.selectedKey === current.selectedKey && captured.interactionEpoch === current.interactionEpoch && captured.sessionEpoch === current.sessionEpoch;
+  }
+  const panelProblem = problem => ({ ...problem, ...normalizeRef(problem.ref || problem) });
   let revealPending = false;
   let revealRunning = false;
   // Do not open this view or move keyboard focus away from code/Agent. Serialize
@@ -195,7 +290,15 @@ function activate(context) {
         if (!treeView.visible || !bridge.connected || state.loading) continue;
         const item = tree.findProblem(state.activeRef);
         if (!item) continue;
-        try { await treeView.reveal(item, { select: true, focus: false, expand: true }); }
+        try {
+          const ancestors = []; let parent = tree.getParent(item);
+          while (parent) { ancestors.unshift(parent); parent = tree.getParent(parent); }
+          for (const ancestor of ancestors) {
+            if (tree.findProblem(state.activeRef) !== item || disposed) break;
+            await treeView.reveal(ancestor, { select: false, focus: false, expand: true });
+          }
+          if (tree.findProblem(state.activeRef) === item && !disposed) await treeView.reveal(item, { select: true, focus: false, expand: true });
+        }
         catch (_) { /* A hidden/disposed view must not interrupt editing. */ }
       }
     }).finally(() => {
@@ -219,11 +322,15 @@ function activate(context) {
   }
 
   function updateConnection() {
-    status.text = bridge.connected ? '$(check) TensorTonic' : '$(plug) TensorTonic';
-    status.tooltip = bridge.connected ? 'TensorTonic built-in browser connected; website login may still be required' : 'Connect the built-in TensorTonic browser';
-    status.command = bridge.connected ? 'tensortonic.search' : 'tensortonic.connect';
+    synchronizeSession();
+    status.text = bridge.cleanupPending ? '$(warning) TensorTonic cleanup pending' : bridge.connected ? '$(check) TensorTonic' : '$(plug) TensorTonic';
+    status.tooltip = bridge.cleanupPending ? 'Retry Clear saved session to confirm credential and owned-page cleanup' : bridge.connected ? 'Choose a TensorTonic study plan. Saved sessions may expire or be revoked; uncertain Run/Submit actions are never replayed.' : 'Connect a securely stored TensorTonic session';
+    status.command = bridge.cleanupPending ? 'tensortonic.disconnect' : bridge.connected ? 'tensortonic.chooseStudyPlan' : 'tensortonic.connect';
     tree.refresh();
+    updateActions();
     vscode.commands.executeCommand('setContext', 'tensortonic.connected', bridge.connected);
+    vscode.commands.executeCommand('setContext', 'tensortonic.cleanupPending', !!bridge.cleanupPending);
+    vscode.commands.executeCommand('setContext', 'tensortonic.gradingAvailable', bridge.supportsGrading===true);
   }
   updateConnection();
   bridge.onDidChange = () => {
@@ -234,45 +341,67 @@ function activate(context) {
   function showError(error) {
     const message = error && error.message ? error.message : String(error);
     output.appendLine(message);
-    vscode.window.showErrorMessage(`TensorTonic: ${message}`);
+    const recovery = recoveryFor(error, { grading: executionInProgress });
+    const ref = state.activeRef && { ...state.activeRef };
+    const recoveryEpoch = state.sessionEpoch, recoveryToken = bridge.token, recoveryKey = problemKey(state.activeRef);
+    Promise.resolve(vscode.window.showErrorMessage(`TensorTonic: ${message}`, ...recovery.actions.map(action => action.label))).then(choice => {
+      const action = recovery.actions.find(item => item.label === choice);
+      if (!action || disposed) return;
+      if (action.id !== 'openOutput' && (state.sessionEpoch !== recoveryEpoch || bridge.token !== recoveryToken)) return;
+      if (action.id === 'checkWebsite' && problemKey(state.activeRef) !== recoveryKey) return;
+      if (action.id === 'openOutput') output.show?.(true);
+      else if (action.id === 'connect') return vscode.commands.executeCommand('tensortonic.connect');
+      else if (action.id === 'clearSession') return vscode.commands.executeCommand('tensortonic.disconnect');
+      else if (action.id === 'checkWebsite' && ref) return interactiveExplanation(ref);
+    }).catch(() => {});
   }
 
   function requireConnection() {
-    if (!bridge.connected) throw new Error('Use “TensorTonic: Connect browser” first, then sign in normally on the TensorTonic page.');
+    synchronizeSession();
+    if (!bridge.connected) throw new Error('Use “TensorTonic: Connect session” first. A missing or expired session requires explicit sign-in.');
   }
 
   function invalidateProblems() {
     state.refreshGeneration += 1;
     state.openGeneration += 1;
     state.problems = [];
+    state.planGroups = undefined;
     state.loading = false;
+    state.selectedPlanId = getPlanId();
     treeView.description = undefined;
     treeView.message = undefined;
     tree.refresh();
+    updateActions();
   }
 
   async function refresh() {
     requireConnection();
     const planId = getPlanId();
+    const memberIds = membership.planIds;
+    const memberKey = JSON.stringify(memberIds);
     const generation = ++state.refreshGeneration;
     const connection = bridge.token;
     const isCurrent = () => generation === state.refreshGeneration && bridge.connected &&
-      bridge.token === connection && getPlanId() === planId;
+      bridge.token === connection && getPlanId() === planId && JSON.stringify(membership.planIds) === memberKey;
     state.selectedPlanId = planId;
     state.problems = [];
     state.loading = true;
     treeView.message = undefined;
     tree.refresh();
+    updateActions();
     try {
-      const problems = await client.listProblems(planId);
+      let groups;
+      if (memberIds) groups = await Promise.all(memberIds.map(async id => { try { return { planId: id, problems: await client.listProblems(id) }; } catch (_) { return { planId: id, problems: [], error: true }; } }));
+      const problems = groups ? groups.flatMap(group => group.problems) : await client.listProblems(planId);
       // A previous plan/session may finish after a newer refresh. Never publish
       // stale rows, labels or loading state into the current selection.
       if (!isCurrent()) return state.problems;
       if (!Array.isArray(problems)) throw new Error('TensorTonic returned an unexpected problem list.');
+      state.planGroups = groups;
       state.problems = problems.filter(problem => {
         try { normalizeRef(problem); return true; } catch (_) { return false; }
       });
-      treeView.description = planId || 'Free problems';
+      treeView.description = groups ? `${groups.length} study plans · remote progress` : planId || 'Free problems';
       treeView.message = state.problems.length ? undefined : 'No problems found. Try another study plan or refresh.';
       return state.problems;
     } catch (error) {
@@ -283,6 +412,7 @@ function activate(context) {
       if (generation === state.refreshGeneration) {
         state.loading = false;
         tree.refresh();
+        updateActions();
         revealCurrentProblem();
       }
     }
@@ -298,7 +428,7 @@ function activate(context) {
   function getProblemView() {
     // A workspace value can choose only a local renderer or canonical site route.
     // It is never used as a URL, command identifier, script, or file path.
-    return vscode.workspace.getConfiguration('tensortonic').get('problemView', 'markdown') === 'web' ? 'web' : 'markdown';
+    return vscode.workspace.getConfiguration('tensortonic').get('problemView', 'web') === 'web' ? 'web' : 'markdown';
   }
 
   async function chooseProblemView() {
@@ -316,17 +446,16 @@ function activate(context) {
   }
 
   async function chooseStudyPlan() {
-    const chosen = await vscode.window.showInputBox({
-      title: 'TensorTonic study plan',
-      prompt: 'Enter the studyPlan value from a TensorTonic problem URL. Leave empty for free problems.',
-      value: getPlanId() || '',
-      placeHolder: 'pytorch-basics',
-      validateInput: value => value === '' || SLUG_PATTERN.test(value) ? undefined : 'Use a study-plan slug, such as pytorch-basics.',
-    });
-    if (chosen === undefined) return;
+    if (membership.initialized) return manageStudyPlans();
+    const generation = ++state.planPickGeneration;
+    const originalPlan = getPlanId();
+    const chosen = await planPicker.pick(originalPlan);
+    if (!chosen || disposed || generation !== state.planPickGeneration || getPlanId() !== originalPlan) return;
+    if (chosen.id === originalPlan) return;
     const target = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length
       ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global;
-    await vscode.workspace.getConfiguration('tensortonic').update('studyPlan', chosen, target);
+    await vscode.workspace.getConfiguration('tensortonic').update('studyPlan', chosen.id || '', target);
+    if (disposed || generation !== state.planPickGeneration) return;
     invalidateProblems();
     if (bridge.connected) await refresh();
   }
@@ -336,32 +465,28 @@ function activate(context) {
     if (connectPromptInProgress) return undefined;
     connectPromptInProgress = true;
     try {
-      if (vscode.workspace.isTrusted !== true || vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) throw new Error('Connect requires a trusted local VS Code desktop with Integrated Browser. Update VS Code if unavailable.');
-      if (!bridge.connected) {
-        const choice = await vscode.window.showInformationMessage('Connect TensorTonic in VS Code’s built-in browser?', {
-          modal: true,
-          detail: 'Open a dedicated TensorTonic browser page using the experimental browser API you enabled for this extension. The extension can control only its owned page through a browser protocol session, without starting a VS Code debug session. Sign in normally there. Explicit problem requests and Run/Submit use the website session without copying cookies, passwords, or tokens. Disconnect closes only this owned connection.',
-        }, 'Connect built-in browser');
-        if (choice !== 'Connect built-in browser') return;
-      }
-      await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Connecting the TensorTonic built-in browser', cancellable: true }, async (_progress, token) => {
-        const cancel = token.onCancellationRequested(() => { void bridge.stop().catch(() => {}); });
-        try { if (token.isCancellationRequested) return; await bridge.start(); }
-        finally { cancel.dispose(); }
-      });
+      if (vscode.workspace.isTrusted !== true || vscode.env.remoteName || vscode.env.uiKind !== vscode.UIKind.Desktop) throw new Error('Connect requires a trusted local VS Code desktop.');
+      // The acquirer owns exact-scope consent and nonblocking Capture/Cancel
+      // actions. An action notification here could pause the login browser.
+      await bridge.start({ confirmed: true });
       if (!bridge.connected) return;
       try { await refresh(); } catch (error) { if (error.code !== 'AUTH_REQUIRED') throw error; }
       // Notifications can pause the integrated browser during normal login.
-      output.appendLine('TensorTonic browser connected. Sign in normally on the dedicated page if needed, then use Refresh problems or Connect again.');
-      return { nativeConnected: true };
-    } finally { connectPromptInProgress = false; }
+      output.appendLine('TensorTonic session connected. Requests use encrypted local session storage independently of optional browser presentation.');
+      return { sessionConnected: true, readOnly: bridge.supportsGrading!==true };
+    } finally { connectPromptInProgress = false; updateConnection(); }
   }
 
   async function disconnect() {
-    invalidateProblems();
-    if (typeof bridge.revoke === 'function') await bridge.revoke();
-    else await bridge.stop();
-    updateConnection();
+    clearSessionPresentation();
+    try {
+      if (typeof bridge.revoke === 'function') await bridge.revoke();
+      else await bridge.stop();
+      output.appendLine('Saved session deleted from local secure storage. Existing website login was not revoked.');
+    } catch (error) {
+      if (error.cleanup) output.appendLine('Session cleanup: ' + JSON.stringify(error.cleanup));
+      throw error;
+    } finally { updateConnection(); }
   }
 
   async function search() {
@@ -405,48 +530,28 @@ function activate(context) {
     return root;
   }
 
-  async function showDescription(problem, solutionUri, isCurrent = () => true) {
-    if (solutionUri) {
-      const uri = await writeProblemContext(problem, solutionUri);
-      if (!isCurrent()) return;
-      // A fresh Code window may not have activated Markdown yet. Checking only
-      // getCommands() races activation and incorrectly selects the plain-text
-      // fallback on first use. Use the built-in, local Markdown/math renderer;
-      // never inject downloaded HTML or load a renderer from a remote CDN.
-      try {
-        const markdown = vscode.extensions.getExtension('vscode.markdown-language-features');
-        if (markdown) await markdown.activate();
-        if (!isCurrent()) return;
-        const commands = await vscode.commands.getCommands(true);
-        if (!isCurrent()) return;
-        if (commands.includes('markdown.showPreviewToSide')) {
-          await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
-          if (!isCurrent()) return;
-          // Do not leave an earlier degraded preview beside the formatted one.
-          const previousPanel = state.statementPanel;
-          state.statementPanel = undefined;
-          if (previousPanel) previousPanel.dispose();
-          return;
-        }
-      } catch (_) {
-        // Disabled/unavailable Markdown must not prevent opening the solution.
-        // Avoid printing renderer exceptions that can contain downloaded text.
-        output.appendLine('Markdown preview is unavailable; showing an inert plain-text problem description.');
-      }
+  async function panelTests(problem, solutionUri) {
+    const publicCases = (Array.isArray(problem.testCases) ? problem.testCases : []).filter(item => item && item.isPublic !== false);
+    if (!solutionUri || !await fileExists(testsUriFor(solutionUri))) return { tests: { publicCases, userCases: [] } };
+    const document = await vscode.workspace.openTextDocument(testsUriFor(solutionUri));
+    try {
+      const userCases = JSON.parse(document.getText());
+      if (!Array.isArray(userCases)) throw new Error();
+      return { tests: { publicCases, userCases: userCases.filter(item => !item || item.isPublic !== false) } };
+    } catch (_) {
+      return { tests: { publicCases, userCases: [] }, testsError: 'The editable test file is not a JSON array. Use Edit test JSON to correct it; unsaved edits are preserved.' };
     }
+  }
+
+  async function showDescription(problem, solutionUri, isCurrent = () => true, tab = 'description') {
     if (!isCurrent()) return;
-    const ref = normalizeRef(problem.ref || problem);
-    if (!state.statementPanel) {
-      const panel = vscode.window.createWebviewPanel('tensortonic.description', 'TensorTonic problem', { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true }, { enableScripts: false, localResourceRoots: [] });
-      state.statementPanel = panel;
-      panel.onDidDispose(() => { if (state.statementPanel === panel) state.statementPanel = undefined; }, null, context.subscriptions);
-    }
-    const title = problem.title || ref.slug;
-    state.statementPanel.title = title;
-    const exampleText = Array.isArray(problem.examples) && problem.examples.length ? `<h2>Examples</h2><pre>${escapeHtml(JSON.stringify(problem.examples, null, 2))}</pre>` : '';
-    const notice = '<p class="notice">Plain-text fallback: VS Code\'s Markdown preview is unavailable. Enable the built-in Markdown Language Features extension and reopen Description for formatted Markdown and math.</p>';
-    state.statementPanel.webview.html = buildHtml(title, `<h1>${escapeHtml(title)}</h1><p class="meta">${escapeHtml(ref.planId || 'Free problem')}</p><p><a href="${escapeHtml(problemUrl(ref))}">Open original problem</a></p>${notice}<div class="statement">${escapeHtml(htmlToText(problem.description) || 'This problem has no readable statement. Open the original problem for its full formatting.')}</div>${exampleText}`);
-    state.statementPanel.reveal(vscode.ViewColumn.Beside, true);
+    if (solutionUri) await writeProblemContext(problem, solutionUri);
+    if (!isCurrent()) return;
+    const rendered = await renderDescription(vscode, problem, { solutionUri, isCurrent });
+    if (!isCurrent()) return;
+    const tests = await panelTests(problem, solutionUri);
+    if (!isCurrent()) return;
+    return problemWorkspace.show(panelProblem(problem), { solutionUri, descriptionHtml: rendered.html, ...tests, tab, isCurrent });
   }
 
   async function openProblem(input) {
@@ -454,8 +559,9 @@ function activate(context) {
     requireConnection();
     const ref = normalizeRef(input);
     const generation = ++state.openGeneration;
+    const presentation = problemWorkspace.capturePresentation();
     const connection = bridge.token;
-    const isCurrent = () => generation === state.openGeneration && bridge.connected && bridge.token === connection;
+    const isCurrent = () => !disposed && generation === state.openGeneration && bridge.connected && bridge.token === connection;
     const problem = await client.getProblem(ref);
     if (!isCurrent()) return undefined;
     if (!problem || typeof problem !== 'object') throw new Error('TensorTonic returned an unexpected problem response.');
@@ -475,23 +581,24 @@ function activate(context) {
     if (!isCurrent()) return undefined;
     const document = await vscode.workspace.openTextDocument(uri);
     if (!isCurrent()) return undefined;
-    await vscode.window.showTextDocument(document, { viewColumn: vscode.ViewColumn.One, preview: false });
+    await studyLayout.showSolution(document, { isCurrent });
     if (!isCurrent()) return undefined;
     state.lastSolutionUri = uri;
     state.currentProblem = problem;
     const contextUri = await writeProblemContext(problem, uri);
     if (!isCurrent()) return undefined;
     const mode = getProblemView();
-    const presentationCurrent = () => isCurrent() && getProblemView() === mode;
+    const presentationCurrent = () => isCurrent() && getProblemView() === mode && presentation.closeEpoch === problemWorkspace.capturePresentation().closeEpoch;
     if (mode === 'web') {
       const opened = await interactiveExplanation(problem.ref, { studyNavigation: true, isCurrentNavigation: presentationCurrent });
       if (!presentationCurrent()) return undefined;
       if (!opened || !opened.requested) await showDescription(problem, uri, presentationCurrent);
-      else if (state.statementPanel) { const previous = state.statementPanel; state.statementPanel = undefined; previous.dispose(); }
+
     } else {
       await showDescription(problem, uri, presentationCurrent);
     }
     if (!isCurrent()) return undefined;
+    if (membership.initialized) await membership.recordOpened(problem.ref).catch(showError);
     return { problem, uri, testsUri: testsUriFor(uri), contextUri };
   }
 
@@ -593,23 +700,32 @@ function activate(context) {
     return (await managedDocument(input)).ref;
   }
 
-  async function description(input) {
+  async function description(input, tab = 'description') {
     requireConnection();
-    const ref = await refFrom(input);
-    let solutionUri;
-    if (input instanceof vscode.Uri) solutionUri = input;
-    else if (input && input.uri instanceof vscode.Uri) solutionUri = input.uri;
-    else if (!input) solutionUri = (await managedDocument(input)).document.uri;
-    else if (state.lastSolutionUri) {
-      // Cached problem identity and last-selected editor can intentionally
-      // differ. Match the actual document before writing its context file.
-      const selected = await managedDocument(state.lastSolutionUri);
-      if (selected.ref.slug === ref.slug && selected.ref.planId === ref.planId) solutionUri = selected.document.uri;
-    }
-    const problem = await client.getProblem(ref);
-    problem.ref = normalizeRef(problem.ref || ref);
-    await showDescription(problem, solutionUri);
-    return problem;
+    const generation = ++state.openGeneration;
+    const connection = bridge.token;
+    const presentation = problemWorkspace.capturePresentation();
+    const isCurrent = () => !disposed && generation === state.openGeneration && bridge.connected && bridge.token === connection && presentationCurrent(presentation);
+    try {
+      const ref = await refFrom(input);
+      if (!isCurrent()) return;
+      let solutionUri;
+      if (input instanceof vscode.Uri) solutionUri = input;
+      else if (input && input.uri instanceof vscode.Uri) solutionUri = input.uri;
+      else if (!input) solutionUri = (await managedDocument(input)).document.uri;
+      else if (state.lastSolutionUri) {
+        const selected = await managedDocument(state.lastSolutionUri);
+        if (problemKey(selected.ref) === problemKey(ref)) solutionUri = selected.document.uri;
+      }
+      if (!isCurrent()) return;
+      let problem;
+      try { problem = await client.getProblem(ref); }
+      catch (error) { if (!isCurrent()) return; throw error; }
+      if (!isCurrent()) return;
+      problem.ref = normalizeRef(problem.ref || ref);
+      const shown = await showDescription(problem, solutionUri, isCurrent, tab);
+      return shown ? problem : undefined;
+    } catch (error) { if (!isCurrent()) return; throw error; }
   }
 
   async function interactiveExplanation(input, { studyNavigation = false, isCurrentNavigation = () => true } = {}) {
@@ -624,8 +740,26 @@ function activate(context) {
     if (!isCurrent()) return;
     const url = problemUrl(ref);
     if (bridge.connected) {
+      if (state.webNavigating) {
+        if (studyNavigation) return { ref, target: 'none', requested: false };
+        throw new Error('Wait for the owned problem page navigation before opening another page.');
+      }
+      const epoch = state.sessionEpoch;
+      const navigation = {};
+      state.webNavigating = navigation;
+      updateActions();
       try {
-        await bridge.openProblemPage(url);
+        focusedPage = undefined;
+        focusObservation++;
+        const restored = await focusMode.pageChanged();
+        if (restored.status === 'restore-pending') throw new Error('Focus mode cleanup is pending. Retry Original view before navigating this owned page.');
+        await bridge.openProblemPage(url, { viewColumn: studyLayout.problemColumn, onDidChangePage: page => {
+          if (disposed || epoch !== state.sessionEpoch) return;
+          state.webPageOpen = !page.closed;
+          void observeFocusPage(page.closed);
+          state.webRef = page.closed ? undefined : page.ref;
+          updateActions();
+        } });
         return isCurrent() ? { ref, target: 'owned-native', requested: true } : undefined;
       } catch (error) {
         if (!isCurrent()) return;
@@ -634,7 +768,7 @@ function activate(context) {
         // second browser or retry navigation after an uncertain/busy result.
         output.appendLine('Web navigation was unavailable. Showing Markdown; the owned browser and Web preference are unchanged.');
         return { ref, target: 'none', requested: false };
-      }
+      } finally { if (state.webNavigating === navigation) { state.webNavigating = false; updateActions(); } }
     }
     let available;
     try { available = await vscode.commands.getCommands(true); }
@@ -709,77 +843,78 @@ function activate(context) {
 
   async function navigateProblem(direction, input) {
     requireConnection();
+    let planId = membership.initialized ? state.activeRef?.planId : getPlanId();
     const connection = bridge.token;
     const generation = ++state.openGeneration;
-    const isCurrent = () => generation === state.openGeneration && bridge.connected && bridge.token === connection;
-    const { ref } = await managedDocument(input);
+    const currentKey = problemKey(state.activeRef);
+    const isCurrent = () => !disposed && generation === state.openGeneration && bridge.connected && bridge.token === connection && (membership.initialized || getPlanId() === planId) && currentKey === problemKey(state.activeRef);
+    let ref = state.activeRef;
+    try {
+      if (input instanceof vscode.Uri || input?.uri instanceof vscode.Uri) ref = (await managedDocument(input)).ref;
+    } catch (error) { if (!isCurrent()) return; throw error; }
     if (!isCurrent()) return;
-    if (!ref.planId) {
-      await vscode.window.showInformationMessage('Previous and Next are available for study-plan problems.');
-      return;
-    }
-    // The open solution determines the plan, not a possibly different sidebar
-    // setting. Always use the server's current ordered plan catalogue.
+    if (membership.initialized) planId = ref?.planId;
     let catalogue;
-    try { catalogue = await client.listProblems(ref.planId); }
-    catch (error) {
-      if (!isCurrent()) return;
-      throw error;
-    }
+    try { catalogue = await client.listProblems(planId); }
+    catch (error) { if (!isCurrent()) return; throw error; }
     if (!isCurrent()) return;
     if (!Array.isArray(catalogue)) throw new Error('TensorTonic returned an unexpected problem list.');
-    const problems = catalogue.filter(problem => {
-      try { return normalizeRef(problem).planId === ref.planId; } catch (_) { return false; }
-    });
-    // API identity wins over browser aliases, which can be renamed/reused.
-    let matches = ref.apiId ? problems.filter(problem => problem.apiId === ref.apiId) : [];
-    if (!matches.length) matches = problems.filter(problem => problem.slug === ref.slug &&
-      (!ref.apiId || !problem.apiId));
-    const index = matches.length === 1 ? problems.indexOf(matches[0]) : -1;
-    if (index < 0) {
-      await vscode.window.showInformationMessage('This problem was not found in the current study-plan list. Refresh the plan and try again.');
+    const targets = navigationTargets(catalogue, ref, { selectedPlanId: planId || '' });
+    const target = direction === 'unsolved' ? targets.nextUnsolved : direction < 0 ? targets.previous : targets.next;
+    if (!target) {
+      await vscode.window.showInformationMessage(direction === 'unsolved' ? 'No later unsolved problem is known in this study plan.' : 'No adjacent problem is available for the current selection. Choose a problem in this study plan.');
       return;
     }
-    const next = index + direction;
-    if (next < 0 || next >= problems.length) {
-      await vscode.window.showInformationMessage(`This is the ${direction < 0 ? 'first' : 'last'} problem in this study plan.`);
-      return;
-    }
-    // openProblem preserves existing files and unsaved editor changes. Reuse
-    // its navigation/session guards rather than writing files in this command.
-    return openProblem(problems[next]);
+    return openProblem(target);
   }
 
-  function showResults(action, problem, result, options) {
-    if (!state.resultsPanel) {
-      state.resultsPanel = vscode.window.createWebviewPanel('tensortonic.results', 'TensorTonic result', { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true }, { enableScripts: false, localResourceRoots: [] });
-      state.resultsPanel.onDidDispose(() => { state.resultsPanel = undefined; }, null, context.subscriptions);
-    }
-    const title = `${action === 'submit' ? 'Submission' : 'Run'} · ${problem.title || problem.ref.slug}`;
-    state.resultsPanel.title = title;
-    state.resultsPanel.webview.html = buildHtml(title, `<h1>${escapeHtml(title)}</h1><p class="meta">${escapeHtml(new Date().toLocaleString())}</p>${renderResult(result, options)}`);
-    state.resultsPanel.reveal(vscode.ViewColumn.Beside, true);
+  function cancelExecution(id) {
+    if (!activeExecution || id !== undefined && id !== activeExecution.id) return false;
+    activeExecution.controller.abort();
+    return true;
   }
 
-  let executionInProgress = false;
   async function execute(action, input) {
+    if (bridge.supportsGrading !== true) throw sessionFault('POST_CONTRACT_UNVERIFIED');
     if (executionInProgress) throw new Error('A TensorTonic Run or Submit is already in progress.');
-    // Cover metadata/test reads as well as the POST: otherwise a second click
-    // can wait on its GET, then submit again after the first grading completes.
+    // Acquire before metadata, test-file or network awaits. A stale completion
+    // never releases another operation's cancellation handle.
     executionInProgress = true;
-    try {
-      return await executeOnce(action, input);
-    } finally {
+    const operation = { id: crypto.randomBytes(12).toString('hex'), controller: new AbortController() };
+    activeExecution = operation;
+    updateActions();
+    try { return await executeOnce(action, input, operation); }
+    finally {
+      if (activeExecution === operation) activeExecution = undefined;
       executionInProgress = false;
+      updateActions();
     }
   }
 
-  async function executeOnce(action, input) {
+  async function executeOnce(action, input, operation) {
     requireConnection();
     const connection = bridge.token;
+    const sessionEpoch = state.sessionEpoch;
+    const sameSession = () => {
+      synchronizeSession();
+      return sessionEpoch === state.sessionEpoch && bridge.connected && bridge.token === connection;
+    };
+    const presentation = problemWorkspace.capturePresentation();
     const { document, ref } = await managedDocument(input);
+    if (!recognizedSolution(document, { readRef })) throw new Error('TensorTonic Run and Submit require a recognized Python solution file.');
+    operation.uri = document.uri;
+    updateActions();
     const code = document.getText();
-    const problem = await client.getProblem(ref);
+    const check = () => {
+      requireConnection();
+      if (!sameSession()) throw new Error('The session connection changed. Review the selected account before running or submitting again.');
+      if (operation.controller.signal.aborted) throw sessionFault('CANCELED');
+      if (state.webNavigating) throw new Error('Wait for the owned problem page to finish navigating before Run or Submit.');
+      if (displayMismatch(ref)) throw new Error(state.webRef ? 'The website is showing another problem. Reopen this solution from the study sidebar to align it before Run or Submit.' : 'The owned website page has no verified problem target. Finish its navigation, reopen this solution from the study sidebar, or close that browser tab before Run or Submit.');
+    };
+    check();
+    const problem = await client.getProblem(ref, { signal: operation.controller.signal });
+    check();
     problem.ref = normalizeRef(problem.ref || ref);
     let testCases;
     if (action === 'run') {
@@ -791,34 +926,127 @@ function activate(context) {
         if (!Array.isArray(testCases)) throw new Error('The .tests.json file must contain a JSON array of test cases.');
       } else testCases = Array.isArray(problem.testCases) ? problem.testCases : [];
     }
-    let result;
+    check();
+    const owner = panelProblem(problem);
+    // Create a results location before dispatch only when no auxiliary owner is
+    // visible and the user has not closed/navigated it during preflight.
+    let resultPresentation = presentation;
+    if (!presentation.selectedKey && presentationCurrent(presentation)) {
+      const tests = await panelTests(problem, document.uri);
+      if (presentationCurrent(presentation)) {
+        problemWorkspace.show(owner, { solutionUri: document.uri, ...tests, tab: 'results' });
+        resultPresentation = problemWorkspace.capturePresentation();
+      }
+    }
+    problemWorkspace.setExecution(owner, { id: operation.id, action, title: `${action === 'submit' ? 'Submitting' : 'Running public cases'} · ${problem.title || ref.slug}` });
+    let result, snapshot;
     try {
-      result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: action === 'submit' ? 'Submitting to TensorTonic…' : 'Running TensorTonic test cases…', cancellable: false }, () => {
-        requireConnection();
-        if (bridge.token !== connection) throw new Error('The browser connection changed. Review the selected account before running or submitting again.');
-        return action === 'submit' ? client.submit(problem, code) : client.run(problem, code, testCases);
+      result = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `TensorTonic ${action === 'submit' ? 'Submit' : 'Run'} · ${problem.title || ref.slug}`, cancellable: true }, async (_progress, cancellation) => {
+        const listener = cancellation?.onCancellationRequested(() => operation.controller.abort());
+        if (cancellation?.isCancellationRequested) operation.controller.abort();
+        try {
+          check();
+          snapshot = freshness.capture({ action, problem: problem.ref, solutionUri: document.uri.toString(), solutionText: code, testCases });
+          const options = { signal: operation.controller.signal };
+          return await (action === 'submit' ? client.submit(problem, code, options) : client.run(problem, code, testCases, options));
+        } finally { listener?.dispose(); }
       });
     } catch (error) {
-      showResults(action, problem, {
-        status: 'error',
-        message: 'No confirmed grading result was received. Check TensorTonic before submitting again.',
-        error: error instanceof Error ? error.message : String(error),
-      }, { localError: true });
+      if (!sameSession()) return undefined;
+      problemWorkspace.recordResult(owner, action, { status: 'error', message: 'No confirmed grading result was received. Check TensorTonic before submitting again.', error: error instanceof Error ? error.message : String(error) }, { operationId: operation.id, localError: true, presentation: resultPresentation });
       throw error;
     }
-    showResults(action, problem, result);
+    if (!sameSession()) return undefined;
+    problemWorkspace.recordResult(owner, action, result, { operationId: operation.id, presentation: resultPresentation, freshness: resultFreshnessLabel(snapshot, {status: 'unchanged'}) });
+    resultSnapshots.set(JSON.stringify([document.uri.toString(), action]), { owner, action, snapshot, document, problem, result, operationId: operation.id });
+    void updateFreshness();
     if (action === 'submit') refresh().catch(showError);
     return result;
   }
 
+  function readRefSafely(document) { try { return readRef(document.getText()); } catch (_) { return undefined; } }
+  let freshnessGeneration = 0;
+  async function updateFreshness() {
+    const generation = ++freshnessGeneration, epoch = state.sessionEpoch;
+    for (const entry of resultSnapshots.values()) {
+      let testCases;
+      if (entry.action === 'run') {
+        try { const uri = testsUriFor(entry.document.uri); testCases = await fileExists(uri) ? JSON.parse((await vscode.workspace.openTextDocument(uri)).getText()) : entry.problem.testCases; } catch (_) { testCases = undefined; }
+      }
+      if (generation !== freshnessGeneration || epoch !== state.sessionEpoch || disposed) return;
+      const uri = entry.document.uri.toString();
+      const document = closedDocuments.has(uri) ? undefined : knownDocuments.get(uri) || (vscode.workspace.textDocuments || []).find(item => item.uri.toString() === uri && !item.isClosed);
+      const current = { action: entry.action, problem: document ? readRefSafely(document) : entry.problem.ref, solutionUri: uri, solutionText: document?.getText(), testCases };
+      problemWorkspace.updateFreshness(entry.owner, entry.action, resultFreshnessLabel(entry.snapshot, freshness.compare(entry.snapshot, current)), entry.operationId);
+    }
+  }
+  async function manageStudyPlans() { const result = await membership.manage(); if (result?.status === 'committed' && bridge.connected) await refresh(); return result; }
+  async function removeStudyPlan(input) { const id = typeof input === 'string' ? input : input?.planId; if (!id) return; await membership.remove(id); if (bridge.connected) await refresh(); }
+  async function resumeStudyPlan(input) {
+    requireConnection();
+    const id = typeof input === 'string' ? input : input?.planId; if (!id) return;
+    const generation = ++state.openGeneration, epoch = state.sessionEpoch, token = bridge.token;
+    const membershipRevision = membership.state?.revision, activeKey = problemKey(state.activeRef);
+    const current = () => !disposed && bridge.connected && bridge.token === token && state.sessionEpoch === epoch && generation === state.openGeneration && membership.state?.revision === membershipRevision && problemKey(state.activeRef) === activeKey;
+    const rows = await client.listProblems(id); if (!current()) return;
+    const ref = membership.getResumeRef(id);
+    const match = ref && rows.find(row => row.slug === ref.slug && row.planId === id);
+    if (match) return openProblem(match);
+    const chosen = await vscode.window.showQuickPick(rows.map(row => ({label:row.title || row.slug, ref:row})), { title: 'Choose a problem to resume' });
+    if (chosen && current()) return openProblem(chosen.ref);
+  }
+
+  async function discussSelectedFailure(input, selectedAction) {
+    const {document,ref} = await managedDocument(input), epoch = state.sessionEpoch;
+    const entries = [...resultSnapshots.values()].filter(entry => entry.document.uri.toString() === document.uri.toString() && findProblemIndex([entry.problem.ref], ref) === 0 && (!selectedAction || selectedAction === entry.action));
+    const items = [];
+    for (const entry of entries) {
+      const raw = entry.result?.data && typeof entry.result.data === 'object' ? entry.result.data : entry.result;
+      const cases = raw?.tests || raw?.testCases || raw?.results || [];
+      if (!Array.isArray(cases)) continue;
+      for (const failure of cases.slice(0,200)) {
+        try { selectedFailureContext(failure,{explicit:true,problemRef:ref}); } catch (_) { continue; }
+        items.push({label:String(failure.name || failure.id || 'Failed case').slice(0,120),description:entry.action === 'run' ? 'Run · public/user case' : 'Submit · public/user case',entry,failure});
+      }
+    }
+    if (!items.length) return vscode.window.showInformationMessage('No explicitly public or user-provided failed case is available to discuss. Hidden grading details are not shared.');
+    const selected = await vscode.window.showQuickPick(items,{title:'Discuss one selected failed case',placeHolder:'Only this case is included; nothing is run or submitted'});
+    if (!selected || epoch !== state.sessionEpoch || disposed || ![...resultSnapshots.values()].includes(selected.entry)) return;
+    const commands = await vscode.commands.getCommands(true);
+    if (!commands.includes('workbench.action.chat.open')) throw new Error('VS Code Chat is unavailable. Inspect the selected failure locally.');
+    if (epoch !== state.sessionEpoch || disposed || ![...resultSnapshots.values()].includes(selected.entry) || findProblemIndex([ref], readRef(document.getText())) !== 0) return;
+    const freshnessState = freshness.compare(selected.entry.snapshot,{action:selected.entry.action,problem:ref,solutionUri:document.uri.toString(),solutionText:document.getText(),testCases:undefined});
+    await vscode.commands.executeCommand('workbench.action.chat.open',{mode:'agent',isPartialQuery:true,query:selectedFailureContext(selected.failure,{explicit:true,problemRef:ref,stale:freshnessState.status!=='unchanged'})});
+  }
+  async function toggleFocusMode() {
+    // Retrying an uncertain Off is cleanup-only. It must not restore and then
+    // immediately hide the page again because enabled already became false.
+    const enabled = focusMode.state.status === 'restore-pending' ? false : !focusMode.enabled;
+    let page;
+    try { if (enabled) page = await focusPort.getPage(); } catch (_) { /* No access to unrelated tabs. */ }
+    focusedPage = page;
+    focusObservation++;
+    const result = await focusMode.setEnabled(enabled, { page });
+    // A notification pauses browser interaction. Keep this presentation feedback
+    // in Output instead, so switching to Original view works immediately.
+    output.appendLine(result.status === 'applied'
+      ? 'Focus mode: verified Prev/Next links and the desktop Browse problems launcher hidden. Other website controls are unchanged.'
+      : result.status === 'off' ? 'Focus mode: original website styles restored.'
+      : result.status === 'restore-pending' ? 'Focus mode: stylesheet restoration is pending. Retry Original view or close the owned problem tab.'
+      : 'Focus mode unavailable: no website styles or browser controls were changed because the owned page structure was not verified.');
+    return result;
+  }
+
   async function smokeTest(options) {
-    const result = { activated: true, connected: bridge.connected, viewId: VIEW_ID, commands: COMMANDS.slice(), planId: getPlanId() || null };
+    const result = { activated: true, connected: bridge.connected, readOnly: bridge.supportsGrading!==true, transport: 'direct-https', viewId: VIEW_ID, commands: COMMANDS.slice(), planId: getPlanId() || null };
     if (bridge.connected) {
-      const problems = await refresh();
+      result.accountVerified=typeof bridge.checkStoredSession==='function'?await bridge.checkStoredSession({signal:options?.signal}):false;
+      const diagnosticClient=new TensorTonicClient((path,requestOptions)=>bridge.request(path,{...requestOptions,...(options?.signal?{signal:options.signal}:{})}));
+      const problems = await diagnosticClient.listProblems(getPlanId());
       result.problemCount = problems.length;
       const ref = options && options.ref ? normalizeRef(options.ref) : problems[0];
       if (ref) {
-        const problem = await client.getProblem(ref);
+        const problem = await diagnosticClient.getProblem(ref);
         result.problem = { slug: ref.slug, title: problem.title, hasStatement: !!problem.description, hasStarterCode: typeof problem.starterCode === 'string' && problem.starterCode.length > 0, testCaseCount: Array.isArray(problem.testCases) ? problem.testCases.length : 0 };
       }
     }
@@ -826,43 +1054,85 @@ function activate(context) {
     return result;
   }
 
-  const studyEnvironment = new StudyEnvironmentUI(vscode, context);
+  studyEnvironment = new StudyEnvironmentUI(vscode, context, { getSessionEpoch: () => state.sessionEpoch });
   context.subscriptions.push(studyEnvironment);
+  let environmentGeneration = 0;
+  async function refreshStudyEnvironment() {
+    const generation = ++environmentGeneration;
+    const result = await studyEnvironment.status();
+    if (disposed || generation !== environmentGeneration) return;
+    state.environment = result;
+    tree.refresh();
+    updateActions();
+    revealCurrentProblem();
+  }
+  if (typeof studyEnvironment.onDidChange === 'function') context.subscriptions.push(studyEnvironment.onDidChange(() => { void refreshStudyEnvironment().catch(() => {}); }));
+  // Metadata + selected-interpreter inspection only. No automatic setup,
+  // imports, downloads, terminal activation or interpreter selection.
+  void refreshStudyEnvironment().catch(() => {});
+  async function environmentAction(action) {
+    try { return await studyEnvironment[action](); }
+    finally { await refreshStudyEnvironment(); }
+  }
   const studyWorkspace = new StudyWorkspace(vscode, context, { showStudyPlan, offerEnvironment: () => studyEnvironment.offer().catch(showError) });
 
   const handlers = {
     connect, disconnect, openProblem, search, refresh, description, interactiveExplanation, offlineExploration, openOriginalInVSCode: interactiveExplanation, openTests, openInBrowser,
     chooseStudyPlan, chooseProblemView, showStudyPlan,
+    testsView: input => description(input, 'tests'), resultsView: input => description(input, 'results'), cancelExecution: () => cancelExecution(),
     startStudying: () => studyWorkspace.start(),
     changeStudyFolder: () => studyWorkspace.start({ chooseFolder: true }),
-    setupStudyEnvironment: () => studyEnvironment.setup(),
-    repairStudyEnvironment: () => studyEnvironment.repair(),
+    setupStudyEnvironment: () => environmentAction('setup'),
+    useStudyEnvironment: () => environmentAction('use'),
+    repairStudyEnvironment: () => environmentAction('repair'),
     run: input => execute('run', input), submit: input => execute('submit', input), smokeTest,
+    gradingStatus: () => vscode.window.showInformationMessage(bridge.supportsGrading===true ? 'Explicit Python Run and Submit use direct HTTPS. Canceled or uncertain actions are never replayed.' : 'Run and Submit are unavailable in this read-only candidate. Grading compatibility must be verified before they return.'),
+    manageStudyPlans, removeStudyPlan, resumeStudyPlan, discussSelectedFailure, toggleFocusMode,
     openAgentContext, discussWithAgent, discussWithCodex,
-    previousProblem: input => navigateProblem(-1, input), nextProblem: input => navigateProblem(1, input),
+    previousProblem: input => navigateProblem(-1, input), nextProblem: input => navigateProblem(1, input), nextUnsolved: () => navigateProblem('unsolved'),
   };
   for (const [name, handler] of Object.entries(handlers)) {
     context.subscriptions.push(vscode.commands.registerCommand(`tensortonic.${name}`, async (...args) => {
       try { return await handler(...args); }
-      catch (error) { showError(error); return undefined; }
+      catch (error) { if(error.code!=='CANCELED')showError(error); return undefined; }
     }));
   }
-  context.subscriptions.push(vscode.languages.registerCodeLensProvider([{ scheme: 'file', language: 'python' }, { scheme: 'file', language: 'sql' }, { scheme: 'file', language: 'cpp' }, { scheme: 'file', pattern: '**/*.cu' }], new SolutionCodeLensProvider()));
+  context.subscriptions.push(vscode.languages.registerCodeLensProvider([{ scheme: 'file', language: 'python' }, { scheme: 'file', language: 'sql' }, { scheme: 'file', language: 'cpp' }, { scheme: 'file', pattern: '**/*.cu' }], new SolutionCodeLensProvider(bridge.supportsGrading===true)));
   function rememberSelectedSolution(editor) {
     if (!editor || editor.document.uri.scheme !== 'file') return;
     try {
-      const selectedRef = readRef(editor.document.getText());
+      const selectedRef = recognizedSolution(editor.document, { readRef });
+      if (!selectedRef) { updateActions(); return; }
       if (JSON.stringify(selectedRef) !== JSON.stringify(state.activeRef)) state.cardGeneration++;
+      knownDocuments.set(editor.document.uri.toString(), editor.document);
       state.activeRef = selectedRef;
       state.lastSolutionUri = editor.document.uri;
       tree.refresh();
+      updateActions();
       revealCurrentProblem();
-    } catch (_) { /* Description, tests and chat must not replace the selection. */ }
+    } catch (_) { updateActions(); /* Description, tests and chat must not replace the selection. */ }
   }
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(rememberSelectedSolution));
   rememberSelectedSolution(vscode.window.activeTextEditor);
-  context.subscriptions.push({ dispose() { bridge.dispose().catch(() => {}); } });
+  for (const name of ['onDidOpenTextDocument', 'onDidChangeTextDocument', 'onDidCloseTextDocument']) {
+    if (typeof vscode.workspace[name] !== 'function') continue;
+    context.subscriptions.push(vscode.workspace[name](event => {
+      const document = event.document || event;
+      if (document.uri) {
+        if (name === 'onDidCloseTextDocument') { knownDocuments.delete(document.uri.toString()); closedDocuments.add(document.uri.toString()); }
+        else { knownDocuments.set(document.uri.toString(), document); closedDocuments.delete(document.uri.toString()); }
+      }
+      updateActions();
+      void updateFreshness();
+    }));
+  }
+  let shutdown;stopActiveSession=()=>shutdown??=(async()=>{
+    try { await focusMode.dispose(); }
+    finally { await bridge.dispose().catch(()=>{}); }
+  })();
+  context.subscriptions.push({ dispose() { void stopActiveSession(); } });
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(event => {
+    if (event.affectsConfiguration('tensortonic.difficultyDisplay')) { state.difficultyDisplay = vscode.workspace.getConfiguration('tensortonic').get('difficultyDisplay', 'text'); tree.refresh(); }
     if (event.affectsConfiguration('tensortonic.studyPlan')) {
       invalidateProblems();
     }
@@ -886,9 +1156,14 @@ function activate(context) {
     output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
     return false;
   });
-  return { bridge, client, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
+  // Restore encrypted state only: no startup browser, HTTP, login or migration.
+  const sessionReady=Promise.resolve().then(()=>typeof bridge.restore==='function'?bridge.restore():false).catch(()=>{
+    output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
+  }).finally(updateConnection);
+  // Do not export a vault, SecretStorage object, raw transport or CDP capability.
+  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
-function deactivate() {}
+function deactivate() {return stopActiveSession();}
 
 module.exports = { activate, deactivate, escapeHtml, htmlToText, normalizeRef, readRef, problemUrl, testsUriFor, contextUriFor };

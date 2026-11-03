@@ -1,6 +1,5 @@
 # 0.4.0 interactive exploration verification — 2026-10-30 UTC
 
-Built on the exact published 0.3.2 source tree `81a5ebda0a24db6c440745af004ca061df4f89ff` (local base `605ba5031621683874aba9a6d400aa8ba8c5fffd`). The dedicated study-window/sidebar implementation remains intact.
 
 ## Scope and provenance
 

@@ -1,28 +1,93 @@
-# Dedicated study Python environment (0.7.0)
+# Study Python environment
 
-**Start studying** opens the chosen local study folder in a separate VS Code window. The first explicit Start, or its fresh handoff into that new window, offers Python setup. Nothing is installed just because the extension activates. Setup and repair always require an explicit confirmation before running Python or downloading packages.
+Python environment support is optional and separate from TensorTonic's website
+Run/Submit service. It helps local imports and exercises; it does not log in,
+change remote grading, or run a solution automatically.
 
-## Setup
+## Workspace recognition and status
 
-1. Install Microsoft's **Python** extension normally if it is missing. TensorTonic only offers an Extensions search; it does not install another extension silently.
-2. Open the trusted local study folder through **TensorTonic: Start studying**.
-3. Accept **Set up study environment** after reviewing the location and package-download notice. You can also use **TensorTonic: Set up study Python environment** later.
-4. The extension uses a compatible Python already installed in a standard system location. This release currently selects Python **3.11–3.14**. Python 3.14 is eligible, including the user’s existing Homebrew installation when a compatible binary wheel is available; it is not replaced or assumed incompatible. If no supported runtime is found, install one yourself from [python.org](https://www.python.org/downloads/) or your usual trusted package manager and retry. Actual platform-wheel availability and a successful import check remain required. No Python distribution is downloaded by this extension.
-5. A separate environment is created under this extension's local VS Code storage, in `python-envs/<study-folder-hash>`. Existing project `.venv` folders and global Python are untouched. Only the fixed packages **torch** and **numpy**, plus their required dependencies, are installed from [PyPI](https://pypi.org/), using binary wheels only. Download size can be substantial, especially on Linux; this is not a promise of a tiny or CPU-only distribution.
-6. After successful interpreter/prefix and import checks, the Python extension's public API selects that environment for the **study folder only**. Selection is read back before success is reported. No user/global `python.defaultInterpreterPath` setting is written. If the API is unavailable or selection cannot be verified, follow the shown **Python: Select Interpreter → Enter interpreter path** instruction; automatic selection is not claimed.
+**Start studying** opens a chosen local study folder in a separate VS Code window.
+An existing single-folder study workspace can also be recognized from validated
+TensorTonic solution metadata under the configured solution directory. Recognition
+only reads bounded local metadata and matching source/context markers; it does not
+execute workspace code, register a new folder, import Python or use a folder name
+alone as proof. Unrecognized folders offer **Choose study workspace**.
 
-The Pylance/editor environment and local terminal execution are separate from TensorTonic's website grading. This feature helps local imports and exercises; it does not change the remote Run/Submit service, log you into the website, or run your solution automatically.
+The study sidebar keeps a visible environment row:
 
-## Cancellation and repair
+| Status | Meaning and action |
+| --- | --- |
+| Create study environment | No extension-managed environment exists for this study folder. Create opens the setup consent dialog. |
+| Use study environment | A managed environment has recorded verified setup, but workspace interpreter selection differs or requires explicit activation of the Python API. Use selects that interpreter for this folder only. |
+| Repair study environment | Managed metadata is incomplete, invalid, or a setup failure is known. Repair requires confirmation before validation or installation. |
+| Study environment · Ready | The selected managed interpreter matches recorded verified setup metadata. This status has no setup action. |
+| Study environment unavailable | Safe storage, workspace scope or the required Python API cannot be verified. It does not authorize automatic repair. |
 
-Progress is cancellable. Only setup's own subprocesses are stopped; unrelated Python or editor processes are never searched for or terminated. No `sudo`, shell commands, global pip install, arbitrary `requirements.txt`, problem-provided package name, or workspace-controlled Python executable is used. Pip configuration, Python path injection, and custom package indexes from the calling environment are not inherited.
+Status reads files and the already active Python extension's selected-interpreter
+API. It does not activate that extension, execute Python, test imports, install
+packages, change interpreter selection, or inspect terminal `VIRTUAL_ENV`.
+Recorded readiness describes the last verified setup, not a fresh dependency audit.
+A selected system or project interpreter alone does not establish that this
+extension's separate managed environment exists.
 
-Use **TensorTonic: Repair study Python environment** to explicitly validate/reinstall the fixed packages in the managed environment. Failed/canceled setup is not marked ready. Managed ownership is checked, concurrent setup is locked, and existing unowned data is never overwritten or recursively deleted. A replaced interpreter, missing original runtime, or unavailable wheel may require a guided manual step instead of an unsafe automatic repair. A crash can leave a lock; the resulting message identifies it for manual review, not blind deletion.
+## Create or repair
 
-Automated setup in this release supports **macOS and Linux only**. On Windows, select a manually managed interpreter; no automatic setup process is started. Only trusted local desktop study folders are supported. Remote/browser workspaces and unrelated development folders are refused. Automatic setup is not a general-purpose environment manager, package installer, or Python version manager.
+1. Install Microsoft's **Python** extension normally if it is missing. TensorTonic
+   offers an Extensions search rather than installing it silently.
+2. Use **Start studying** or open a recognized trusted local study workspace.
+3. Choose **Create study environment** or **TensorTonic: Set up study Python
+   environment**. Review the location and download notice, then explicitly confirm.
+   A fresh explicit Start may offer this same consent; ordinary activation does not
+   start setup.
+4. Setup uses an installed Python **3.11–3.14** in a standard supported location.
+   Compatible Homebrew Python installations are eligible. Runtime compatibility,
+   available binary wheels and successful import checks are still required. If
+   no supported runtime is found, install one from [python.org](https://www.python.org/downloads/)
+   or your trusted package manager. The extension never downloads a Python version.
+5. A dedicated environment is created in extension storage under
+   `python-envs/<study-folder-hash>`. Only **torch**, **numpy** and their required
+   dependencies are installed from [PyPI](https://pypi.org/), using binary wheels.
+   Downloads can be substantial; a tiny or CPU-only distribution is not promised.
+6. After interpreter/prefix and package-import checks, the Python extension's public
+   API selects the interpreter for this study folder. Selection is read back before
+   success is reported. Global Python, existing project `.venv` folders and unrelated
+   settings are preserved.
+
+**Use study environment** does not install or repair anything. It rechecks the
+managed metadata and explicitly selects the existing interpreter through the scoped
+Python API. It may activate the Python extension, then verifies selection. If the
+API is unavailable, use the offered **Python: Select Interpreter → Enter interpreter
+path** guidance after setup; automatic selection is not assumed.
+
+Editor/Pylance selection and terminal activation are separate. Existing terminals
+retain their environment. Open a new Python terminal when terminal activation is
+needed; the extension does not inject activation into a busy terminal or change
+user/global `python.defaultInterpreterPath`.
+
+## Cancellation and safety
+
+Setup progress is cancellable. Only its own subprocesses are stopped. Setup uses
+no `sudo`, shell execution, global pip installation, arbitrary `requirements.txt`,
+problem-provided package names or workspace-controlled Python executable. Caller
+pip indexes, Python path injection and loader settings are not inherited.
+
+**Repair study Python environment** explicitly validates/reinstalls the same fixed
+packages. Unknown ownership is never overwritten or recursively deleted. A changed
+interpreter, missing original runtime or unavailable wheel can require manual
+review. A leftover setup lock is reported for review rather than removed blindly.
+
+Automatic setup supports **macOS and Linux** in trusted local desktop study folders.
+On Windows, select a manually managed interpreter; automatic setup does not start.
+Remote, browser, virtual and unrelated development workspaces are outside the
+managed setup scope. This feature is not a general Python/package manager.
 
 ## Verification limits
 
-Unit tests use synthetic process results and isolated filesystem fixtures; they do not install torch or numpy. Real process tests, if listed in the release report, use only benign synthetic child processes for cancellation. No packages were installed on the user's Mac, and real VS Code/Pylance environment selection was not visually verified. The API integration is exercised with a mock; success on a particular installation remains subject to its Python extension and runtime availability.
+Automated tests use isolated filesystem fixtures, mocked Python APIs and synthetic
+process results. They do not install torch/numpy or establish that package wheels,
+Pylance and interpreter selection work on every host. Status inspection deliberately
+does not diagnose packages removed or changed outside the setup flow.
 
-Reference: [VS Code Python settings](https://code.visualstudio.com/docs/python/settings-reference) notes that `defaultInterpreterPath` does not override an already selected interpreter; this implementation instead uses the public scoped environment selection API.
+[VS Code Python settings](https://code.visualstudio.com/docs/python/settings-reference)
+explain why `defaultInterpreterPath` does not replace an already selected interpreter;
+this extension uses the public scoped selection API instead.

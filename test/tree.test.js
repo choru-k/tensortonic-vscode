@@ -43,7 +43,7 @@ test('study plan root, sections and problem leaves retain the supplied service o
   assert.deepEqual(sections.map(item => item.label), ['Vector operations', 'Automatic differentiation']);
   assert.ok(sections.every(item => item.collapsibleState === vscode.TreeItemCollapsibleState.Collapsed));
   assert.deepEqual(leaves(tree).map(item => item.problemRef), problems);
-  assert.equal(root.command, undefined);
+  assert.equal(root.command.command, 'tensortonic.chooseStudyPlan');
   assert.equal(sections[0].command, undefined);
 });
 
@@ -65,10 +65,10 @@ test('progress and solved icons are separate from the current problem marker', (
   const problems = [ref('one', { solved: true }), ref('two'), ref('three', { solved: 'true', section: { id: 'later', title: 'Later', order: 1 } })];
   const { tree } = fixture(problems, { activeRef: { slug: 'browser-alias', apiId: 'api-one', planId: 'pytorch-basics' } });
   const root = tree.getChildren()[0];
-  assert.equal(root.description, '1 / 3 solved');
-  assert.deepEqual(tree.getChildren(root).map(item => item.description), ['1 / 2 solved', '0 / 1 solved']);
+  assert.equal(root.description, '3 problems · progress incomplete');
+  assert.deepEqual(tree.getChildren(root).map(item => item.description), ['1 / 2 solved', '1 problems · progress incomplete']);
   const items = leaves(tree);
-  assert.equal(items[0].description, 'Current · Easy · PyTorch');
+  assert.equal(items[0].description, 'Current');
   assert.equal(items[0].iconPath.id, 'pass-filled');
   assert.equal(items[1].iconPath.id, 'circle-outline');
   assert.equal(items[2].iconPath.id, 'circle-outline');
@@ -136,7 +136,7 @@ test('free mode has a Free problems root and direct leaves with progress', () =>
   assert.equal(root.collapsibleState, vscode.TreeItemCollapsibleState.Expanded);
   assert.deepEqual(tree.getChildren(root).map(item => item.problemRef), problems);
   assert.equal(tree.getParent(tree.findProblem({ slug: 'free-two' })), root);
-  assert.equal(leaves(tree)[1].description, 'Current · Easy · PyTorch');
+  assert.equal(leaves(tree)[1].description, 'Current');
 });
 
 test('disconnected, loading and empty states expose only appropriate actions', () => {
@@ -229,7 +229,9 @@ test('untrusted labels, tooltips and accessibility remain bounded plain text, ne
     assert.ok(item.label.length <= 300);
     assert.equal(item.tooltip.isTrusted, undefined);
   }
-  assert.equal(leaf.description.length, 300);
+  assert.equal(leaf.description, '');
+  assert.ok(leaf.tooltip.includes('x'.repeat(300)));
+  assert.ok(leaf.accessibilityInformation.label.includes('x'.repeat(300)));
 });
 
 test('dispose releases cached nodes and listeners without emitting later refreshes', () => {
@@ -244,4 +246,23 @@ test('dispose releases cached nodes and listeners without emitting later refresh
   assert.equal(tree.findProblem(leaf.problemRef), undefined);
   tree.refresh();
   assert.deepEqual(tree.getChildren(), []);
+});
+
+test('study environment footer exposes actions, workspace selection and a non-actionable ready status',()=>{
+ const {state,tree}=fixture();
+ for(const [status,label,command] of [['missing','Create study environment','setupStudyEnvironment'],['use','Use study environment','useStudyEnvironment'],['repair','Repair study environment','repairStudyEnvironment']]){
+  state.environment={state:status,label,command:'tensortonic.'+command};tree.refresh();const footer=tree.getChildren().at(-1);assert.equal(footer.label,label);assert.equal(footer.command.command,'tensortonic.'+command);assert.match(footer.accessibilityInformation.label,/TensorTonic study environment/);assert.equal(leaves(tree).length,1);
+ }
+ state.environment={state:'ready',label:'Study environment ready',command:'tensortonic.setupStudyEnvironment'};tree.refresh();const ready=tree.getChildren().at(-1);assert.equal(ready.label,'Study environment');assert.equal(ready.description,'Ready');assert.equal(ready.command,undefined);assert.match(ready.accessibilityInformation.label,/ready/);
+ state.environment={state:'not-study-window',label:'Choose study workspace',command:'tensortonic.startStudying'};tree.refresh();assert.equal(tree.getChildren().at(-1).command.command,'tensortonic.startStudying');
+ state.environment={state:'not-study-window',label:'Must be hidden',command:'tensortonic.setupStudyEnvironment'};tree.refresh();assert.equal(tree.getChildren().length,1);
+ state.environment={state:'missing',label:'Untrusted command',command:'python.execInTerminal'};tree.refresh();assert.equal(tree.getChildren().length,1);
+});
+
+test('multiple sidebar plans retain independent order and unknown remote progress',()=>{
+ const a=ref('a'),b=ref('b',{planId:'numpy-basics',studyPlanTitle:'NumPy'});const {tree}=fixture([],{planGroups:[{planId:'pytorch-basics',problems:[a]},{planId:'numpy-basics',problems:[b]},{planId:'offline',problems:[],error:true}],activeRef:b,difficultyDisplay:'text'});
+ assert.deepEqual(leaves(tree).map(x=>x.problemRef.slug),['a','b']);assert.equal(tree.findProblem(b).description,'Easy · Current');assert.match(tree.getChildren()[2].description,/unavailable/);assert.equal(tree.getChildren()[2].contextValue,'tensortonicStudyPlan');assert.equal(tree.getChildren().at(-1).command.command,'tensortonic.manageStudyPlans');
+});
+test('difficulty hide removes extension metadata without altering service data or solved status',()=>{
+ const data=ref('a'),{tree}=fixture([data],{difficultyDisplay:'hidden'});const leaf=leaves(tree)[0];assert.doesNotMatch(leaf.tooltip,/Easy/);assert.equal(leaf.description,'');assert.equal(data.difficulty,'Easy');assert.equal(leaf.iconPath.id,'circle-outline');
 });

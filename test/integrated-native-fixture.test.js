@@ -1,0 +1,10 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');const {apiFixture,mapCookie,NAME,digest}=require('./fixtures/integrated-native-session');const {dispatchHttps}=require('../src/session/http');
+test('external native fixture maps only its already scoped fake cookie metadata',()=>{
+ const cookie={name:'synthetic_session',value:'fake-only',domain:'api.session-test.invalid',path:'/',httpOnly:true,session:false,expires:1900000000};const mapped=mapCookie(cookie);assert.equal(mapped.name,NAME);assert.equal(mapped.secure,true);assert.equal(mapped.domain,'.tensortonic.com');assert.equal(mapped.sameSite,'Lax');assert.equal(mapped.value,'fake-only');assert.throws(()=>mapCookie({...cookie,domain:'other.invalid'}));assert.throws(()=>mapCookie({...cookie,session:true}));
+});
+test('external native fixture checks exact API origin and production JSON shape without forged browser headers',async t=>{
+ const f=await apiFixture({expectedDigest:digest('fake-native-unit')});t.after(()=>f.close());const https=require('node:https'),original=https.request;https.request=f.httpsRequest;t.after(()=>{https.request=original;});f.setExpectedCode('synthetic');let dispatched=0;
+ const request=async(body,headers={})=>dispatchHttps({url:new URL('https://api.tensortonic.com/api/study-plans/pytorch-basics/problems/pytorch-softmax-from-scratch/run'),method:'POST',headers:{Cookie:NAME+'=fake-native-unit','Content-Type':'application/json',...headers},body:JSON.stringify(body),maxBytes:10000,onDispatch:()=>dispatched++});
+ assert.equal((await request({code:'synthetic',testCases:[{id:'synthetic-case',inputs:{x:4}}]})).status,200);assert.equal((await request({code:'synthetic',testCases:[]})).status,400);assert.equal((await request({code:'synthetic',testCases:[{id:'synthetic-case',inputs:{x:4}}]},{Origin:'https://www.tensortonic.com'})).status,400);assert.equal(dispatched,3);assert.throws(()=>f.httpsRequest(new URL('https://other.invalid/api/me'),{},()=>{}),{code:'SYNTHETIC_HTTPS_SCOPE'});
+});

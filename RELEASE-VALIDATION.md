@@ -1,23 +1,67 @@
-# TensorTonic 0.10.0 acceptance — 2026-11-02
+# 0.12.1 release checks
 
-This record supersedes the pending-validation wording in the immutable candidate documentation bundled with 0.10.0. The accepted source and release artifacts were not rebuilt or changed after host validation. This remains a personal experimental build using the explicitly enabled proposed `browser` API, not a Marketplace release or a compatibility guarantee for other VS Code versions.
+This page describes reproducible release checks and their limits. It contains no
+account-specific test history, login/session values, personal paths, screenshots,
+or internal checkpoint identifiers.
 
-## Verified
+## Check status
 
-- The exact candidate `d503d50940cbd2fc9d1af1a18363a65d76e7c570` passed actual Mac read-only checks: authenticated 30-problem catalog and existing Softmax problem reads, three navigations, cancellation and reconnect, zero DebugSession starts, zero grading calls, no remaining owned cleanup resources, and host exit code 0.
-- The normal Mac profile subsequently activated 0.10.0 with the exact extension ID `choru-local.tensortonic-vscode` enabled for the proposed API. The 2026-11-02 00:40:12 UTC diagnostic confirmed a connected `pytorch-basics` catalog with 30 problems and successful Tensor Factory statement, starter code and three public test-case reads. No authentication, HTTP, transport or cleanup errors were reported. These were reads, not execution of those test cases.
-- Publication recheck: 273 automated tests passed. The focused 36-test transport/request-policy run also passed; those tests are included in the 273, not additional unique tests.
-- All 27 packaged source files match the accepted checkout byte for byte. ZIP integrity and the install bundle's embedded VSIX were verified.
+| Area | Status and scope |
+| --- | --- |
+| Automated suite | The public 0.12.1 tree passed 752/752 tests with zero failures or skips. Tests use synthetic sessions, requests, browser ports and isolated filesystem fixtures. |
+| Native UI | Selected study-workspace flows have been exercised in a supporting VS Code desktop host. This is not evidence of real-account grading compatibility on every host. |
+| Theme smoke checks | Reviewed UI surfaces passed pixel checks in Dark 2026, Dark High Contrast and Light High Contrast. Other themes, scales and assistive-technology combinations are not exhaustively covered. |
+| Focus mode | The five-control desktop Browse/Prev/Next contract passed native force-apply/restore: all five exact controls hid and recovered their computed display. Unknown structures remain visible. |
+| Package | The source allowlist is reviewed. The installation artifact is rebuilt from this sanitized tree and checked for integrity and source parity. |
 
-## Limits
+These are local checks. No remote CI pass, formal WCAG conformance, complete
+visual audit, or general server compatibility is claimed. Native screenshots and
+personal execution reports are not part of the public payload.
 
-Normal-profile live DebugSession count, toolbar absence and browser automation-indicator absence were **not visually verified**, because the required UI tools were unavailable. The isolated acceptance test recorded zero DebugSession starts. Do not infer invisible automation or every normal-profile UI state from that result.
+## Reproduce automated checks
 
-No new real Run/Submit was performed for 0.10.0 acceptance or publication. Earlier 0.8.0 grading results are historical and do not establish live grading validation for this transport. No account payload, solution, authentication material or personal filesystem path is included in this record.
+Use Node 24 with `node:sqlite` and Python 3, then run from the repository root:
 
-## Unchanged accepted downloads
+```sh
+npm test
+npm run test:session
+npm run test:transport
+python3 scripts/package.py
+```
 
-- [VSIX](releases/tensortonic-vscode-0.10.0.vsix): SHA-256 `c6512ac370d8c12aded149277e4ea63e8b54a7fed6330bdac2b8e02892d819df`
-- [Install bundle](releases/tensortonic-native-browser-0.10.0.zip): SHA-256 `d038e2af2819e996f323c5ec610d563b2bd2612f750b49fdfc0a5d70fd5901f5`
+The tests cover exact route/body/cookie scope, session revocation and cleanup,
+at-most-once grading dispatch, cancellation and stale results, owned browser
+identity, dedicated focus stylesheet restoration, study-folder recognition,
+metadata-only environment status, and synthetic process cancellation.
 
-Only current needed source and deliverables remain in the main tree. Earlier versions remain recoverable through ordinary Git history; no history rewrite or force push is used. No GitHub Actions workflow is configured, and no new workflow is enabled by this release.
+A passing fixture does not prove live authentication, real package availability,
+Pylance behavior, or rendered UI on another installation. Real account requests,
+Python setup and local installation require their own explicit user actions;
+release verification does not automatically perform them.
+
+## Package review
+
+Build the VSIX from the reviewed public tree, then check ZIP integrity and compare
+every packaged source/document/asset byte with that tree. Publish only the intended
+current artifact. The builder includes an explicit allowlist of runtime JavaScript,
+package metadata, documentation, license and icon assets. Tests, private reports,
+profiles, cookies, credentials, environment files, local solutions, logs and research
+downloads are excluded.
+
+Keep the **Unofficial** display name and non-affiliation disclosure. The icon's
+[provenance and unresolved reuse rights](docs/icon-provenance.md) remain disclosed;
+the code's MIT license does not license the TensorTonic brand asset.
+
+## Native checks and limits
+
+Review problem-left/code-right layout, preserved manual layouts, keyboard tab
+switching, visible environment actions, unsaved-source freshness, close/reopen,
+cancellation and delayed completions in an isolated study window. A website page
+must be the exact newly owned canonical problem tab before focus styles can apply.
+Verify that Original view empties the dedicated stylesheet before detachment and
+that changed controls, wrong documents, closed tabs and uncertain cleanup fail
+open or remain truthfully pending.
+
+Host browser APIs are proposed and can change. Theme smoke checks are limited to
+the tested surfaces; they do not establish full keyboard/screen-reader or WCAG
+acceptance. Session and grading policy tests remain distinct from native rendering.

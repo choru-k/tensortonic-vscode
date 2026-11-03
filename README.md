@@ -1,139 +1,186 @@
 # TensorTonic for VS Code — Unofficial
 
-Browse TensorTonic problems, write Python solutions in VS Code, and use **Run** or **Submit** to receive grading results. The default study plan is `pytorch-basics`.
+TensorTonic study tools for VS Code: browse Python problems, edit native solution
+files, run or submit explicitly, and keep the original interactive problem page
+beside your code. Version **0.12.1** adds study-workspace recognition and clearer
+Python environment actions to the reusable study UI.
 
-This unofficial extension currently supports free Python problems and Python study-plan problems. SQL, CUDA, Triton, and separate project or interview exercises are not supported. TensorTonic's normal account and subscription requirements still apply.
+This project is not affiliated with TensorTonic. Normal website account and
+subscription requirements apply. Browser integration uses an unstable VS Code API
+and requires the scoped host opt-in described below.
 
-## Installation
+## Connect and study
 
-Download [TensorTonic 0.10.0 personal build for VS Code](releases/tensortonic-vscode-0.10.0.vsix) or the [0.10.0 personal install bundle](releases/tensortonic-native-browser-0.10.0.zip). In the Extensions view, choose **… → Install from VSIX…**, select the package, and reload the window if prompted. From a repository checkout:
+1. Open a trusted local desktop window and run **TensorTonic: Start studying**.
+   Choose a study folder; other work windows and existing edits are preserved.
+2. Run **TensorTonic: Connect session**. Before a new session import, review the
+   in-app cookie scope, retention and account-access consent. Complete normal
+   sign-in and 2FA in the dedicated browser page.
+3. Return to a normal TensorTonic page and choose **Capture session** in the status
+   bar. **Cancel sign-in** or closing that owned tab cancels acquisition. Unrelated
+   browser tabs are not adopted or closed.
+4. The acquisition tab closes before direct account verification. Choose a plan
+   and problem. The original problem page opens on the left and the native solution
+   editor on the right by default. Local Markdown is an opt-in alternative.
+
+The saved HTTP session and optional problem browser are independent. Saved
+availability restores without startup HTTP or opening a browser; requested reads
+still check server access. Problems can be read and edited with the presentation
+browser closed.
+
+## Study workspace
+
+Click the plan label or connected TensorTonic status to search the public study-plan
+catalogue. **Manage sidebar study plans** controls workspace-local memberships;
+removing a plan leaves files, resume hints, history and server data intact. Resume
+rechecks the saved problem against the current catalogue. Manual URL or slug entry
+remains available. Catalogue visibility does not imply account entitlement.
+
+Sidebar Previous, Next and **Next unsolved** follow plan order without wrapping.
+Unknown progress is not treated as unsolved. The current solution is revealed
+without moving focus away from code or Chat. Difficulty can appear as text, a
+color cue, or be hidden in extension-owned UI.
+
+Recognized Python solutions have **TensorTonic Run / Submit** editor-title actions.
+During an operation, Cancel identifies its captured target. CodeLens offers
+**Problem**, **Tests**, and **Discuss with Agent**. These actions use the selected
+solution; changing editors does not redirect an in-flight request.
+
+A reusable auxiliary panel holds **Description / Tests / Results** when requested.
+Description uses the local VS Code Markdown renderer and native MathML without
+remote resources; unavailable formatting has an escaped-source fallback. Tests
+preserve unsaved JSON and offer native editing. Run cases and Submit verdicts stay
+separate, with summaries and expandable details. Results show whether current
+unsaved inputs match the captured request, without changing remote progress or
+repeating grading.
+
+**Discuss a selected failed case** drafts a prompt for one explicitly public or
+user-provided case. Hidden cases, unrelated results and credentials are excluded.
+The extension does not execute that draft or send it automatically.
+
+Existing solutions, tests, protected problem-context files and unsaved edits are
+preserved. Initial layout setup applies only to a confirmed simple editor layout;
+complex layouts and later manual moves are retained. Background results stay with
+their exact problem and plan, without reopening a closed panel or stealing focus.
+Website Theory, Solution, Notes and other interactive content remain on the original
+page; the extension does not mirror them or embed the website in an iframe.
+
+If the owned website tab moves to another or unknown problem, grading is blocked
+until the local target is aligned or that browser is closed. Website navigation
+does not silently select another solution. Session changes clear cached account
+results and reject stale completions while preserving local work.
+
+## Python environment
+
+The sidebar offers **Choose study workspace**, **Create study environment**,
+**Use study environment**, **Repair study environment**, or a non-actionable
+**Study environment · Ready** status as appropriate. A supported local folder can
+be recognized from validated TensorTonic solution metadata without creating a new
+registration or executing workspace code.
+
+Create and Repair require explicit confirmation before running Python or
+installing packages. They use an installed supported Python and a dedicated
+environment in extension storage, with fixed torch/numpy dependencies. Use selects
+an existing verified managed interpreter for this study folder only. Status reads
+local metadata and the Python extension's selected-interpreter API; it does not
+run imports, activate Python, install packages, or treat terminal `VIRTUAL_ENV` as
+proof of selection. Recorded readiness is not a fresh dependency audit.
+
+An existing selected interpreter alone does not prove that this extension's
+managed environment exists. Ordinary project environments remain unchanged.
+Existing terminals also keep their current environment; open a new Python terminal
+when you need terminal activation. No activation command is injected into a busy
+terminal. See [Python setup and limits](docs/study-python.md).
+
+## Optional focus mode
+
+**Focus mode / Original view** is available in the study sidebar and recognized
+solution editor overflow menus. It starts off. On the exact extension-owned problem
+page, a reviewed contract checks five controls: four responsive Prev/Next links
+and the desktop problem-header **Browse problems** launcher that opens the problem
+search drawer. Only matching structure, labels, counts, link destinations and
+button semantics permit hiding those controls.
+
+Changed, missing or ambiguous controls stay visible. The drawer search input,
+mobile Browse launcher and global website navigation are outside this contract.
+Original view empties only the extension's dedicated stylesheet; navigation turns
+focus off. Uncertain cleanup stays pending and can be retried. Browser chrome,
+automation indicators, login/security notices and global settings are unaffected.
+See [focus behavior and boundaries](docs/sidebar-and-results.md#difficulty-and-focus).
+
+## Session scope and lifetime
+
+Only `__Secure-better-auth.session_token` with Domain `tensortonic.com`, Path `/`,
+Secure, HttpOnly and SameSite=Lax is retained. Acquisition queries only
+`https://api.tensortonic.com/api/me` from the owned www page. The protocol returns
+all cookies applicable to that exact URL into memory before local name filtering;
+other names are immediately discarded, never saved or logged. Google/GitHub and
+other browser profiles are not queried or copied.
+
+The session is stored in native encrypted SecretStorage until explicit server
+cookie expiry, revocation, or **Clear saved session**. Genuine server Set-Cookie
+renewal is respected; restarting the extension does not extend expiry. There is
+no forced daily cutoff or guaranteed login lifetime. Cookies without explicit
+expiry are refused for persistent storage.
+
+Clear invalidates local copied access and deletes copied generations. It does not
+call server logout, revoke other devices, or erase ordinary browser login cookies.
+Credential deletion and owned-page cleanup are independent; pending cleanup remains
+visible and offers a retry. There is no plaintext or globalState credential fallback.
+A saved session can grant account access, as disclosed before import.
+
+Run/Submit send only the explicitly chosen solution and permitted case payloads.
+Cancellation after dispatch cannot undo server execution. An uncertain outcome is
+never automatically replayed, and there is no browser grading fallback. See the
+[HTTPS and grading contract](docs/session-http.md#grading-and-rollout).
+
+## Supported host and installation
+
+Download [the current VSIX](releases/tensortonic-vscode-0.12.1.vsix) and use
+**Extensions: Install from VSIX...**. See [SHA-256](releases/SHA256SUMS.txt) for
+artifact integrity. Installing it does not import a session or set up Python.
+
+The manifest requires **VS Code 1.144.0 or later** on a supporting local desktop
+host. New session acquisition and optional Web presentation use the unstable
+proposed `browser` API. Installing the VSIX alone does not enable that API.
+
+Opt in for this extension only, for example:
 
 ```sh
-code --install-extension releases/tensortonic-vscode-0.10.0.vsix
+code --enable-proposed-api choru-local.tensortonic-vscode "/path/to/Study"
 ```
 
-**0.10.0 is a personal experimental, native-only build.** It uses VS Code's **proposed `browser` API** directly, rather than launching a debug adapter. Installing the VSIX alone is not sufficient: the host must expose that proposal and you must explicitly opt in **only this extension**. Proposed APIs are unstable; this is not a standard Marketplace release or a promise of compatibility with every stable VS Code version. See [Microsoft's proposed-API guidance](https://code.visualstudio.com/api/advanced-topics/using-proposed-api).
+A forwarded command may reuse an already running process without applying new
+startup arguments. Save work and restart VS Code normally when changing the opt-in.
+See [persistent opt-in and reversal](docs/native-browser.md#exact-opt-in).
+The extension does not edit launch arguments, product allowlists, browser storage,
+debug settings or security policies. Saved-session HTTPS reads use stable APIs.
+Remote, browser and virtual workspaces are unsupported for session acquisition.
+This experimental VSIX is not a Marketplace or every-host compatibility promise.
 
-After installing, save your work and fully quit VS Code normally. On a host verified to support this proposal, relaunch your study folder with the extension-specific opt-in:
+## Development and validation
 
-```sh
-code --enable-proposed-api choru-local.tensortonic-vscode "/path/to/TensorTonic Study"
-```
-
-Use the CLI for the actual supporting installation, such as `code-insiders` if appropriate. A window reload or a CLI command forwarded to an already-running process may not apply a new startup opt-in. The CLI flag applies to that launch. For a deliberate persistent opt-in, use **Preferences: Configure Runtime Arguments** and add only this extension ID to the existing `enable-proposed-api` array, preserving other entries; see the [manual opt-in and reversal steps](docs/native-browser.md#optional-persistent-opt-in). The extension never edits that file automatically. The manifest declares `enabledApiProposals: ["browser"]`; that declaration is not permission by itself.
-
-The startup flag was verified with the direct-browser prototype on VS Code **1.144.0 stable**; this does not establish support on every stable build or validate the integrated 0.10 candidate. Use a **trusted local desktop** study window. If Connect reports that the API is absent or disabled, verify the extension ID/opt-in, fully restart, and use a VS Code build that supports the proposal. Do not edit `product.json`, spoof a built-in extension, add blanket proposed-API/global security flags, or bypass organizational restrictions. Browser/remote workspaces and alternative editors without the proposal are unsupported.
-
-No Chrome/Helium browser companion, pairing code, Legacy selector, or debugger connection is included. Existing companions are not automatically uninstalled. This change avoids the debugger-session transport, but VS Code may still show a **browser automation indicator**. Earlier artifacts remain in Git history rather than the current release tree. See [setup and validation limits](docs/native-browser.md).
-
-## Start studying without disturbing your development workspace
-
-1. Run **TensorTonic: Start studying** from the Command Palette or Study plan toolbar. First choose a dedicated existing local folder, such as `TensorTonic Study`. Canceling the picker changes nothing.
-2. VS Code opens that folder in a **new window**. Your development window, workspace, tabs, and unsaved code stay in place. The extension remembers the chosen folder on this computer; running Start studying from that same single-folder study window reuses it.
-3. The study window opens the **Study plan** sidebar when its short-lived launch handoff is available. A fresh Start may offer dedicated Python setup, but runs no installer until you explicitly accept. Connect the built-in browser in this study window, sign in normally, and refresh problems.
-4. Next time, run Start studying again. To choose a different destination, use **TensorTonic: Start studying in another folder…**. Existing study files are not moved or copied.
-
-Default files are stored under `<study folder>/tensortonic/<plan>/`: your `.py` solution, editable `.tests.json`, and generated `.problem.md` statement. `tensortonic.solutionDirectory` can change the relative `tensortonic` subfolder. Existing solution/test files are not overwritten on reopening; personal edits to generated Markdown are protected. Earlier test-workspace files remain where they were—Start studying does not import or delete them.
-
-The remembered study folder does **not** redirect problem operations in another window. Opening a problem in an ordinary project window still stores files in that project's configured solution folder. Multi-root and saved `.code-workspace` windows are preserved by opening a separate folder window; Explorer, layout, roots, and trust settings are not rewritten. Review normal workspace-trust prompts yourself.
-
-Only an explicit Start command requests a new window. Ordinary activation does not open one, connect a browser, or install Python packages. A matching short-lived handoff may focus the study sidebar once; if it is unavailable, use **TensorTonic: Show study plan sidebar**. Simultaneous Start requests can supersede a handoff; uncertain window opens are not automatically retried.
-
-## Connect the built-in browser
-
-1. Run **TensorTonic: Connect browser** in the trusted local study window.
-2. Review **Connect built-in browser**. The extension opens and controls only its own dedicated TensorTonic page through the opted-in browser API. It does not start a debugger or attach to an existing user tab.
-3. Sign in normally in that page, including any GitHub sign-in or 2FA. Confirm the intended account. Passwords, cookies, browser storage values, session tokens, and Authorization headers are not extracted or copied.
-4. Use **Refresh problems** or Connect again after login. Connected transport does not guarantee that website login, subscription access, or every API request has succeeded.
-
-After restarting VS Code, use Connect again; the extension does not attach or launch on ordinary startup. Website login lifetime follows the website and VS Code's existing browser-storage configuration—there is no fixed 30-day login promise. No browser storage, authentication, or global debug setting is changed.
-
-**Disconnect browser** releases the owned connection without touching unrelated user tabs or debug sessions. It does not sign you out or erase cookies. If cleanup is unconfirmed, follow the reported instruction and close the owned browser page normally; do not silently reuse an uncertain connection.
-
-See [direct native connection, opt-in, privacy, and validation boundaries](docs/native-browser.md).
-
-## Solve problems
-
-- Open the **TensorTonic** activity-bar icon or run **Show study plan sidebar**. The Study plan view shows the original ordered sections and clickable problems. Section/plan headers show solved counts, checkmarks reflect website progress, and **Current** marks the selected solution.
-- Choose a problem to open its statement and Python solution side by side. Switching solution tabs updates the selected sidebar row only when the TensorTonic view is already visible, without moving keyboard focus or changing the chosen plan.
-- Use **Choose study plan** to enter the `studyPlan` slug from a problem URL. Leave it empty for free problems. **Refresh problems** updates progress without changing Explorer or deleting files.
-- Use **Run**, **Submit**, **Description**, and **Test cases** above the solution. **Run** uses the adjacent editable `.tests.json` array. **Submit** sends the current editor code, including unsaved edits, to TensorTonic. Execution and grading occur on TensorTonic's servers.
-- **Previous problem** and **Next problem** follow the open solution's study plan, stop at the ends without wrapping, and preserve existing files and unsaved edits.
-- Results show the reported outcome, passed/total counts, and runtime first. Expand test details or **Raw response (JSON)** as needed. Missing counts, timings, and cases are identified rather than fabricated.
-- A solved checkmark is progress, not an imported solution. New files contain starter code even for solved problems. Importing earlier website submissions is not implemented; copy your own saved code if needed.
-
-Keep the `# tensortonic: {...}` metadata on the solution's first line; it associates the file with its problem. A Run/Submit is dispatched **at most once**. Timeout or cancellation can leave the result uncertain: inspect the website before explicitly trying again. The extension never automatically retries grading or switches to another transport.
-
-## Choose Markdown or Web problem view
-
-Use **TensorTonic: Choose problem view (Markdown / Web)** in the command palette or study sidebar toolbar, or set `tensortonic.problemView` to `web`. The default is `markdown`. The command saves the preference to the current workspace, or user settings when no workspace is open. Changing it alone does not navigate or rewrite your solution.
-
-**Markdown** uses VS Code's built-in local preview and math renderer. If that renderer is unavailable, a labeled inert plain-text fallback remains. The extension does not change preview security or `markdown.math.enabled`, or load a remote renderer.
-
-**Web** opens the original TensorTonic problem and interactive cards in the owned Integrated Browser beside the preserved Python editor when you explicitly open a problem or use Previous/Next. Only the expected TensorTonic study surface is reused; login, account, and manually navigated external pages are not hijacked. Native connection works with either presentation mode. **Show problem description** remains an explicit Markdown option, and dirty solution files remain protected.
-
-If Web presentation cannot be opened safely, the local Markdown description remains available. This does not provide an alternative connection for an unsupported host: enable the proposal for this extension in a supporting local VS Code build rather than installing a legacy transport.
-
-## Original interactive explanations
-
-Use **Interactive explanation** above a solution, the sidebar context action, or **Open original problem in VS Code** to view the actual TensorTonic page. The website renders its own cards and enforces its own account/subscription access. The complete page may include its navigation and editor—not just an explanation card.
-
-This is normal top-level native browser navigation, **not an iframe, copied page, reverse proxy, or header/CSP bypass**. Sign in normally in the Integrated Browser; another browser's session is not transferred. The website's own editor and actions are separate from sending your local Python file through this extension's Run/Submit.
-
-An explicit **Open original problem in browser** action remains available for ordinary external viewing. Opening an external page does not connect it to this extension or restore unsupported native transport. Requesting navigation is not proof that loading, authentication, or entitlement succeeded.
-
-## Dedicated local Python setup
-
-The first explicit **Start studying**, or its fresh handoff, offers a private environment after confirmation. It uses a supported installed Python, downloads fixed **torch** and **numpy** packages plus dependencies from PyPI into extension-owned storage, validates imports, and selects that interpreter only for the study folder through the Python extension's public API.
-
-It does not replace global Python, overwrite a project `.venv`, install on ordinary activation, run your solution, or change remote grading. Setup and repair are cancellable. Use **Set up study Python environment** or **Repair study Python environment** later. Unsupported runtimes, unavailable wheels, or unverified interpreter selection produce actionable guidance rather than a false success. See [setup, supported runtimes, cancellation, and verification limits](docs/study-python.md).
-
-## Discuss problems with an Agent
-
-- **Discuss with Agent** attaches the problem statement, current solution, and tests to VS Code's built-in Agent chat. It opens a draft; you send it yourself.
-- The Agent reads generated `.problem.md` source. Keep personal notes separately; edited generated files are not overwritten.
-- `#tensortonicProblem` reads the selected problem and current unsaved code. It does not run/submit or retrieve reference solutions.
-- The English discussion draft asks for one learning step at a time without a complete answer unless requested. Edit the draft or choose another language as needed.
-- **Attach problem and solution to Codex** requires a Codex extension version exposing its attachment command. Built-in Chat and Codex integration are separate.
-
-## Settings and diagnostics
-
-| Setting | Default | Purpose |
-| --- | --- | --- |
-| `tensortonic.studyPlan` | `pytorch-basics` | Study-plan slug; empty means free problems |
-| `tensortonic.solutionDirectory` | `tensortonic` | Relative solution folder inside the workspace |
-| `tensortonic.problemView` | `markdown` | Markdown or original Web presentation for explicit problem navigation |
-
-**Check connection and problem access** reads the connection, problem list, statement, and starter-code access. Sanitized results appear in **Output → TensorTonic**. TensorTonic's web-client API has no official compatibility guarantee, so site changes can require updates.
-
-## Optional offline learning explorations
-
-**Offline learning exploration** opens a separately named local experiment without replacing the statement or changing your solution. All 30 supported PyTorch basics identities have independently authored numerical examples covering tensors, derivatives, layers, normalization, losses, training, data sampling, convolution, recurrence, attention, and beam search. Unsupported identities show an explicit unavailable notice.
-
-These are illustrative mathematical experiments, not TensorTonic's original cards, reference solutions, or exact PyTorch API emulations. They run offline with bounded inputs and bundled scripts, make no service requests, and do not run/submit student code. Reopening resets the example; use **Calculate** and **Reset example** to explore it.
-
-## Validation status
-
-Native **0.8.0** was validated on the user's Mac with VS Code **1.144.0**: connection, a 30-problem list, full JSON retrieval, Markdown, dirty temporary-solution preservation, Web navigation, cancellation, and reconnect. One explicitly approved already-solved solution was run once and submitted once. These observations belong to that version and scope; they are not blanket proof for every host or subsequent change.
-
-The direct-browser **prototype** demonstrated operation without a debug session; that is not proof of the complete **0.10.0** candidate. This candidate integrates the proposed API into the extension, and its actual native read-only/visual check is pending separate coordination. No fresh live grading, dedicated Python installation, or all-platform compatibility is implied. The 0.9 work was an unpublished candidate; the published baseline before this candidate was 0.8.1. See [current validation scope](docs/native-browser.md#validation).
-
-## Development and packaging
-
-The extension build needs no external npm packages. With Node.js and Python 3 installed:
+No external npm dependencies or install scripts are required. Use Node 24 with
+`node:sqlite` and Python 3:
 
 ```sh
 npm test
+npm run test:session
 npm run test:transport
 python3 scripts/package.py
 ```
 
-`test:transport` exercises the native bridge and request policy with a simulated proposed-browser API and page behavior. Automated tests do not authenticate a real account or authorize live grading. The VSIX is built from an explicit source allowlist; do not package credentials, browser data, user solutions, or runtime logs.
+Automated tests use synthetic credentials, requests and browser fixtures.
+[Release checks and limitations](RELEASE-VALIDATION.md) distinguish those tests
+from native UI checks. Public source and packages exclude personal test reports,
+login data, browser profiles, runtime logs and user solutions. The activation API
+exports safe diagnostics rather than a vault, raw transport or browser capability.
 
-For a permitted local host check, use a separate review workspace and a fresh profile as appropriate. `test/vscode-native-readonly-validation.js` is an optional actual-host runner gated by `TENSORTONIC_TEST_ALLOW_REAL_READ=1`; it requires explicit authorization, uses fixed read endpoints, and does not contain Run/Submit. Real grading tests require separate approval for the exact existing solution and action. Never rerun an uncertain Submit automatically.
+Website content and trademarks belong to their owners. The bundled icon derives
+from TensorTonic's favicon; **reuse rights remain unresolved and the brand asset is
+not covered by this repository's MIT license**. See [icon provenance](docs/icon-provenance.md).
 
-Maintain English repository documentation, UI text, code comments, and test descriptions while preserving upstream text and intentional multilingual fixtures. See [CONTRIBUTING.md](CONTRIBUTING.md).
+## Requirements checklist
 
-## Acknowledgments
-
-The problem-browser, description, and Run/Submit workflow was inspired by the [LeetCode OpenSource VS Code extension](https://github.com/LeetCode-OpenSource/vscode-leetcode). Its service-specific CLI and authentication code are not included. This implementation is MIT-licensed. TensorTonic's name and service belong to their respective owners.
+See [implemented features and verification limits](docs/requirements.md), including
+server-bound login expiry, environment setup and remaining licensing limits.

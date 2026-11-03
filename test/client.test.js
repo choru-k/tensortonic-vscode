@@ -113,7 +113,7 @@ test('missing or mismatched study-plan order fails explicitly instead of silentl
     await assert.rejects(client.listProblems('pytorch-basics'), /study-plan/);
   }
   const client = new TensorTonicClient(async path => path.startsWith('/api/problems/list?') ? ok({ problems: catalogue }) : { status: 'error', message: 'Plan access denied' });
-  await assert.rejects(client.listProblems('pytorch-basics'), /Plan access denied/);
+  await assert.rejects(client.listProblems('pytorch-basics'), /unexpected study-plan/);
 });
 
 test('ambiguous API identities are rejected rather than navigating to the wrong problem', async () => {
@@ -184,7 +184,20 @@ test('unsupported runtimes and malformed cases fail before any grading request',
 
 test('authentication and invalid catalog pagination errors are surfaced', async () => {
   const unauthorized = new TensorTonicClient(async () => ({ status: 'error', message: 'Authentication required' }));
-  await assert.rejects(unauthorized.getProblem({ slug: 'x' }), /Authentication required/);
+  await assert.rejects(unauthorized.getProblem({ slug: 'x' }), /unexpected problem/);
   const bad = new TensorTonicClient(async () => ok({ problems: [], pagination: { hasMore: true, totalPages: 2 } }));
   await assert.rejects(bad.listProblems(), /pagination/);
+});
+
+test('Run and Submit pass cancellation only as transport metadata, never in JSON payload', async()=>{
+ const calls=[],client=new TensorTonicClient(async(path,options)=>{calls.push({path,options});return{status:'success'};}),controller=new AbortController(),problem={ref:{slug:'synthetic',planId:'pytorch-basics'}};
+ await client.run(problem,'synthetic',[],{signal:controller.signal});await client.submit(problem,'synthetic',{signal:controller.signal});
+ assert.equal(calls.length,2);for(const {options} of calls){assert.equal(options.signal,controller.signal);assert.equal('signal' in options.body,false);assert.equal(options.method,'POST');}
+});
+
+test('omitted and null solved values remain unknown through ordered catalogue parsing',async()=>{
+ const states=[true,undefined,null,false,'false'];const catalogue=states.map((value,index)=>({id:'api-'+index,slug:'problem-'+index,source:'python',planId:'pytorch-basics',...(index===1?{}:{solved:value})}));
+ const client=new TensorTonicClient(async path=>ok(path.startsWith('/api/problems/list?')?{problems:catalogue}:planData(catalogue.map(item=>item.id))));
+ const rows=await client.listProblems('pytorch-basics');assert.deepEqual(rows.map(item=>item.solved),[true,undefined,undefined,false,undefined]);
+ const {navigationTargets}=require('../src/study-navigation');assert.equal(navigationTargets(rows,rows[0],{selectedPlanId:'pytorch-basics'}).nextUnsolved.apiId,'api-3');
 });

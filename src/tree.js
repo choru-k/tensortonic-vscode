@@ -13,9 +13,9 @@ function refOf(value) {
   return ref && typeof ref === 'object' ? ref : undefined;
 }
 
-function key(planId, value) { return JSON.stringify([planId || '', value]); }
+function key(planId, value, kind = 'slug') { return JSON.stringify([planId || '', kind, value]); }
 function progress(problems) {
-  return { solved: problems.filter(problem => problem.solved === true).length, total: problems.length };
+  return { solved: problems.filter(problem => problem.solved === true).length, total: problems.length, known: problems.every(problem => typeof problem.solved === 'boolean') };
 }
 
 class ProblemTreeProvider {
@@ -59,7 +59,7 @@ class ProblemTreeProvider {
     const slug = typeof ref.slug === 'string' && ref.slug ? ref.slug : undefined;
     if (!apiId && !slug) return undefined;
     if (apiId) {
-      const exact = this.identityIndex.get(key(ref.planId, apiId)) || [];
+      const exact = this.identityIndex.get(key(ref.planId, apiId, 'api')) || [];
       if (exact.length) return exact.length === 1 ? exact[0] : undefined;
     }
     const aliases = this.slugIndex.get(key(ref.planId, slug)) || [];
@@ -92,25 +92,59 @@ class ProblemTreeProvider {
 
   setProgress(item, problems, kind) {
     const counts = progress(problems);
-    item.description = `${counts.solved} / ${counts.total} solved`;
-    item.tooltip = `${item.label}\n${counts.solved} of ${counts.total} problems solved`;
-    item.accessibilityInformation = { label: `${item.label}, ${kind}, ${counts.solved} of ${counts.total} problems solved` };
+    const summary = counts.known ? `${counts.solved} / ${counts.total} solved` : `${counts.total} problems · progress incomplete`;
+    item.description = summary;
+    item.tooltip = `${item.label}\n${summary}`;
+    item.accessibilityInformation = { label: `${item.label}, ${kind}, ${summary}` };
+  }
+
+  environmentAction() {
+    const state = this.state.environment;
+    if (!state || !state.label || (state.state === 'not-study-window' && state.command !== 'tensortonic.startStudying')) return;
+    const allowed = new Set(['tensortonic.setupStudyEnvironment', 'tensortonic.useStudyEnvironment', 'tensortonic.repairStudyEnvironment', 'tensortonic.startStudying']);
+    if (state.command && !allowed.has(state.command)) return;
+    const ready = state.state === 'ready';
+    const item = this.node(ready ? 'Study environment' : text(state.label), 'tensortonic:environment', this.vscode.TreeItemCollapsibleState.None);
+    item.contextValue = ready ? 'tensortonicStudyEnvironmentReady' : 'tensortonicStudyEnvironment';
+    item.iconPath = new this.vscode.ThemeIcon(ready ? 'check' : state.state === 'repair' ? 'tools' : 'snake');
+    if (ready) item.description = 'Ready';
+    else if (state.command) item.command = { command: state.command, title: text(state.label) };
+    item.tooltip = `${text(state.label)}\n${text(state.reason, 'Applies only to this study folder. Existing terminals and global Python are unchanged.')}`;
+    item.accessibilityInformation = { label: `${text(state.label)}, TensorTonic study environment` };
   }
 
   rebuild() {
     this.clear();
     if (!this.state.bridge || !this.state.bridge.connected) {
-      this.placeholder('Connect your TensorTonic browser', 'disconnected', 'plug', 'connect');
+      this.placeholder('Connect your TensorTonic session', 'disconnected', 'plug', 'connect');
+      this.environmentAction();
       return;
     }
     if (this.state.loading) {
       this.placeholder('Loading problems…', 'loading', 'loading');
+      this.environmentAction();
       return;
+    }
+    if (Array.isArray(this.state.planGroups)) {
+      for (const group of this.state.planGroups) {
+        const child = new ProblemTreeProvider(this.vscode, { ...this.state, planGroups: undefined, selectedPlanId: group.planId, problems: group.problems, environment: undefined, loading: false });
+        for (const root of child.roots) {
+          if (root.contextValue === 'tensortonicStudyPlan') { root.planId = group.planId; root.command = { command: 'tensortonic.resumeStudyPlan', title: 'Resume study plan', arguments: [group.planId] }; }
+          else { root.id += ':' + group.planId; root.label = group.title || group.planId; root.description = group.error ? 'Remote progress unavailable · refresh' : 'No problems'; root.contextValue='tensortonicStudyPlan'; root.planId=group.planId; root.command={command:'tensortonic.resumeStudyPlan',title:'Resume study plan',arguments:[group.planId]}; }
+          if (!group.error && group.problems?.length) root.description = 'Remote: '+root.description;
+          this.roots.push(root);
+        }
+        for (const name of ['children','parents','identityIndex','slugIndex']) for (const [key,value] of child[name]) this[name].set(key,value);
+        child.emitter.dispose();
+      }
+      this.placeholder('Manage study plans', 'manage-plans', 'list-selection', 'manageStudyPlans', 'Add or remove sidebar memberships only');
+      this.environmentAction(); return;
     }
     const problems = Array.isArray(this.state.problems)
       ? this.state.problems.filter(problem => problem && typeof problem === 'object') : [];
     if (!problems.length) {
       this.placeholder('Refresh problems', 'empty', 'refresh', 'refresh', 'No problems found');
+      this.environmentAction();
       return;
     }
     const planId = typeof this.state.selectedPlanId === 'string' ? this.state.selectedPlanId : '';
@@ -119,6 +153,7 @@ class ProblemTreeProvider {
       this.vscode.TreeItemCollapsibleState.Expanded);
     root.contextValue = planId ? 'tensortonicStudyPlan' : 'tensortonicFreeProblems';
     root.iconPath = new this.vscode.ThemeIcon(planId ? 'book' : 'list-unordered');
+    root.command = { command: 'tensortonic.chooseStudyPlan', title: 'Choose study plan' };
     this.setProgress(root, problems, planId ? 'study plan' : 'free problems');
 
     const sections = new Map();
@@ -144,7 +179,7 @@ class ProblemTreeProvider {
 
       // Refs are already in the service's section/problem order. Preserve it;
       // neither alphabetical order nor catalogue-global sortOrder is relevant.
-      const identity = key(problem.planId, problem.apiId || problem.slug);
+      const identity = key(problem.planId, problem.apiId || problem.slug, problem.apiId ? 'api' : 'slug');
       const occurrence = ids.get(identity) || 0;
       ids.set(identity, occurrence + 1);
       const label = text(problem.title, text(problem.slug, 'Untitled problem'));
@@ -154,10 +189,17 @@ class ProblemTreeProvider {
       item.contextValue = 'tensortonicProblem';
       item.iconPath = new this.vscode.ThemeIcon(problem.solved === true ? 'pass-filled' : 'circle-outline');
       item.command = { command: 'tensortonic.openProblem', title: 'Open problem', arguments: [problem] };
-      item.description = [text(problem.difficulty), text(problem.technology)].filter(Boolean).join(' · ');
+      const difficulty = (!this.state.difficultyDisplay || this.state.difficultyDisplay === 'hidden') ? '' : text(problem.difficulty);
+      const metadata = [difficulty, text(problem.technology)].filter(Boolean).join(' · ');
+      item.description = difficulty;
+      if (difficulty && this.state.difficultyDisplay === 'color' && this.vscode.ThemeColor) {
+        const color = { easy: 'charts.green', medium: 'charts.yellow', hard: 'charts.red' }[difficulty.toLowerCase()];
+        if (color) item.iconPath = new this.vscode.ThemeIcon(problem.solved === true ? 'pass-filled' : 'circle-outline', new this.vscode.ThemeColor(color));
+      }
+      const solved = problem.solved === true ? 'Solved' : problem.solved === false ? 'Not solved' : 'Progress unknown';
       item.tooltip = [label, planId ? `Study plan: ${planTitle}` : '', planId ? `Section: ${parent.label}` : '',
-        problem.solved === true ? 'Solved' : 'Not solved', item.description].filter(Boolean).join('\n');
-      item.accessibilityInformation = { label: [label, problem.solved === true ? 'Solved' : 'Not solved', item.description].filter(Boolean).join(', ') };
+        solved, metadata].filter(Boolean).join('\n');
+      item.accessibilityInformation = { label: [label, solved, metadata].filter(Boolean).join(', ') };
       for (const [index, indexKey] of [[this.identityIndex, identity], [this.slugIndex, key(problem.planId, problem.slug)]]) {
         if (!index.has(indexKey)) index.set(indexKey, []);
         index.get(indexKey).push(item);
@@ -166,10 +208,11 @@ class ProblemTreeProvider {
     for (const group of sections.values()) this.setProgress(group.item, group.problems, 'section');
     const active = this.findProblem(this.state.activeRef);
     if (active) {
-      active.description = ['Current', active.description].filter(Boolean).join(' · ');
+      active.description = [active.description, 'Current'].filter(Boolean).join(' · ');
       active.tooltip += '\nCurrent problem';
       active.accessibilityInformation.label += ', Current problem';
     }
+    this.environmentAction();
   }
 }
 
