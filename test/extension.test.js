@@ -1990,3 +1990,10 @@ test('stale automatic readiness logs no misleading diagnostic failure after Off'
  const opening=f.h.api.openProblem(SECOND_REF);await started.promise;await f.toggle();gate.resolve();await opening;
  assert.equal(f.h.output.filter(x=>x.startsWith('Focus diagnostic:')).length,0);assert.equal(f.css,'');
 });
+
+test('failed readiness does not invent a URL mismatch after discarding the page',async t=>{
+ const f=await persistentFocusFixture(t);f.native.display.waitForFocusReady=async()=>{throw Object.assign(Error('Synthetic failure'),{code:'INVALID_PROOF'});};
+ await f.h.api.openProblem(SECOND_REF);const events=f.h.publicApi.focusDiagnostics().automatic.events;
+ assert.ok(events.some(e=>e.stage==='readiness'&&e.code==='INVALID_PROOF'));
+ assert.equal(events.some(e=>e.stage==='url'&&e.code==='mismatch'),false);assert.equal(f.css,'');
+});

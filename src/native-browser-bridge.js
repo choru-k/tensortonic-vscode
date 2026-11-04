@@ -10,6 +10,7 @@ const MAX_BODY = 1024 * 1024;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
 const PAGE_GUARD = `window===window.top && (${JSON.stringify([...ORIGINS])}).includes(location.origin)`;
 const FOCUS_GATES = new WeakMap();
+const FOCUS_READINESS_GATE = Symbol('read-only incomplete controls');
 // A private brand for Chromium's exact response to our own stylesheet probe.
 // Arbitrary error codes/messages from callers or other protocol methods cannot
 // become proof of cleanup, and raw protocol details never leave this module.
@@ -306,18 +307,28 @@ class NativeBrowserBridge {
         if (state !== 0 && state !== 1) throw fault('The loading page structure is not recognized.', 'INVALID_PROOF');
         if (state === 1) {
           emitDiagnostic(onDiagnostic, 'contract', 'start');
-          try { await bounded(this.inspectFocusContract(this.focusContract, { signal, onDiagnostic }), remaining(), 'Focus readiness timed out.', signal); emitDiagnostic(onDiagnostic, 'contract', 'ok'); }
-          catch (error) { emitDiagnostic(onDiagnostic, 'contract', 'fail', diagnosticErrorCode(error)); throw error; }
+          let proof;
+          try {
+            // Preserve a safe native failure category instead of reclassifying
+            // every rejected proof as a transport error in bounded().
+            const checked = await bounded(this.inspectFocusContract(this.focusContract, { signal, onDiagnostic, readinessGate: FOCUS_READINESS_GATE }).then(value => ({ ok: true, value }), error => ({ ok: false, error })), remaining(), 'Focus readiness timed out.', signal);
+            if (!checked.ok) throw checked.error;
+            proof = checked.value;
+            emitDiagnostic(onDiagnostic, 'contract', proof?.incomplete === true ? 'wait' : 'ok', proof?.incomplete === true ? 'controls-incomplete' : undefined);
+          } catch (error) { emitDiagnostic(onDiagnostic, 'contract', 'fail', diagnosticErrorCode(error)); throw error; }
           await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
-          if (verified) return page;
-          verified = true;
+          if (proof?.incomplete === true) verified = false;
+          else {
+            if (verified) return page;
+            verified = true;
+          }
         } else verified = false;
         await bounded(this.pause(200), remaining(), 'Focus readiness timed out.', signal);
       }
       throw fault('The problem page is still loading. Focus remains unapplied.', 'TIMEOUT');
     } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
-  async inspectFocusContract(value, { signal, onDiagnostic } = {}) {
+  async inspectFocusContract(value, { signal, onDiagnostic, readinessGate } = {}) {
     if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
     const page = await this.getFocusPage({ signal, onDiagnostic }), target = this.target, generation = this.generation;
     const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? NAVBAR_CANDIDATE : item.selector, count: item.count, expectation: item.expectation }));
@@ -326,6 +337,20 @@ class NativeBrowserBridge {
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
     if (Array.isArray(metadata?.failures)) for (const failure of metadata.failures.slice(0, 8)) emitDiagnostic(onDiagnostic, 'contract-target', 'fail', failure?.reason, failure?.target);
+    // Observed native diagnostic: all seven problem controls may be absent
+    // after the body spinner clears while the signed-in navbar already passes.
+    // This exact state permits another read only, never an application proof.
+    const controls = targets.filter(item => item.id !== 'top-navbar');
+    const incomplete = readinessGate === FOCUS_READINESS_GATE && metadata?.valid === false && Object.keys(metadata).sort().join(',') === 'counts,failures,url,valid' && metadata.url === page.url &&
+      metadata.counts && Object.keys(metadata.counts).length === targets.length && metadata.counts['top-navbar'] === 1 &&
+      controls.length === 7 && controls.every(item => metadata.counts[item.id] === 0) &&
+      Array.isArray(metadata.failures) && metadata.failures.length === controls.length &&
+      controls.every(item => metadata.failures.filter(failure => failure?.target === item.id && failure.reason === 'missing' && Object.keys(failure).sort().join(',') === 'reason,target').length === 1);
+    if (incomplete) {
+      if (!sameFocusPage(page, await this.getFocusPage({ signal, onDiagnostic }))) throw fault('The owned document changed during readiness.', 'PAGE_CHANGED');
+      this.focusProof = undefined;
+      return Object.freeze({ incomplete: true });
+    }
     if (!metadata || metadata.valid !== true || metadata.url !== page.url || !metadata.counts || Object.keys(metadata.counts).length !== targets.length || targets.some(item => metadata.counts[item.id] !== item.count)) throw fault('The reviewed problem controls changed. They remain visible.', 'INVALID_PROOF');
     if (!sameFocusPage(page, await this.getFocusPage({ signal, onDiagnostic }))) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
     this.focusProof = { page, target, fingerprint: focusCore(this.focusContract) };

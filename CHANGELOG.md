@@ -1,3 +1,11 @@
+# 0.12.10 (cloud candidate)
+
+- Address the observed post-spinner state where all seven problem controls are absent while the signed-in navbar passes verification. Only that exact incomplete state may wait read-only within the existing readiness deadline.
+- Require two fresh complete proofs after controls appear; malformed, partial, extra-count or navbar/security rejection remains terminal. No CSS is applied during waiting.
+- Keep exact-document pinning, cancellation, bounded timeout and single guarded application.
+- Preserve precise readiness proof failure codes and stop labeling a discarded page as a URL mismatch.
+- Cloud-tested candidate; not yet published, installed or confirmed on Mac.
+
 # 0.12.9 (diagnostic-only cloud candidate)
 
 - Add bounded local Focus attempt traces to identify the unresolved automatic carryover failure. No further readiness or selector fix is claimed.

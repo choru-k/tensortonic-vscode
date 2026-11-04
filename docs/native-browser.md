@@ -113,3 +113,18 @@ Do not infer the root cause from elapsed time or Unavailable alone. A diagnostic
 trial should first reproduce one automatic failure, then manual On/Off, and read
 only these sanitized traces. Any new change should follow the actual failing branch.
 This candidate is not a native-verified fix and has not been installed or published.
+
+
+## Observed post-spinner incomplete controls (0.12.10 candidate)
+
+An approved sanitized native trace found that document/body loading indicators
+had cleared before the seven problem controls existed, while the navbar passed.
+A private readiness-only exception now recognizes exactly seven zero control
+counts and seven unique missing failures with the valid navbar. It does not
+classify arbitrary INVALID_PROOF as loading, does not weaken the application
+contract and cannot create a stylesheet proof.
+
+After controls appear, two complete checks are still required. Any partial
+structure, malformed metadata, navbar/security failure or identity change stops
+without hiding controls. The original timeout/cancellation limits apply. A slow
+page can remain Unavailable; no native success is claimed for this candidate.

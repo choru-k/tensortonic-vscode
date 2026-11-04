@@ -786,3 +786,66 @@ test('native readiness diagnostics distinguish loading reason and preserve behav
  assert.ok(events.some(e=>e.stage==='loading'&&e.code==='account-theme'));
  await h.bridge.waitForFocusReady(h.page,{onDiagnostic:()=>{throw Error('PRIVATE_CALLBACK');}});assert.equal(h.nextSheet,0);
 });
+
+function removeProblemControls(h) {
+ const saved=new Map(h.focusElements);
+ for(const target of FOCUS_CONTRACT.targets)if(target.id!=='top-navbar')h.focusElements.set(target.selector,[]);
+ return ()=>{h.focusElements=new Map(saved);};
+}
+test('readiness retries exactly the observed seven-missing-controls state then requires two full proofs',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);const restore=removeProblemControls(h),events=[];let pauses=0;
+ h.onReadyPause=()=>{pauses++;if(pauses===2)restore();};
+ await assert.rejects(h.bridge.inspectFocusContract(FOCUS_CONTRACT),{code:'INVALID_PROOF'});
+ await h.bridge.waitForFocusReady(h.page,{onDiagnostic:e=>events.push(e)});
+ assert.equal(pauses,3);assert.equal(h.nextSheet,0);assert.ok(events.some(e=>e.stage==='contract'&&e.outcome==='wait'&&e.code==='controls-incomplete'));
+ const lease=await h.applyFocus();assert.equal(h.nextSheet,1);await lease.restore();
+});
+test('incomplete-control readiness rejects partial, malformed, extra-count and unsafe-navbar near misses immediately',async t=>{
+ for(const kind of ['partial','count','navbar-shape','navbar-missing','security']) {
+  const h=await focusHarness(t);readinessFixture(h);const saved=new Map(h.focusElements);removeProblemControls(h);let pauses=0;h.onReadyPause=()=>pauses++;
+  const first=FOCUS_CONTRACT.targets[0];
+  if(kind==='partial')h.focusElements.set(first.selector,saved.get(first.selector));
+  if(kind==='count')h.focusElements.set(first.selector,[...saved.get(first.selector),...saved.get(first.selector)]);
+  if(kind==='navbar-shape')h.navbar.nav.childNodes.push({nodeType:3,textContent:'Synthetic warning'});
+  if(kind==='navbar-missing'||kind==='security')h.focusElements.set(NAVBAR_SELECTOR,[]);
+  const events=[];await assert.rejects(h.bridge.waitForFocusReady(h.page,{onDiagnostic:e=>events.push(e)}),{code:'INVALID_PROOF'});
+  assert.equal(pauses,0,kind);assert.equal(h.nextSheet,0);assert.equal(events.some(e=>e.code==='controls-incomplete'),false);
+ }
+});
+test('incomplete controls stay read-only through timeout, cancellation and exact-document change',async t=>{
+ for(const kind of ['timeout','cancel','document']) {
+  const h=await focusHarness(t);readinessFixture(h);removeProblemControls(h);const c=new AbortController();let pauses=0;
+  h.onReadyPause=()=>{pauses++;if(kind==='cancel')c.abort();if(kind==='document')h.newDocument();};
+  await assert.rejects(h.bridge.waitForFocusReady(h.page,{signal:c.signal}));
+  assert.ok(pauses>0&&pauses<=25);assert.equal(h.nextSheet,0);assert.equal(h.bridge.focusProof,undefined);
+ }
+});
+test('readiness does not reuse the first success after controls disappear again',async t=>{
+ const h=await focusHarness(t);readinessFixture(h);let restore,pauses=0;
+ h.onReadyPause=()=>{pauses++;if(pauses===1)restore=removeProblemControls(h);if(pauses===2)restore();};
+ await h.bridge.waitForFocusReady(h.page);assert.equal(pauses,3);assert.equal(h.nextSheet,0);
+});
+
+test('readiness rejects malformed or extra incomplete metadata without broadening the exception',async t=>{
+ for(const kind of ['extra-field','extra-count','extra-failure','duplicate-failure','wrong-url']) {
+  const h=await focusHarness(t);readinessFixture(h);removeProblemControls(h);let pauses=0;h.onReadyPause=()=>pauses++;
+  const evaluate=h.bridge._evaluate.bind(h.bridge);
+  h.bridge._evaluate=async(...args)=>{const raw=await evaluate(...args);if(!args[1].includes('const failures=[]'))return raw;const m=JSON.parse(raw);
+   if(kind==='extra-field')m.unexpected=true;
+   if(kind==='extra-count')m.counts.unexpected=0;
+   if(kind==='extra-failure')m.failures.push({target:'top-navbar',reason:'shape'});
+   if(kind==='duplicate-failure')m.failures[1]=m.failures[0];
+   if(kind==='wrong-url')m.url='https://www.tensortonic.com/problems/other';
+   return JSON.stringify(m);};
+  await assert.rejects(h.bridge.waitForFocusReady(h.page),{code:'INVALID_PROOF'});assert.equal(pauses,0,kind);assert.equal(h.nextSheet,0);
+ }
+});
+
+test('readiness never treats a falsy inspection rejection as a successful proof',async t=>{
+ for(const rejected of [undefined,null,0]) {
+  const h=await focusHarness(t);readinessFixture(h);let calls=0;
+  const inspect=h.bridge.inspectFocusContract.bind(h.bridge);h.bridge.inspectFocusContract=(...args)=>++calls===1?inspect(...args):Promise.reject(rejected);
+  let rejectedObserved=false;try{await h.bridge.waitForFocusReady(h.page);}catch(_){rejectedObserved=true;}
+  assert.equal(rejectedObserved,true);assert.equal(calls,2);assert.equal(h.nextSheet,0);
+ }
+});

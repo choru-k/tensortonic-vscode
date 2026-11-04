@@ -4,3 +4,4 @@
 d36c87b3c7e95149db91a4c6a03eb49b3462a0bd9784a1cfbe686df4fbacefc2  tensortonic-vscode-0.12.7.vsix
 c85d2eaa0cc21c8537aedcd1678a8ea922c200b6bf53301876c030ce2aa21254  tensortonic-vscode-0.12.8.vsix
 65794c95d7847627aec94bdebd9b748c62d88825ea2dea062fcc455e6055b5ef  tensortonic-vscode-0.12.9.vsix
+21ead7570571b2751d38df227646b5711d981b2e37d007cffb481fcd8e6bad2f  tensortonic-vscode-0.12.10.vsix

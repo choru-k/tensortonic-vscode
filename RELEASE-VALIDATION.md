@@ -1,3 +1,34 @@
+# 0.12.10 observed incomplete-controls candidate
+
+The approved native 0.12.9 diagnostic run established this sequence: page lookup
+succeeded, initial document/body loading indicators cleared, then all seven
+problem controls were missing from the full contract check. No navbar target
+failure was reported. Automatic Focus stayed Unavailable; manual On after loading
+succeeded and Off restored. This identifies the failing verification state, not
+an underlying website implementation cause.
+
+The new exception is readiness-only: exactly the seven known non-navbar controls
+must have zero matches, exactly seven unique missing failures must be present,
+and the signed-in navbar must pass its complete proof with exactly one match.
+Metadata keys and URL are checked, and the owned document is checked again.
+Only the private readiness gate can return incomplete, which clears any apply
+proof. The ordinary verifier still rejects the same incomplete state.
+
+Waiting remains read-only, within the original five-second/25-attempt bound.
+Two complete proofs are still required after loading; an incomplete result resets
+that streak. Partial/malformed/count/security rejection does not retry. Off,
+newer navigation, session changes, Markdown and document changes retain existing
+fences. Diagnostics preserve proof error categories and no longer infer URL
+mismatch when no page object exists.
+
+Serial cloud validation passed 837/837 aggregate tests, 102/102 session checks
+and 90/90 transport checks. New cases cover the observed incomplete-to-valid
+transition, partial/count/security near misses, malformed metadata, timeout,
+cancellation, document change, reset proof streak, falsy rejection and accurate
+URL diagnostics. No Mac access, installation or publication occurred for this
+candidate. Native verification remains necessary.
+Historical results follow.
+
 # 0.12.9 diagnostic-only candidate
 
 Native testing of both 0.12.7 and 0.12.8 reported On / Unavailable after problem

@@ -1112,7 +1112,7 @@ function activate(context) {
       } catch (error) { trace.emit('lookup', 'fail', diagnosticErrorCode(error)); }
       if (!current()) { trace.emit('result', 'canceled'); return focusMode.state; }
       trace.emit('lookup', page ? 'ok' : 'fail', page ? undefined : 'no-page');
-      if (expectedUrl && page?.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
+      if (expectedUrl && page && page.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
       // A title/state notification or same-document open must not re-arm the
       // navbar after its conservative mutation guard has revoked it.
       if (automatic && page && previousPage && ['id','url','documentId','frameId'].every(key => page[key] === previousPage[key])) { trace.emit('same-document', 'skip'); return focusMode.state; }
@@ -1121,7 +1121,7 @@ function activate(context) {
         try { page = await focusDisplay().waitForFocusReady(page, { signal: controller.signal, onDiagnostic: trace.record }); trace.emit('readiness', 'ok'); }
         catch (error) { trace.emit('readiness', 'fail', diagnosticErrorCode(error)); page = undefined; }
         if (!current()) { trace.emit('result', 'canceled'); return focusMode.state; }
-        if (expectedUrl && page?.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
+        if (expectedUrl && page && page.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
       }
       state.focusReason = !page ? 'no-owned-page' : undefined;
       focusedPage = page;
