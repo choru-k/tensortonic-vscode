@@ -1997,3 +1997,18 @@ test('failed readiness does not invent a URL mismatch after discarding the page'
  assert.ok(events.some(e=>e.stage==='readiness'&&e.code==='INVALID_PROOF'));
  assert.equal(events.some(e=>e.stage==='url'&&e.code==='mismatch'),false);assert.equal(f.css,'');
 });
+
+test('public saved-session diagnosis delegates only to the separate diagnostic without refresh or output', async t => {
+  const native = nativeUiFixture(true);
+  const result = Object.freeze({ accountVerified: true, outcome: 'VERIFIED', requestCount: 1 });
+  let diagnoses = 0, observed;
+  native.diagnoseStoredSession = async options => { diagnoses++; observed = options; return result; };
+  const h = await harness(t, { nativeTransport: native });
+  const before = { starts: native.starts, list: h.calls.list.length, get: h.calls.get.length, output: h.output.length, secrets: h.secretCalls.length };
+  const controller = new AbortController();
+  assert.equal(await h.publicApi.diagnoseStoredSession({ signal: controller.signal }), result);
+  assert.equal(diagnoses, 1); assert.equal(observed.signal, controller.signal);
+  assert.deepEqual({ starts: native.starts, list: h.calls.list.length, get: h.calls.get.length, output: h.output.length, secrets: h.secretCalls.length }, before);
+  assert.equal(h.publicApi.bridge, undefined); assert.equal(h.publicApi.client, undefined); assert.equal(h.publicApi.vault, undefined);
+  assert.deepEqual(h.calls.run, []); assert.deepEqual(h.calls.submit, []);
+});

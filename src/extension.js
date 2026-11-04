@@ -1305,7 +1305,7 @@ function activate(context) {
     output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
   }).finally(updateConnection);
   // Do not export a vault, SecretStorage object, raw transport or CDP capability.
-  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, focusDiagnostics: focusDiagnostics.snapshot, sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
+  return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, focusDiagnostics: focusDiagnostics.snapshot, diagnoseStoredSession: options => bridge.diagnoseStoredSession(options), sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }
 
 function deactivate() {return stopActiveSession();}

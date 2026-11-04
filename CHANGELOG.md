@@ -1,3 +1,11 @@
+# 0.12.12
+
+- Add a separately invoked saved-session diagnostic using one fixed account GET without local session writes, clearing, reconnecting, cookie adoption or grading.
+- Return only bounded diagnostic enums, booleans and a zero-or-one request count. Invalid local credentials, authentication failures, changed schemas and response cookie rotation do not mutate saved credentials.
+- Require a trusted idle local session, reject owned browser resources, bound cancellation/timeouts, and invalidate observed concurrent changes.
+- Replace the obsolete 0.10.0 native runner with an active-extension-only diagnostic runner. No activation, fallback or automatic replay occurs.
+- Document server-side GET effects and the optimistic cross-process fence limit. This release is cloud-tested; native installation and real-account validation remain separate.
+
 # 0.12.11 (cloud candidate)
 
 - Accept the exact publicly verified Labs navbar link while requiring the complete known six- or seven-link set. Unknown/missing/duplicate links and security-sensitive changes still fail open.

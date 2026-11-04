@@ -4,16 +4,17 @@ const {NativeBrowserBridge}=require('./native-browser-bridge');
 const {SessionVault}=require('./session/vault');
 const {SessionHttpTransport}=require('./session/http');
 const {fault}=require('./session/fault');
+const {summary:diagnosticSummary}=require('./session/diagnostic');
 
 // Phase-one candidate: no real cookie names/domains or acquisition adapter are
 // guessed. Explicitly reviewed production scope/acquisition is a later change.
 // Tests supply a synthetic vault/transport/acquirer; no test route is added to
 // the production allowlist or exposed through user configuration.
 class SessionBridge {
-  constructor(vscode,context,{vault,transport,acquire,acquisition,display,verifySession}={}){
+  constructor(vscode,context,{vault,transport,acquire,acquisition,display,verifySession,diagnostic}={}){
     this.vscode=vscode;this.context=context;this.vault=vault;this.transport=transport;
     this.acquisition=acquisition;this.acquire=acquisition?options=>acquisition.acquire(options):acquire;this.acquisitionOwners=new Set();this.display=display;this.connected=false;this.generation=0;
-    this.verifySession=verifySession;this.supportsGrading=transport?.supportsGrading===true;this.controllers=new Set();this.disposed=false;
+    this.diagnostic=diagnostic;this.verifySession=verifySession;this.supportsGrading=transport?.supportsGrading===true;this.controllers=new Set();this.disposed=false;
   }
   _trusted(){if(this.disposed||this.vscode.workspace?.isTrusted!==true||this.vscode.env?.remoteName||this.vscode.env?.uiKind===2)throw fault('UNSUPPORTED');}
   _configured(){
@@ -21,6 +22,7 @@ class SessionBridge {
   }
   _connected(value){if(this.connected!==value){this.connected=value;this.onDidChange?.();}}
   async start(options={}){
+    this.diagnosticController?.abort();
     if(this.restoring)await this.restoring;
     if(this.starting)return this.starting;
     const task=this._start(options);this.starting=task;
@@ -71,10 +73,11 @@ class SessionBridge {
     catch(error){if(error.code==='CONSENT_REQUIRED')throw fault('AUTH_REQUIRED');throw error;}
   }
   get hasOwnedResources(){return this.acquisitionOwners.size>0||!!this.acquisition?.hasOwnedResources||!!this.display?.hasOwnedResources;}
-  get pending(){return this.controllers.size>0;}
+  get pending(){return this.controllers.size>0||!!this.diagnosticController;}
   get cleanupPending(){return this.acquisitionOwners.size>0||!!this.acquisition?.cleanupPending||this.lastCleanup?.acquisition?.closed===false||this.lastCleanup?.presentation?.closed===false||!!this.display?.cleanupPending||!!this.vault?.cleanupPending;}
   confirmConnection(options){return this.start(options);}
   restore(){
+    this.diagnosticController?.abort();
     if(this.restoring)return this.restoring;if(this.starting||this.connected)return Promise.resolve(this.connected);
     const controller=new AbortController(),generation=this.generation;this.restoreController=controller;
     const task=(async()=>{
@@ -85,6 +88,7 @@ class SessionBridge {
     task.finally(()=>{if(this.restoring===task)this.restoring=undefined;if(this.restoreController===controller)this.restoreController=undefined;}).catch(()=>{});return task;
   }
   async request(route,options={}){
+    this.diagnosticController?.abort();
     this._trusted();this._configured();if(!this.connected)throw fault('AUTH_REQUIRED');
     const controller=new AbortController(),generation=this.generation;
     const abort=()=>controller.abort();options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
@@ -96,7 +100,30 @@ class SessionBridge {
     }catch(error){if(error.sessionInvalid===true||['AUTH_REQUIRED','COOKIE_POLICY','STORAGE_TIMEOUT','STORAGE_UNAVAILABLE','STORAGE_CLEANUP_PENDING'].includes(error.code)){this.token=undefined;this._connected(false);}throw error;}
     finally{this.controllers.delete(controller);options.signal?.removeEventListener('abort',abort);}
   }
+  async diagnoseStoredSession(options={}){
+    let controller,externalSignal,abort;
+    try{
+      if(!options||typeof options!=='object'||Object.keys(options).some(key=>key!=='signal'))return diagnosticSummary('UNSUPPORTED');
+      externalSignal=options.signal;
+      if(externalSignal&&(!(externalSignal instanceof AbortSignal)))return diagnosticSummary('UNSUPPORTED');
+      const generation=this.generation;
+      const check=()=>{
+        this._trusted();
+        if(generation!==this.generation)throw {code:'SESSION_CHANGED'};
+        if(!this.connected)throw {code:'AUTH_REQUIRED'};
+        if(this.starting||this.restoring||this.controllers.size||this.diagnosticController&&this.diagnosticController!==controller)throw {code:'SESSION_BUSY'};
+        if(this.hasOwnedResources)throw {code:'OWNED_RESOURCES'};
+        if(this.cleanupPending)throw {code:'CLEANUP_PENDING'};
+        if(typeof this.diagnostic!=='function')throw {code:'UNSUPPORTED'};
+      };
+      check();controller=new AbortController();this.diagnosticController=controller;
+      abort=()=>controller.abort();externalSignal?.addEventListener('abort',abort,{once:true});if(externalSignal?.aborted)abort();
+      return await this.diagnostic({signal:controller.signal,assertCurrent:check});
+    }catch(error){return diagnosticSummary(error?.code);}
+    finally{externalSignal?.removeEventListener?.('abort',abort);if(controller&&this.diagnosticController===controller)this.diagnosticController=undefined;}
+  }
   async openProblemPage(url,options){
+    this.diagnosticController?.abort();
     this._trusted();
     // Optional Web presentation owns its own page/CDP lifetime. Closing every
     // display tab never invalidates or refreshes the independently stored jar.
@@ -104,7 +131,7 @@ class SessionBridge {
     return this.display.openProblemPage(url,options);
   }
   _cancelAndDisconnect(){
-    this.generation++;this.connectController?.abort();this.restoreController?.abort();for(const controller of this.controllers)controller.abort();
+    this.generation++;this.diagnosticController?.abort();this.connectController?.abort();this.restoreController?.abort();for(const controller of this.controllers)controller.abort();
     this.token=undefined;this._connected(false);
   }
   async _cleanupOperation(work,code){

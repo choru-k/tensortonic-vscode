@@ -6,6 +6,7 @@ const {createConfirmedBrowserAcquirer}=require('./acquisition-ui');
 const {SessionVault}=require('./vault');
 const {SessionHttpTransport,tensorTonicPostContract}=require('./http');
 const {fault}=require('./fault');
+const {createSessionDiagnostic}=require('./diagnostic');
 const SESSION_NAME='__Secure-better-auth.session_token';
 const LOGIN_URL='https://www.tensortonic.com/';
 const AUTH_URL='https://api.tensortonic.com/api/me';
@@ -31,7 +32,7 @@ function createSessionBridge(vscode,context){
   // Frontend-compatible route/body contract, not a claim of live server grading validation.
   const transport=new SessionHttpTransport(vault,{postContract:tensorTonicPostContract,postTimeoutMs:150000});
   const acquisition=createConfirmedBrowserAcquirer(vscode,{plan:verifiedPlan(),gradingAvailable:transport.supportsGrading});
-  return new SessionBridge(vscode,context,{vault,transport,acquisition,verifySession:async({signal})=>{
+  return new SessionBridge(vscode,context,{vault,transport,acquisition,diagnostic:createSessionDiagnostic(vault,{authenticatedAccount}),verifySession:async({signal})=>{
     const account=await transport.request('/api/me',{signal});
     if(!authenticatedAccount(account)){
       const credentials=await vault.clear();const error=fault(credentials.credentialsDeleted?'ACCOUNT_SCHEMA_UNVERIFIED':'STORAGE_CLEANUP_PENDING');error.cleanup={credentials};throw error;

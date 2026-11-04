@@ -1,3 +1,30 @@
+# 0.12.12 non-mutating local session diagnosis
+
+The separate `diagnoseStoredSession` API performs at most one fixed HTTPS account
+GET. It bypasses ordinary session restoration, verification, transport and cleanup
+paths that can clear or rotate saved credentials. It does not write the local
+session index or SecretStorage, adopt response cookies, expose account payloads,
+open browser resources, import credentials or grade. The native runner requires
+an already active extension and never activates or reconnects it.
+
+Final serial cloud checks passed 896/896 aggregate, 152/152 session and 91/91
+transport tests with no failures, skips or cancellations. Fifty-seven new tests
+cover local byte preservation, production-factory/HTTPS-dispatch integration,
+401/schema/rotation failures, timeout/cancellation, corrupt storage, trust and
+lifecycle gates, concurrent changes, facade wiring and the native runner.
+Independent focused review and all 57 new tests passed without blocking findings.
+JavaScript syntax, package allowlist, archive integrity and source parity passed.
+
+Local non-mutation is not remote non-mutation: a GET can rotate a server session.
+Any Set-Cookie response is unverified and never adopted. Snapshot checks are
+optimistic, not an atomic cross-process revocation lock. Another process can clear
+or change the session after the last pre-dispatch read, allowing one request before
+a later check rejects the result. No automatic replay is performed.
+
+These tests use synthetic credentials and responses. No real account access,
+Mac installation, native pixels or live grading is established by this release.
+Earlier 0.12.11 artifacts remain unchanged. Historical validation follows.
+
 # 0.12.11 reviewed Labs compatibility candidate
 
 Fresh public SSR and official navbar JavaScript confirm an added `/labs` link

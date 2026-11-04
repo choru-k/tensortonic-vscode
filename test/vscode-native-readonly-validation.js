@@ -1,54 +1,54 @@
 'use strict';
-// Explicitly authorized real-site READ validation only. This runner contains
-// no Run/Submit call, authentication extraction, or solution-file modification.
+// Explicitly authorized fixed-route diagnosis. Never activate/reconnect an
+// extension or invoke smokeTest, normal transport, grading, or cookie acquisition.
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
+const expectedVersion = require('../package.json').version;
+const { OUTCOMES } = require('../src/session/diagnostic');
+
+function failure(code) { return Object.assign(new Error(code), { code }); }
+async function validateNativeReadOnly(vscode) {
+  const extension = vscode.extensions.getExtension('choru-local.tensortonic-vscode');
+  if (!extension || extension.packageJSON.version !== expectedVersion) throw failure('VERSION_MISMATCH');
+  // Activation/restoration itself may expire/delete saved credentials. A
+  // diagnostic must not trigger that lifecycle merely to obtain the facade.
+  if (extension.isActive !== true) throw failure('ACTIVE_EXTENSION_REQUIRED');
+  const api = extension.exports;
+  if (!api || typeof api.diagnoseStoredSession !== 'function' ||
+      ['bridge', 'client', 'vault'].some(key => api[key] !== undefined)) throw failure('DIAGNOSTIC_API_REQUIRED');
+  let debugSessionStarts = 0;
+  const subscription = vscode.debug.onDidStartDebugSession(() => { debugSessionStarts++; });
+  try {
+    const result = await api.diagnoseStoredSession();
+    if (debugSessionStarts !== 0) throw failure('UNEXPECTED_DEBUG_SESSION');
+    if (!result || result.accountVerified !== true || result.outcome !== 'VERIFIED' || result.requestCount !== 1) {
+      const error = failure('DIAGNOSIS_NOT_VERIFIED');
+      error.diagnosticOutcome = OUTCOMES.includes(result?.outcome) && result.outcome !== 'VERIFIED' ? result.outcome : 'INVALID_RESPONSE';
+      throw error;
+    }
+    // Never copy account response fields, error messages or credential metadata.
+    return { extensionVersion: expectedVersion, status: 'PASS', operation: 'fixed-account-get',
+      accountVerified: true, requestCount: 1, runSubmitCalls: 0, debugSessionStarts };
+  } finally {
+    subscription.dispose();
+  }
+}
+
+exports.validateNativeReadOnly = validateNativeReadOnly;
 exports.run = async function run() {
   if (process.env.TENSORTONIC_TEST_ALLOW_REAL_READ !== '1') throw new Error('Real-site read validation requires explicit authorization and TENSORTONIC_TEST_ALLOW_REAL_READ=1.');
   const vscode = require('vscode');
-  const output = path.resolve(__dirname, '../dist/native-readonly-validation.json');
-  const report = { version: vscode.version, startedAt: new Date().toISOString(), status: 'NOT VERIFIED',
-    realSiteReads: 0, runSubmitCalls: 0, authMaterialRead: false, checks: [] };
-  let bridge; let ownsConnection = false;
-  let debugSessionStarts = 0;
-  const debugSubscription = vscode.debug.onDidStartDebugSession(() => { debugSessionStarts++; });
+  const report = { version: vscode.version, status: 'NOT VERIFIED', operation: 'fixed-account-get' };
   try {
-    const extension = vscode.extensions.getExtension('choru-local.tensortonic-vscode');
-    if (!extension) throw new Error('Candidate extension is not installed.');
-    report.extensionVersion = extension.packageJSON.version;
-    if (report.extensionVersion !== '0.10.0') throw new Error('Expected release 0.10.0.');
-    const api = await extension.activate(); bridge = api.bridge;
-    const native = bridge;
-    if (bridge.connected || !native || native.hasOwnedResources || native.starting || native.pending || native.navigating || native.cleanupPending) throw new Error('An existing native connection lifecycle is present; this runner will not take it over.');
-    ownsConnection = true;
-    await bridge.start();
-    report.checks.push('Dedicated owned native browser session connected');
-    const paths = ['/api/study-plans', '/api/study-plans/pytorch-basics/problems/pytorch-balanced-dataloader'];
-    for (const route of paths) {
-      report.realSiteReads++;
-      const result = await bridge.request(route);
-      if (!result || result.status !== 'success' || !result.data || typeof result.data !== 'object') throw new Error('Unexpected API schema');
-      if (route.includes('/problems/') && (typeof result.data.title !== 'string' || typeof result.data.starterCode !== 'string' || typeof result.data.description !== 'string' || !result.data.functionMetadata || typeof result.data.functionMetadata !== 'object')) throw new Error('Unexpected problem schema');
-      const text = JSON.stringify(result);
-      report.checks.push({ route, bytes: Buffer.byteLength(text), sha256: crypto.createHash('sha256').update(text).digest('hex'),
-        jsonType: Array.isArray(result) ? 'array' : typeof result });
-    }
-    if (debugSessionStarts !== 0) throw new Error('Unexpected debug session during direct-browser validation');
-    report.status = 'PASS';
+    Object.assign(report, await validateNativeReadOnly(vscode));
   } catch (error) {
-    // Never serialize debugger errors, payloads, page globals, or auth data.
-    report.errorCode = ['AUTH_REQUIRED','LOGIN_OR_PAGE_REQUIRED','UNAVAILABLE','BUSY','CANCELED','TIMEOUT'].includes(error.code) ? error.code : 'VALIDATION_NOT_COMPLETE';
-  } finally {
-    if (bridge && ownsConnection) {
-      try { await bridge.stop(); report.ownedCleanup = 'requested'; }
-      catch (_) { report.ownedCleanup = 'unconfirmed'; report.status = 'NOT VERIFIED'; }
-    }
-    report.debugSessionStarts = debugSessionStarts;
-    debugSubscription.dispose();
-    report.finishedAt = new Date().toISOString();
-    fs.mkdirSync(path.dirname(output), { recursive: true });
-    fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
+    const allowed = ['VERSION_MISMATCH', 'ACTIVE_EXTENSION_REQUIRED', 'DIAGNOSTIC_API_REQUIRED',
+      'UNEXPECTED_DEBUG_SESSION', 'DIAGNOSIS_NOT_VERIFIED'];
+    report.errorCode = allowed.includes(error.code) ? error.code : 'VALIDATION_NOT_COMPLETE';
+    if (OUTCOMES.includes(error.diagnosticOutcome)) report.diagnosticOutcome = error.diagnosticOutcome;
   }
-  if (report.status !== 'PASS') throw new Error('Native read-only validation not complete. Review sanitized report; sign in normally and retry only the read checks when authorized.');
+  const output = path.resolve(__dirname, '../dist/native-readonly-validation.json');
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  fs.writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
+  if (report.status !== 'PASS') throw new Error('Native diagnosis not complete. Review the sanitized report; no automatic retry was performed.');
 };

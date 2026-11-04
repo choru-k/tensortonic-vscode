@@ -39,7 +39,35 @@ The package builder uses an explicit source allowlist. Rebuild after changing pa
 
 ## Live testing
 
-A native read-only check requires explicit permission for the target host/session and normal user login. The optional `test/vscode-native-readonly-validation.js` runner is gated by `TENSORTONIC_TEST_ALLOW_REAL_READ=1`; it does not authorize or perform grading. The runner also requires the proposal to be enabled for this extension. Do not extend it to submit code merely to test reconnect, direct-API integration, or browser presentation.
+A native account diagnostic requires explicit permission for the target host/session
+and an already active, connected extension whose version matches the checkout.
+The optional `test/vscode-native-readonly-validation.js` runner is gated by
+`TENSORTONIC_TEST_ALLOW_REAL_READ=1`. It invokes only the separate
+`diagnoseStoredSession` activation-facade method. It does not activate, restore,
+reconnect, call `smokeTest`, import or clear credentials, open/close browser pages,
+change solutions, or grade. An inactive extension or missing diagnostic API blocks
+rather than falling back to the ordinary session lifecycle.
+
+The diagnostic performs at most one fixed `/api/me` GET through a separate path.
+It does not write the local index or SecretStorage, collect old credentials, or
+save response cookies. Invalid/expired local records, authentication rejection,
+changed account schemas and cookie rotation are reported without clearing local
+state. Pending work, cleanup and owned resources block the check. Snapshot and
+session-generation changes invalidate the result. These are optimistic snapshot
+checks, not an atomic cross-process revocation lock: another process can change
+or clear the session after the final check but before the single GET is sent.
+A detected change after dispatch prevents a verified result, but cannot unsend
+that request. No lock file is created merely to diagnose. Only bounded enums,
+booleans and a zero-or-one request count leave the API; account payloads and
+credential values do not.
+
+A GET can still have server-side effects. In particular, the service may rotate
+its session independently. Any Set-Cookie response is reported as unverified and
+is not adopted. Local non-mutation is not a promise that the remote account/session
+cannot change. Do not replay a diagnostic automatically. This checks account
+recognition only, not problem access, grading, session persistence or rendered UI.
+No browser proposal is needed for this direct HTTPS diagnosis.
+
 
 Real Run/Submit verification needs separate authorization for the exact existing solution and action. Never automatically repeat a Submit whose outcome is uncertain. Keep account-specific evidence out of the package, and never describe Agent-composer attachment checks as proof of an actual Agent response.
 
