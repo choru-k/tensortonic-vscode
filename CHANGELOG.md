@@ -1,3 +1,9 @@
+# 0.12.11 (cloud candidate)
+
+- Accept the exact publicly verified Labs navbar link while requiring the complete known six- or seven-link set. Unknown/missing/duplicate links and security-sensitive changes still fail open.
+- Revise the reviewed contract identifier; preserve all seven problem-control selectors and existing readiness/application/restoration behavior.
+- The separate native missing-controls condition remains unresolved. This candidate is not published, installed or native-validated.
+
 # 0.12.10 (cloud candidate)
 
 - Address the observed post-spinner state where all seven problem controls are absent while the signed-in navbar passes verification. Only that exact incomplete state may wait read-only within the existing readiness deadline.

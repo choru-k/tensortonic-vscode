@@ -41,3 +41,21 @@ test('root replacement clears a cloned gate and cannot keep a replacement capsul
   doc.documentElement = makeRoot(); doc.documentElement.setAttribute(NAVBAR_MARKER,'guarded');
   callback(); assert.equal(root.hasAttribute(NAVBAR_MARKER),false); assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER),false);
 });
+
+function withLabs() {
+ const f=makeNavbar(),labs=f.element('A',[],'Labs',{href:'/labs'});
+ f.links.children.splice(2,0,labs);f.links.queries.a=f.links.children.filter(n=>n.tagName==='A');
+ return {...f,labs};
+}
+test('reviewed Labs navbar supports exactly the complete old or new link sets',()=>{
+ assert.equal(verifyNavbar(makeNavbar().nav),true);
+ assert.equal(verifyNavbar(withLabs().nav),true);
+ for(const mutation of [
+  f=>{f.labs.attrs.href='/unknown';},
+  f=>{f.labs.textContent='Unreviewed';},
+  f=>{f.links.children=f.links.children.filter(n=>n.getAttribute('href')!=='/pricing');f.links.queries.a=f.links.children.filter(n=>n.tagName==='A');},
+  f=>{f.labs.attrs.href='/pricing';f.labs.textContent='Pricing';},
+  f=>{f.nav.childNodes.push({nodeType:3,textContent:'Session expired'});},
+  f=>{f.links.children.push(f.element('A',[],'Extra',{href:'/extra'}));f.links.queries.a=f.links.children.filter(n=>n.tagName==='A');},
+ ]){const f=withLabs();mutation(f);assert.equal(verifyNavbar(f.nav),false);}
+});

@@ -1,7 +1,8 @@
 'use strict';
 
 // Public /problems/relu SSR and Navbar bundle 2xv1uplc4nzzv.js, reviewed
-// 2026-11-03. This is the outer capsule, not the problem tabs or a drawer.
+// 2026-11-03; /labs addition verified in public SSR and Navbar bundle
+// 0isxu7-mgnu7z.js on 2026-11-04. Not the problem tabs or a drawer.
 const NAVBAR_BASE = 'div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > nav.text-foreground.sticky.top-0.z-50.w-full.pt-3.pb-1';
 // CSS keeps semantic notices/authentication and opened menus visible even if
 // they appear after the pre-apply check. This exact suffix is the only allowed
@@ -29,11 +30,15 @@ function verifyNavbar(e) {
     if (!menu.matches('button[aria-label="Open menu"]') || menu.textContent.trim() || !one(menu, 'svg.lucide-menu')) return false;
     if (!logo.matches('a[href="/problems"]') || logo.textContent.trim() !== 'TensorTonic' || !one(logo, 'img[alt="TensorTonic"]')) return false;
     const expectedLinks = new Map([['/problems','Problems'],['/study-plans','Study Plans'],['/projects','Projects'],['/assessments','Interview'],['/pricing','Pricing'],['/feedback','Feedback']]);
+    const linkCount = links.querySelectorAll('a').length;
+    if (![6, 7].includes(linkCount)) return false;
+    // Accept only the complete prior set or the complete reviewed Labs set.
+    if (linkCount === 7) expectedLinks.set('/labs', 'Labs');
     for (const child of links.children) {
       if (child.tagName === 'A') { if (expectedLinks.get(child.getAttribute('href')) !== child.textContent.trim()) return false; expectedLinks.delete(child.getAttribute('href')); }
       else if (!child.matches('div.relative') || child.children.length !== 1 || !child.firstElementChild.matches('button') || child.textContent.trim() !== 'Explore' || !one(child, 'svg.lucide-chevron-down')) return false;
     }
-    if (links.querySelectorAll('a').length !== 6 || links.querySelectorAll('button').length !== 1) return false;
+    if (expectedLinks.size !== 0 || links.querySelectorAll('button').length !== 1) return false;
     const children = [...right.children];
     if (![4,5].includes(children.length)) return false;
     const [news, discord, theme] = children, avatar = children.at(-1);
@@ -43,7 +48,7 @@ function verifyNavbar(e) {
     if (children.length === 5 && (!children[3].matches('a[href="/starred"][aria-label="Starred problems"]') || children[3].textContent.trim() || !one(children[3], 'svg.lucide-star'))) return false;
     if (!avatar.matches('button.rounded-full.border[aria-haspopup="menu"][aria-expanded="false"][data-state="closed"]') || avatar.textContent.trim().length > 2) return false;
     // Reject unrelated content, login actions, warning text, forms and dialogs.
-    const safeText = new Set(['TensorTonic','Problems','Roadmap','Explore','Study Plans','Projects','Interview','Pricing','Feedback','Toggle theme']);
+    const safeText = new Set(['TensorTonic','Problems','Roadmap','Explore','Study Plans','Labs','Projects','Interview','Pricing','Feedback','Toggle theme']);
     for (const node of [e, ...e.querySelectorAll('*')]) {
       if (node !== e && !['DIV','SPAN','A','BUTTON','IMG','svg','path','circle','rect','line','polyline','polygon','g'].includes(node.tagName)) return false;
       if (node.closest('button[aria-haspopup="menu"]') === avatar) continue;

@@ -301,7 +301,7 @@ test('focus contract pinning rejects changed selectors, expectations, counts and
 
 test('focus pins eight reviewed controls including responsive Browse and the floating assistant launcher', t => {
   const h = harness(t), browse = FOCUS_CONTRACT.targets.find(target => target.id === 'desktop-browse');
-  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-focus-capsule-2026-11-03');
+  assert.equal(FOCUS_CONTRACT.id, 'tt-problem-focus-capsule-2026-11-04');
   assert.equal(FOCUS_CONTRACT.targets.length, 8);
   assert.equal(FOCUS_CONTRACT.targets.filter(target => target.expectation.tag === 'a').length, 4);
   assert.equal(browse.selector, 'nav.flex.gap-4.px-4.h-12.items-end.border-b.border-border.text-sm > button[title="Browse problems"]');
@@ -848,4 +848,13 @@ test('readiness never treats a falsy inspection rejection as a successful proof'
   let rejectedObserved=false;try{await h.bridge.waitForFocusReady(h.page);}catch(_){rejectedObserved=true;}
   assert.equal(rejectedObserved,true);assert.equal(calls,2);assert.equal(h.nextSheet,0);
  }
+});
+
+test('current public Labs link verifies without weakening capsule restoration',async t=>{
+ const h=await focusHarness(t);const f=h.navbar;
+ f.links.children.splice(2,0,f.element('A',[],'Labs',{href:'/labs'}));f.links.queries.a=f.links.children.filter(n=>n.tagName==='A');
+ await h.bridge.inspectFocusContract(FOCUS_CONTRACT);
+ const lease=await h.applyFocus();assert.equal(h.nextSheet,1);h.revokeNavbar();
+ assert.equal(h.sandbox.document.documentElement.hasAttribute(NAVBAR_MARKER),false);
+ await lease.restore();assert.equal([...h.styles.values()].includes(FOCUS_CONTRACT.cssText),false);
 });

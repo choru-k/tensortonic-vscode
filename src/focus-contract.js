@@ -27,7 +27,7 @@ targets.push(Object.freeze({ id: 'ask-toni', selector: 'main.flex-1.overflow-hid
 targets.push(Object.freeze({ id: 'top-navbar', selector: NAVBAR_SELECTOR, count: 1, expectation: Object.freeze({ tag: 'nav', kind: 'top-navbar' }) }));
 
 const FOCUS_CONTRACT = Object.freeze({
-  id: 'tt-problem-focus-capsule-2026-11-03', verified: true,
+  id: 'tt-problem-focus-capsule-2026-11-04', verified: true,
   surface: 'problem-content', hidesSecurityUI: false,
   targets: Object.freeze(targets),
   cssText: targets.map(target => `${target.selector}{display:none!important;}`).join('\n'),

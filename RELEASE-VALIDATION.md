@@ -1,3 +1,21 @@
+# 0.12.11 reviewed Labs compatibility candidate
+
+Fresh public SSR and official navbar JavaScript confirm an added `/labs` link
+labeled Labs. The former exact six-link verifier rejects that layout. The candidate
+accepts only complete reviewed six- or seven-link sets; it does not broaden unknown
+structure, authentication, security notices or menu states.
+
+Old and current public streamed problem content are byte-identical, so no change
+to the seven problem-control selectors is supported or included. The native report
+of missing controls remains unresolved; public evidence does not prove the actual
+Mac DOM or a complete fix. See [evidence and limits](docs/focus-labs-compatibility.md).
+
+Serial cloud validation passed 839/839 aggregate tests, 102/102 session checks
+and 91/91 transport checks. New regression cases cover both complete reviewed
+link sets, wrong href/text, missing/duplicate/extra links, warning text and guarded
+application/revocation/restoration with Labs. No Mac access, installation or
+publication occurred. Historical validation follows.
+
 # 0.12.10 observed incomplete-controls candidate
 
 The approved native 0.12.9 diagnostic run established this sequence: page lookup
