@@ -84,7 +84,7 @@ class NativeBrowserBridge {
     }
     // Presentation metadata from this exact owned tab only. Never forward raw
     // auth URLs, arbitrary query values, page content, credentials or targets.
-    try { this.onDisplayPage(Object.freeze({ closed, ...(ref ? { ref } : {}) })); } catch (_) {}
+    try { this.onDisplayPage(Object.freeze({ closed, ...(ref ? { ref } : {}), ...(!closed && !FOCUS_URL.test(resource.tab.url) ? { focusUnverified: true } : {}) })); } catch (_) {}
   }
   get hasOwnedResources() { return this.resources.size > 0 || !!this.launching; }
   get presentationState() {
@@ -238,9 +238,12 @@ class NativeBrowserBridge {
   }
   async recoverFocusPage({ signal, onDiagnostic } = {}) {
     if (this.target) return this.getFocusPage({ signal, onDiagnostic });
-    const anchor = this.focusAnchor, generation = this.generation;
+    return this._recoverFocusAnchor(this.focusAnchor, { signal, onDiagnostic });
+  }
+  async _recoverFocusAnchor(anchor, { signal, onDiagnostic } = {}) {
+    const generation = this.generation;
     const r = anchor?.resource;
-    // Explicit Focus action only: no tab launch, navigation, global discovery,
+    // Anchored explicit-Focus or verified-reload recovery: no tab launch, navigation, global discovery,
     // other resource adoption, or change to the saved-session transport.
     if (!r || !this.resources.has(r) || r.closed || r.tabClosed || !r.group ||
         r.tab.url !== anchor.url || !FOCUS_URL.test(anchor.url) || r.targets.size !== 1 || !r.targets.has(anchor.sessionId)) throw fault('The original owned Focus page is unavailable.', 'PAGE_CHANGED');
@@ -277,6 +280,36 @@ class NativeBrowserBridge {
       await this.pause(50);
     } while (this.now() < deadline);
     throw fault('The owned Focus page is still loading. Try Focus after it loads.', 'PAGE_CHANGED');
+  }
+  async recoverReloadedFocusPage(previous, { signal: externalSignal, onDiagnostic } = {}) {
+    // An actual successful application, not an arbitrary page observation,
+    // anchors this read-only recovery to one existing resource/session/frame.
+    const sheet = [...this.focusSheets.values()].reverse().find(item => item.appliedConfirmed === true && sameFocusPage(item.page, previous));
+    if (!sheet) throw fault('No successfully applied Focus document anchors this reload.', 'PAGE_CHANGED');
+    const anchor = { resource: sheet.resource, sessionId: sheet.target.sessionId, frameId: sheet.page.frameId, url: sheet.page.url };
+    const generation = this.generation, originalTarget = this.target;
+    const controller = new AbortController(), signal = controller.signal;
+    const abort = () => controller.abort();
+    externalSignal?.addEventListener('abort', abort, { once: true });
+    if (externalSignal?.aborted) abort();
+    const deadline = this.now() + Math.min(5000, this.discoverTimeout, this.evaluationTimeout);
+    const remaining = () => Math.max(1, deadline - this.now());
+    let recovered;
+    try {
+      const page = await bounded(this._recoverFocusAnchor(anchor, { signal, onDiagnostic }), remaining(), 'Focus reload recovery timed out.', signal);
+      recovered = this.target;
+      this._check(generation, recovered, signal);
+      if (!recovered || recovered.resource !== anchor.resource || recovered.sessionId !== anchor.sessionId ||
+          page.id !== previous.id || page.url !== previous.url || page.frameId !== previous.frameId || page.documentId === previous.documentId) throw fault('The Focus reload changed its owned destination.', 'PAGE_CHANGED');
+      const isReload = await bounded(this._number(recovered, `(()=>{const entries=performance.getEntriesByType('navigation');return entries.length===1&&entries[0].type==='reload'?1:0})()`, generation, signal), remaining(), 'Focus reload verification timed out.', signal);
+      if (isReload !== 1 || !sameFocusPage(page, await bounded(this.getFocusPage({ signal, onDiagnostic }), remaining(), 'Focus reload identity timed out.', signal))) throw fault('The owned document is not a verified reload.', 'PAGE_CHANGED');
+      this._check(generation, recovered, signal);
+      if (this.now() >= deadline) throw fault('Focus reload recovery timed out.', 'TIMEOUT');
+      return page;
+    } catch (error) {
+      if (recovered && recovered !== originalTarget && this.target === recovered) this.target = undefined;
+      throw error;
+    } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
   async waitForFocusReady(page, { signal: externalSignal, onDiagnostic } = {}) {
     const controller = new AbortController(), signal = controller.signal;
@@ -502,6 +535,7 @@ class NativeBrowserBridge {
       if (visibleProof !== 1) throw fault('Focus controls remained visible; original styles will be restored.', 'FOCUS_NOT_APPLIED');
       if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed after visibility verification.', 'PAGE_CHANGED');
       if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
+      sheet.appliedConfirmed = true;
     } catch (error) {
       sheet.needsLateEmpty = true;
       if (!sheet.pending) void this._emptyFocusSheet(sheet).catch(() => { sheet.restoreFailed = true; });

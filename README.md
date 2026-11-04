@@ -108,8 +108,9 @@ structure change, including unlabelled notices or replacement navigation. It nev
 automatically hides a changed capsule again. Original view
 empties only the extension's dedicated stylesheet. In this candidate, the Focus
 preference stays On across extension-opened Web problems: old styles are restored
-first and the new exact owned page is verified independently. Browser refresh or
-manual navigation clears application but does not automatically reapply. A
+first and the new exact owned page is verified independently. A same-tab, same-URL browser reload can reapply after old cleanup and independent
+verification of the new document. Other manual navigation does not automatically
+reapply. A
 same-document open never re-arms a revoked capsule. The preference lives only
 in memory and resets on extension reload or session changes.
 Uncertain cleanup stays pending and can be retried. Browser chrome and automation

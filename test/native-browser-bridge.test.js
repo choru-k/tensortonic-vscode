@@ -264,9 +264,9 @@ test('owned presentation placement is initial-only and navigation events expose 
  const h=harness(t),states=[];
  await h.bridge.openProblemPage('https://www.tensortonic.com/problems/first?studyPlan=pytorch',{viewColumn:1,onDidChangePage:state=>states.push(state)});assert.equal(h.openOptions.viewColumn,1);assert.deepEqual(states.at(-1),{closed:false,ref:{slug:'first',planId:'pytorch'}});
  h.tabState.fire({url:'https://www.tensortonic.com/problems/unrelated?studyPlan=pytorch'});assert.equal(states.at(-1).ref.slug,'first');
- h.tab.url='https://www.tensortonic.com/problems/second?studyPlan=numpy&discard=private-query-sentinel#discard-private-fragment';h.tabState.fire(h.tab);assert.deepEqual(states.at(-1),{closed:false,ref:{slug:'second',planId:'numpy'}});assert.equal(JSON.stringify(states).includes('sentinel'),false);assert.equal(JSON.stringify(states).includes('private-fragment'),false);
+ h.tab.url='https://www.tensortonic.com/problems/second?studyPlan=numpy&discard=private-query-sentinel#discard-private-fragment';h.tabState.fire(h.tab);assert.deepEqual(states.at(-1),{closed:false,ref:{slug:'second',planId:'numpy'},focusUnverified:true});assert.equal(JSON.stringify(states).includes('sentinel'),false);assert.equal(JSON.stringify(states).includes('private-fragment'),false);
  await h.bridge.openProblemPage('https://www.tensortonic.com/problems/third',{viewColumn:2});assert.equal(h.opens,1);assert.equal(h.openOptions.viewColumn,1);assert.equal(states.at(-1).ref.slug,'third');
- h.tab.url='https://www.tensortonic.com/auth?token=AUTH_SENTINEL';h.tabState.fire(h.tab);assert.deepEqual(states.at(-1),{closed:false});assert.equal(JSON.stringify(states).includes('AUTH_SENTINEL'),false);await h.bridge.stop();assert.equal(states.at(-1).closed,true);
+ h.tab.url='https://www.tensortonic.com/auth?token=AUTH_SENTINEL';h.tabState.fire(h.tab);assert.deepEqual(states.at(-1),{closed:false,focusUnverified:true});assert.equal(JSON.stringify(states).includes('AUTH_SENTINEL'),false);await h.bridge.stop();assert.equal(states.at(-1).closed,true);
 });
 
 test('invalid presentation columns and failing listeners cannot alter browser scope or navigation',async t=>{
@@ -857,4 +857,42 @@ test('current public Labs link verifies without weakening capsule restoration',a
  const lease=await h.applyFocus();assert.equal(h.nextSheet,1);h.revokeNavbar();
  assert.equal(h.sandbox.document.documentElement.hasAttribute(NAVBAR_MARKER),false);
  await lease.restore();assert.equal([...h.styles.values()].includes(FOCUS_CONTRACT.cssText),false);
+});
+
+test('reload recovery is anchored to a successful application and a new same-URL reload document',async t=>{
+ const h=await focusHarness(t);const previous=h.page;const lease=await h.applyFocus();await lease.restore();
+ h.newDocument();h.sandbox.performance={getEntriesByType:type=>{assert.equal(type,'navigation');return [{type:'reload'}];}};
+ const before=h.calls.length,opens=h.opens;
+ const page=await h.bridge.recoverReloadedFocusPage(previous);assert.equal(page.id,previous.id);assert.equal(page.url,previous.url);assert.notEqual(page.documentId,previous.documentId);
+ assert.equal(h.opens,opens);assert.equal(h.calls.slice(before).some(c=>c.method.startsWith('CSS.')||c.method==='Target.setAutoAttach'),false);
+});
+test('reload recovery rejects same-document, ordinary navigation, changed URL/frame and unconfirmed prior apply',async t=>{
+ for(const kind of ['same-document','navigate','back_forward','missing','url','frame','never-applied']) {
+  const h=await focusHarness(t),previous=h.page;
+  if(kind!=='never-applied'){const lease=await h.applyFocus();await lease.restore();}
+  if(kind!=='same-document')h.newDocument();
+  h.sandbox.performance={getEntriesByType:()=>kind==='missing'?[]:[{type:kind==='navigate'||kind==='back_forward'?kind:'reload'}]};
+  if(kind==='url')h.tab.url='https://www.tensortonic.com/problems/other';if(kind==='frame')h.frameId='other-frame';
+  const before=h.nextSheet;await assert.rejects(h.bridge.recoverReloadedFocusPage(previous));assert.equal(h.nextSheet,before,kind);
+ }
+});
+test('reload recovery cancels delayed context acquisition and does not adopt unrelated resources',async t=>{
+ const h=await focusHarness(t),previous=h.page;const lease=await h.applyFocus();await lease.restore();
+ h.messages.fire({method:'Runtime.executionContextsCleared',sessionId:h.sid});
+ const c=new AbortController();h.bridge.pause=async()=>c.abort();
+ await assert.rejects(h.bridge.recoverReloadedFocusPage(previous,{signal:c.signal}),{code:'CANCELED'});assert.equal(h.bridge.target,undefined);
+ h.newDocument();h.sandbox.performance={getEntriesByType:()=>[{type:'reload'}]};h.attach('unrelated-session');
+ await assert.rejects(h.bridge.recoverReloadedFocusPage(previous));assert.equal(h.opens,1);
+});
+
+test('reload verification deadline aborts stalled read and releases partial rebound target',async t=>{
+ const h=await focusHarness(t),previous=h.page;const lease=await h.applyFocus();await lease.restore();h.newDocument();
+ h.bridge.discoverTimeout=20;h.bridge.evaluationTimeout=20;let probeSignal;
+ const number=h.bridge._number.bind(h.bridge);
+ h.bridge._number=(target,expression,generation,signal)=>{
+  if(!expression.includes('performance.getEntriesByType'))return number(target,expression,generation,signal);
+  probeSignal=signal;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(Error('Canceled probe')),{once:true}));
+ };
+ await assert.rejects(h.bridge.recoverReloadedFocusPage(previous),{code:'TIMEOUT'});
+ assert.equal(probeSignal.aborted,true);assert.equal(h.bridge.target,undefined);assert.equal(h.nextSheet,1);
 });

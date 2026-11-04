@@ -2012,3 +2012,72 @@ test('public saved-session diagnosis delegates only to the separate diagnostic w
   assert.equal(h.publicApi.bridge, undefined); assert.equal(h.publicApi.client, undefined); assert.equal(h.publicApi.vault, undefined);
   assert.deepEqual(h.calls.run, []); assert.deepEqual(h.calls.submit, []);
 });
+
+function notifyFocusReload(f) { f.page={...f.page,documentId:'reload-'+(++f.next)};f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF}); }
+test('verified owned reload restores old styling then independently reapplies exactly once',async t=>{
+ const f=await persistentFocusFixture(t);let recovered=0,verified=0;
+ f.native.display.recoverReloadedFocusPage=async previous=>{assert.equal(f.css,'');assert.equal(previous.url,f.page.url);recovered++;return {...f.page};};
+ f.native.display.waitForFocusReady=async page=>{verified++;f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});return page;};
+ f.events=[];notifyFocusReload(f);await settleUntil(()=>recovered===1&&f.snapshot().focus.status==='applied'&&!f.snapshot().focus.busy);
+ assert.deepEqual(f.events.map(e=>e[0]),['restore','apply']);assert.equal(verified,1);assert.equal(f.snapshot().focus.enabled,true);
+ f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});await flushReveals();assert.equal(recovered,1);
+});
+test('reload cannot reapply after Off, new navigation, session change, Markdown, close or other active tab',async t=>{
+ for(const action of ['off','newer','session','markdown','close','other-tab','shutdown']) {
+  const f=await persistentFocusFixture(t),started=deferred(),gate=deferred();let signal;
+  f.native.display.recoverReloadedFocusPage=async(previous,options)=>{signal=options.signal;started.resolve();await gate.promise;return {...f.page};};
+  notifyFocusReload(f);await started.promise;
+  if(action==='off')await f.toggle();
+  if(action==='newer')await f.h.api.openProblem(SECOND_REF);
+  if(action==='session'){f.native.token='reloaded-session';f.native.onDidChange?.();}
+  if(action==='markdown'){f.h.configuration.set('problemView','markdown');f.h.fireConfiguration('problemView');}
+  if(action==='close')f.native.pageOptions.onDidChangePage({closed:true});
+  if(action==='shutdown')await f.h.extension.deactivate();
+  if(action==='other-tab'){f.native.display.presentationState.otherBrowserActive=true;f.h.fireActiveBrowser({});}
+  if(action!=='other-tab')assert.equal(signal.aborted,true,action);
+  const before=f.events.filter(e=>e[0]==='apply').length;gate.resolve();await flushReveals();await flushReveals();
+  assert.equal(f.events.filter(e=>e[0]==='apply').length,before,action);
+ }
+});
+test('reload cleanup failure blocks recovery and failed reload proof does not trigger an apply',async t=>{
+ for(const kind of ['cleanup','not-reload','security']) {
+  const f=await persistentFocusFixture(t);let recoveries=0;
+  f.native.display.recoverReloadedFocusPage=async()=>{recoveries++;if(kind==='not-reload')throw Error('Not a reload');return {...f.page};};
+  if(kind==='cleanup')f.failRestore=true;if(kind==='security')f.failVerify=true;
+  notifyFocusReload(f);await flushReveals();await flushReveals();
+  assert.equal(f.events.filter(e=>e[0]==='apply').length,1,kind);
+  assert.equal(recoveries,kind==='cleanup'?0:1,kind);
+  assert.equal(f.snapshot().focus.status,kind==='cleanup'?'restore-pending':kind==='not-reload'?'off':'unavailable');
+ }
+});
+
+test('switching to another browser during a delayed reload write cancels and restores that write',async t=>{
+ const f=await persistentFocusFixture(t),started=deferred(),gate=deferred();
+ f.native.display.recoverReloadedFocusPage=async()=>({...f.page});
+ f.applyHook=async()=>{started.resolve();await gate.promise;};
+ notifyFocusReload(f);await started.promise;
+ f.native.display.presentationState.otherBrowserActive=true;f.h.fireActiveBrowser({});
+ f.applyHook=undefined;gate.resolve();await settleUntil(()=>f.css===''&&!f.snapshot().focus.busy);
+ assert.equal(f.snapshot().focus.enabled,true);assert.notEqual(f.snapshot().focus.status,'applied');
+});
+
+test('observed away-and-back navigation during reload recovery is latched and cannot rearm',async t=>{
+ for(const kind of ['path','unsafe-query']) {
+  const f=await persistentFocusFixture(t),gate=deferred(),started=deferred();
+  f.native.display.recoverReloadedFocusPage=async()=>{started.resolve();await gate.promise;return {...f.page};};
+  notifyFocusReload(f);await started.promise;
+  f.native.pageOptions.onDidChangePage(kind==='path'?{closed:false,ref:SECOND_REF}:{closed:false,ref:DEFAULT_REF,focusUnverified:true});
+  f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});gate.resolve();await flushReveals();await flushReveals();
+  assert.equal(f.events.filter(e=>e[0]==='apply').length,1);assert.equal(f.css,'');
+ }
+});
+
+test('destination departure during initial reload observation lookup permanently cancels that recovery',async t=>{
+ const f=await persistentFocusFixture(t),gate=deferred(),started=deferred();let recovered=0;
+ f.native.display.recoverReloadedFocusPage=async()=>{recovered++;return {...f.page};};
+ f.getHook=async()=>{started.resolve();return gate.promise;};notifyFocusReload(f);await started.promise;
+ f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF,focusUnverified:true});
+ f.native.pageOptions.onDidChangePage({closed:false,ref:DEFAULT_REF});
+ f.getHook=undefined;gate.resolve({...f.page});await settleUntil(()=>f.css===''&&!f.snapshot().focus.busy);await flushReveals();
+ assert.equal(recovered,0);assert.equal(f.events.filter(e=>e[0]==='apply').length,1);
+});

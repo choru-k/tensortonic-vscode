@@ -223,7 +223,13 @@ function activate(context) {
   for (const event of ['onDidChangeActiveBrowserTab', 'onDidChangeBrowserTabState', 'onDidCloseBrowserTab']) {
     try {
       const subscribe = vscode.window[event];
-      if (typeof subscribe === 'function') context.subscriptions.push(subscribe.call(vscode.window, () => studyStatus.refresh()));
+      if (typeof subscribe === 'function') context.subscriptions.push(subscribe.call(vscode.window, () => {
+        if (focusRecovery?.refresh && bridge.display?.presentationState?.otherBrowserActive === true) {
+          invalidateFocusAction(); focusedPage = undefined; focusObservation++;
+          state.focusReason = 'page-changed'; void focusMode.pageChanged();
+        }
+        studyStatus.refresh();
+      }));
     } catch (_) { /* Status and Markdown remain usable without the browser proposal. */ }
   }
   let focusedPage;
@@ -234,10 +240,26 @@ function activate(context) {
     focusRecovery?.controller.abort();
     focusRecovery = undefined;
   }
-  async function observeFocusPage(closed = false) {
+  async function observeFocusPage(closed = false, observedRef, focusUnverified = false) {
     // Even when Focus is still Off, a pending explicit recovery must not
     // outlive a newer owned-page observation.
     if (state.webNavigating) return; // This explicit navigation owns restore/reapply.
+    if (focusRecovery?.refresh) {
+      let sameDestination = false;
+      try { sameDestination = !closed && !focusUnverified && !!observedRef && problemUrl(observedRef) === focusRecovery.url; } catch (_) {}
+      if (!sameDestination) { invalidateFocusAction(); focusedPage = undefined; focusObservation++; void focusMode.pageChanged(); }
+      return;
+    }
+    // Latch an observed destination departure before any asynchronous lookup.
+    // Returning to the old URL cannot revive its automatic reload eligibility.
+    if (focusedPage) {
+      let sameDestination = false;
+      try { sameDestination = !closed && !focusUnverified && !!observedRef && problemUrl(observedRef) === focusedPage.url; } catch (_) {}
+      if (!sameDestination) {
+        invalidateFocusAction(); focusedPage = undefined; focusObservation++;
+        state.focusReason = 'page-changed'; await focusMode.pageChanged(); return;
+      }
+    }
     if (focusRecovery) invalidateFocusAction();
     if (!focusMode.enabled && focusMode.state.status !== 'restore-pending') return;
     if (!focusMode.enabled && focusMode.state.status === 'restore-pending') {
@@ -251,9 +273,26 @@ function activate(context) {
     try { if (!closed) page = await focusPort.getPage(); } catch (_) { /* Unknown structures stay visible. */ }
     if (observation !== focusObservation || !focusedPage) return;
     if (!page || ['id', 'url', 'documentId', 'frameId'].some(key => page[key] !== focusedPage[key])) {
+      const previous = focusedPage;
+      let reloadDisplay; try { reloadDisplay = focusDisplay(); } catch (_) { /* Keep original controls visible. */ }
+      const reloadEligible = !closed && focusRequested && focusMode.state.status === 'applied' && getProblemView() === 'web' &&
+        (!page || ['id','url','frameId'].every(key => page[key] === previous[key])) && typeof reloadDisplay?.recoverReloadedFocusPage === 'function' && reloadDisplay.presentationState?.otherBrowserActive !== true;
       focusedPage = undefined;
       state.focusReason = 'page-changed';
-      await focusMode.pageChanged();
+      if (!reloadEligible) { await focusMode.pageChanged(); return; }
+      invalidateFocusAction();
+      const action = focusAction, epoch = state.sessionEpoch, navigation = state.openGeneration, card = state.cardGeneration;
+      const controller = new AbortController(), operation = { automatic: true, refresh: true, url: previous.url, controller };
+      const current = () => focusRequested && !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration && getProblemView() === 'web' && reloadDisplay.presentationState?.otherBrowserActive !== true;
+      focusRecovery = operation; studyStatus.refresh();
+      try {
+        await focusMode.pageChanged();
+        if (!current() || focusMode.state.status === 'restore-pending') return;
+        await applyFocusRequest({ expectedUrl: previous.url, previousPage: previous, automatic: true, reloadFrom: previous });
+      } finally {
+        if (focusRecovery === operation) focusRecovery = undefined;
+        studyStatus.refresh();
+      }
     }
   }
   context.subscriptions.push(focusMode);
@@ -825,7 +864,7 @@ function activate(context) {
         await bridge.openProblemPage(url, { viewColumn: studyLayout.problemColumn, onDidChangePage: page => {
           if (disposed || epoch !== state.sessionEpoch) return;
           state.webPageOpen = !page.closed;
-          void observeFocusPage(page.closed);
+          void observeFocusPage(page.closed, page.ref, page.focusUnverified);
           state.webRef = page.closed ? undefined : page.ref;
           updateActions();
         } });
@@ -1091,14 +1130,14 @@ function activate(context) {
     const freshnessState = freshness.compare(selected.entry.snapshot,{action:selected.entry.action,problem:ref,solutionUri:document.uri.toString(),solutionText:document.getText(),testCases:undefined});
     await vscode.commands.executeCommand('workbench.action.chat.open',{mode:'agent',isPartialQuery:true,query:selectedFailureContext(selected.failure,{explicit:true,problemRef:ref,stale:freshnessState.status!=='unchanged'})});
   }
-  async function applyFocusRequest({ expectedUrl, previousPage, automatic = false, isCurrentNavigation = () => true } = {}) {
+  async function applyFocusRequest({ expectedUrl, previousPage, automatic = false, reloadFrom, isCurrentNavigation = () => true } = {}) {
     if (!focusRequested || disposed) return focusMode.state;
     invalidateFocusAction();
     const action = focusAction, epoch = state.sessionEpoch, navigation = state.openGeneration, card = state.cardGeneration;
     const controller = new AbortController();
-    const current = () => focusRequested && !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration && isCurrentNavigation() && (!automatic || getProblemView() === 'web');
+    const current = () => focusRequested && !disposed && !controller.signal.aborted && action === focusAction && epoch === state.sessionEpoch && navigation === state.openGeneration && card === state.cardGeneration && isCurrentNavigation() && (!automatic || getProblemView() === 'web') && (!reloadFrom || bridge.display?.presentationState?.otherBrowserActive !== true);
     const trace = focusDiagnostics.begin(automatic);
-    const operation = { enabled: true, automatic, controller, trace };
+    const operation = { enabled: true, automatic, refresh: !!reloadFrom, url: expectedUrl, controller, trace };
     focusRecovery = operation;
     studyStatus.refresh();
     try {
@@ -1106,12 +1145,15 @@ function activate(context) {
       trace.emit('lookup', 'start');
       try {
         const display = focusDisplay();
-        page = !automatic && typeof display.recoverFocusPage === 'function'
-          ? await display.recoverFocusPage({ signal: controller.signal, onDiagnostic: trace.record })
-          : await focusPort.getPage({ signal: controller.signal, onDiagnostic: trace.record });
+        page = reloadFrom
+          ? await display.recoverReloadedFocusPage(reloadFrom, { signal: controller.signal, onDiagnostic: trace.record })
+          : !automatic && typeof display.recoverFocusPage === 'function'
+            ? await display.recoverFocusPage({ signal: controller.signal, onDiagnostic: trace.record })
+            : await focusPort.getPage({ signal: controller.signal, onDiagnostic: trace.record });
       } catch (error) { trace.emit('lookup', 'fail', diagnosticErrorCode(error)); }
       if (!current()) { trace.emit('result', 'canceled'); return focusMode.state; }
       trace.emit('lookup', page ? 'ok' : 'fail', page ? undefined : 'no-page');
+      if (reloadFrom && !page) { trace.emit('result', 'off'); return focusMode.state; }
       if (expectedUrl && page && page.url !== expectedUrl) { trace.emit('url', 'fail', 'mismatch'); page = undefined; }
       // A title/state notification or same-document open must not re-arm the
       // navbar after its conservative mutation guard has revoked it.

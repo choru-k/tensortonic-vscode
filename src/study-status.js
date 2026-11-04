@@ -1,6 +1,6 @@
 'use strict';
 
-const FOCUS_SCOPE = 'Focus preference stays on across verified extension-opened Web problems until Off. Extension reload or a session change resets it. Browser refresh/navigation clears application without automatically hiding the changed page. It changes only the verified website Prev/Next links, desktop/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule on the extension-owned Web problem page. The capsule reappears conservatively if its content or surrounding structure changes.';
+const FOCUS_SCOPE = 'Focus preference stays on across verified extension-opened Web problems until Off. Extension reload or a session change resets it. A verified same-tab, same-URL browser reload can reapply Focus after cleanup and fresh verification. Other navigation clears application without automatically hiding the changed page. It changes only the verified website Prev/Next links, desktop/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule on the extension-owned Web problem page. The capsule reappears conservatively if its content or surrounding structure changes.';
 const FOCUS_RESET_REASONS = new Map([
   ['reload-default', 'Focus mode starts off after an extension reload.'],
   ['page-changed', 'Focus application was cleared after the owned Web page changed, reloaded, or closed.'],

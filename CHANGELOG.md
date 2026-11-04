@@ -1,3 +1,10 @@
+# 0.12.13 (cloud candidate)
+
+- Recover requested Focus after a verified new-document browser reload of the same owned tab and exact URL, following old-style cleanup and fresh readiness/contract proof.
+- Require actual reload timing evidence and a prior successful application; never rearm same-document revoked guards or adopt unrelated navigation/tabs.
+- Abort stale reload work on Off, new navigation, session/Markdown changes, close, unrelated active tab or observed URL departure. Keep late-write cleanup ownership.
+- Preserve 0.12.12 read-only saved-session diagnostics. Not yet published, installed or native-validated.
+
 # 0.12.12
 
 - Add a separately invoked saved-session diagnostic using one fixed account GET without local session writes, clearing, reconnecting, cookie adoption or grading.

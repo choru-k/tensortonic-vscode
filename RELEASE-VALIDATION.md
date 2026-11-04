@@ -1,3 +1,26 @@
+# 0.12.13 verified reload recovery candidate
+
+The observed reload behavior follows the previous deliberate boundary: document
+changes cleared applied styling while keeping requested On, with no automatic
+recovery. This candidate adds narrowly verified reload recovery rather than
+retrying same-document guard revocation or arbitrary navigation.
+
+A successful prior application anchors one resource/session/frame/URL. Old CSS
+cleanup must finish; a new document and navigation type reload are required before
+existing readiness and single guarded application. Cancellation, observed URL
+departure, cleanup failure and unrelated active tabs remain fail-open. Recovery
+uses only the owned display and does not alter saved sessions or grading behavior.
+
+Serial cloud validation passed 906/906 aggregate tests, 152/152 session checks
+and 95/95 transport checks. New coverage includes verified reload recovery,
+normal/history navigation rejection, changed frame/URL, absent prior application,
+cleanup failure, delayed context/write cancellation, active-tab switches, observed
+away-and-back navigation, initial-observation races, and stalled-read deadlines.
+The pristine base matched all 148 remote blobs of commit
+`4c6be837f57e76d6e1094498872a5c2f3df1d55f`. No Mac access, installation
+or publication was performed. Native success remains unverified. Historical
+validation follows.
+
 # 0.12.12 non-mutating local session diagnosis
 
 The separate `diagnoseStoredSession` API performs at most one fixed HTTPS account

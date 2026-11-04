@@ -57,8 +57,9 @@ automation indicators.
 The adapter creates a dedicated forced stylesheet. Original view empties it and
 checks cleanup before detaching; disabling the CSS domain is not treated as an
 undo operation. Extension-opened Web problems retain the in-memory Focus request,
-restore old styles and verify the new destination independently. Other navigation
-or document changes clear application without automatic requalification. Transport errors
+restore old styles and verify the new destination independently. Verified same-tab,
+same-URL reloads can also recover after cleanup and fresh proof. Other navigation
+or unverified document changes clear application without automatic requalification. Transport errors
 alone never establish that styles disappeared. See [focus boundaries](sidebar-and-results.md#difficulty-and-focus).
 
 ## Validation
@@ -128,3 +129,27 @@ After controls appear, two complete checks are still required. Any partial
 structure, malformed metadata, navbar/security failure or identity change stops
 without hiding controls. The original timeout/cancellation limits apply. A slow
 page can remain Unavailable; no native success is claimed for this candidate.
+
+
+## Verified browser reload recovery (0.12.13 candidate)
+
+A prior successfully applied Focus page can recover after a browser reload only
+on the same already-owned resource, CDP session, root frame and exact canonical
+URL. The execution document must be new, and its navigation timing entry must
+identify a reload. Ordinary navigation, history traversal, same-document updates,
+missing/ambiguous evidence and new tabs are not accepted as reloads.
+
+The root first confirms restoration of the old dedicated stylesheet/guard. Pending
+cleanup blocks recovery. Context acquisition is read-only and bounded; it never
+opens a tab, navigates or adopts another resource. The recovered document then
+passes existing loading readiness and full contract proofs before one guarded apply.
+
+Off, session changes, newer problem opens, Markdown, closure or switching to an
+unrelated browser tab abort recovery and preserve cleanup ownership, including
+late writes. Observed path/query/hash departures are latched even if the URL later
+returns; only sanitized problem references and an unsafe-destination boolean cross
+the presentation callback. Repeated same-URL notifications do not cancel the same
+recovery. Same-document observer revocation never causes automatic rearming.
+
+This candidate preserves 0.12.12 saved-session diagnostics and performs no new
+session/network mutation. Native Mac reload validation remains pending.
