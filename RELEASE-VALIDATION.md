@@ -1,3 +1,25 @@
+# 0.12.14 anchor diagnostic candidate
+
+Based on published 0.12.13 commit `9c2d742e7878620aad4bf5751475a66aa78a4258`;
+all 150 base blobs matched its remote tree. Native follow-up on that version
+showed manual On success, refresh failure on four Prev/Next shape checks, later
+new-problem automatic application success, and successful Off restoration.
+The precise failed anchor predicate remains unknown.
+
+This candidate refines local fixed-enum diagnostics only. It does not accept
+legacy links or placeholders, retry shape failures, change the loading deadline,
+rearm a revoked guard, or alter session/network/Run/Submit behavior. See
+`docs/focus-anchor-diagnostics.md` for public-source evidence and the next bounded
+native evidence needed. The public catalog fallback is a hypothesis, not a proven
+native cause. No Mac access, installation or publication was performed.
+
+Serial cloud tests passed 910/910 aggregate, 152/152 session and 96/96 transport.
+Added checks cover original predicate equivalence, exact evaluated failure categories,
+no retries or CSS writes for rejected anchors, and no private values in diagnostics.
+Independent source review passed; artifact parity is checked separately.
+
+Historical validation follows.
+
 # 0.12.13 verified reload recovery candidate
 
 The observed reload behavior follows the previous deliberate boundary: document

@@ -2,7 +2,7 @@
   "name": "tensortonic-vscode",
   "displayName": "TensorTonic for VS Code (Unofficial)",
   "description": "TensorTonic study with a consented encrypted session, direct HTTPS Python Run/Submit, and optional browser presentation.",
-  "version": "0.12.13",
+  "version": "0.12.14",
   "publisher": "choru-local",
   "license": "MIT",
   "engines": {

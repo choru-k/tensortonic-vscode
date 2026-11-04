@@ -1,3 +1,9 @@
+# 0.12.14 (cloud diagnostic candidate)
+
+- Distinguish rejected Prev/Next anchor tag, text, title, and URL categories using fixed enum-only diagnostics. Never record link values, content, problem IDs, authentication data or raw errors.
+- Keep existing acceptance, readiness retry policy, reload identity fencing, CSS guards and cancellation unchanged. This is diagnostic instrumentation, not a claimed fix for the remaining native reload failure.
+- Not published, installed or Mac-validated.
+
 # 0.12.13 (cloud candidate)
 
 - Recover requested Focus after a verified new-document browser reload of the same owned tab and exact URL, following old-style cleanup and fresh readiness/contract proof.

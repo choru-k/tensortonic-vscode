@@ -22,3 +22,10 @@ test('diagnostic error extraction cannot invoke serialization or leak throwing a
  assert.equal(diagnosticErrorCode({get code(){throw Error('PRIVATE');},toString(){throw Error('PRIVATE');}}),'OTHER');
  assert.equal(diagnosticErrorCode({code:'TIMEOUT',message:'PRIVATE'}),'TIMEOUT');
 });
+test('anchor categories remain allowlisted and discard raw details',()=>{
+ const d=createFocusDiagnostics(),trace=d.begin(true);
+ const codes=['anchor-tag','anchor-text','anchor-title','anchor-contract','href-missing','href-placeholder','href-parse','href-origin','href-credentials','href-fragment','href-path','href-study-plan-path','href-query'];
+ for(const code of codes)trace.record({stage:'contract-target',outcome:'fail',target:'desktop-prev',code,href:'https://PRIVATE/SECRET',text:'SECRET',title:'SECRET',query:'SECRET'});
+ assert.deepEqual(d.snapshot().automatic.events.map(e=>e.code),codes);
+ assert.doesNotMatch(JSON.stringify(d.snapshot()),/PRIVATE|SECRET|https/);
+});

@@ -896,3 +896,21 @@ test('reload verification deadline aborts stalled read and releases partial rebo
  await assert.rejects(h.bridge.recoverReloadedFocusPage(previous),{code:'TIMEOUT'});
  assert.equal(probeSignal.aborted,true);assert.equal(h.bridge.target,undefined);assert.equal(h.nextSheet,1);
 });
+
+test('evaluated anchor diagnostics identify exact rejection and never retry shape failures', async t => {
+ for (const [href, code] of [['#','href-placeholder'],['/problems/next?PRIVATE=SECRET','href-query'],['https://evil.invalid/SECRET','href-origin'],['/study-plans/SECRET','href-study-plan-path']]) {
+  const h=await focusHarness(t,{discoverTimeout:100,evaluationTimeout:100});
+  for(const target of FOCUS_CONTRACT.targets.filter(x=>x.expectation.tag==='a')) {
+   const e=h.focusElements.get(target.selector)[0],original=e.getAttribute;
+   e.getAttribute=name=>name==='href'?href:original(name);
+  }
+  const events=[];
+  await assert.rejects(h.bridge.inspectFocusContract(FOCUS_CONTRACT,{onDiagnostic:e=>events.push(e)}),{code:'INVALID_PROOF'});
+  assert.deepEqual(events.filter(e=>e.stage==='contract-target'),FOCUS_CONTRACT.targets.slice(0,4).map(target=>({stage:'contract-target',outcome:'fail',code,target:target.id})));
+  assert.doesNotMatch(JSON.stringify(events),/SECRET|PRIVATE|evil|study-plans/);
+  readinessFixture(h);let pauses=0;h.onReadyPause=()=>pauses++;
+  await assert.rejects(h.bridge.waitForFocusReady(h.page),{code:'INVALID_PROOF'});
+  assert.equal(pauses,0);
+  assert.equal(h.calls.some(c=>c.method==='CSS.createStyleSheet'),false);
+ }
+});
