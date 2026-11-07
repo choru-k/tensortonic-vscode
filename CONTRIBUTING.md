@@ -24,6 +24,10 @@ npm run test:transport
 python3 scripts/package.py
 ```
 
+For disconnected real extension-host activation and command checks on Linux,
+see [the isolated Linux E2E command](docs/linux-e2e.md). Commit changes before
+using `linux-run`; keep personal execution evidence under ignored `.agent/`.
+
 Keep unit/simulated proposed-browser-API coverage distinct from actual native-host verification. Read [session validation and gates](docs/session-http.md) and [native-browser validation boundaries](docs/native-browser.md#validation) before running a host check; use a separate review workspace. A passing mock is not proof of real login, managed-policy compatibility, or rendered UI behavior.
 
 The package builder uses an explicit source allowlist. Rebuild after changing packaged files, check archive integrity, and verify byte-for-byte source parity. Never include pairing credentials from historical work, browser data, cookies, private solutions, account payloads, runtime logs, or personal test reports in commits or release packages. Old release artifacts belong to Git history rather than the current release tree; retain only the intended current deliverables.

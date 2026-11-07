@@ -181,6 +181,8 @@ python3 scripts/package.py
 ```
 
 Automated tests use synthetic credentials, requests and browser fixtures.
+For real disconnected extension-host smoke on Linux, run
+[`npm run test:e2e:linux`](docs/linux-e2e.md) from a clean committed checkout.
 [Release checks and limitations](RELEASE-VALIDATION.md) distinguish those tests
 from native UI checks. Public source and packages exclude personal test reports,
 login data, browser profiles, runtime logs and user solutions. The activation API

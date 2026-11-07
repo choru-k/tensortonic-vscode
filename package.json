@@ -40,6 +40,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
+    "test:e2e:linux": "node scripts/test-e2e-linux.js",
     "package": "python3 scripts/package.py",
     "test:transport": "node --test test/native-browser-bridge.test.js test/request-policy.test.js",
     "test:session": "node --test test/session-*.test.js"
