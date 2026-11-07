@@ -18,13 +18,15 @@ Native unprivileged user namespaces must be available for Chromium's sandbox.
 The runner downloads official VS Code **1.144.0**, verifies its pinned SHA-256
 and embedded version/commit, and caches only the archive under
 `.agent/linux-e2e/cache`. Downloads and setup commands have finite timeouts.
-Each run stages `git archive HEAD`, creates a fresh workspace, profile,
+Each run stages `git archive HEAD`, creates a fresh empty-window working directory, profile,
 extensions directory, HOME and XDG directories, and starts its own authenticated
 Xvfb without TCP listening. The desktop child receives an allowlisted environment
 without inherited VS Code/Electron forwarding or account/session variables.
 No browser proposal opt-in or Chromium sandbox bypass is used. Settings apply
-only to the disposable profile, including disabling workspace trust prompts for
-the empty runner-owned workspace.
+only to the disposable profile. Workspace trust keeps its default behavior; no
+folder is opened. A short task-owned `/tmp/tensortonic-e2e-*` directory holds
+disposable IPC sockets to fit Linux's socket path limit and is removed afterward;
+all execution evidence stays under `.agent/`.
 
 The existing `test/vscode-smoke.js` runs inside the real extension host. Success
 requires both exit zero and fresh JSON confirming the exact host version,

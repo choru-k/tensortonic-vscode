@@ -37,6 +37,9 @@ async function main() {
   const reportDir = await fs.mkdtemp(path.join(base, 'run-'));
   const scratch = path.join(reportDir, 'scratch');
   await fs.mkdir(scratch);
+  // AF_UNIX socket paths are limited to 107 bytes; checkout paths can be long.
+  // This short directory holds disposable IPC only, never execution evidence.
+  const runtime = await fs.mkdtemp('/tmp/tensortonic-e2e-');
   const metadata = {
     started: new Date().toISOString(), node: process.version,
     platform: process.platform, arch: process.arch, uid: process.getuid(),
@@ -54,13 +57,14 @@ async function main() {
     await log.write(`\n$ ${JSON.stringify([command, ...args])}\n`);
     let output = '';
     let timedOut = false;
+    let writes = Promise.resolve();
     const child = spawn(command, args, {
       cwd: options.cwd || root, env: options.env || process.env,
       detached: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
     if (child.pid) active.add(child.pid);
     for (const stream of [child.stdout, child.stderr]) {
-      stream.on('data', chunk => { output += chunk; log.write(chunk).catch(() => {}); });
+      stream.on('data', chunk => { output += chunk; writes = writes.then(() => log.write(chunk)); });
     }
     let forceTimer;
     const timer = setTimeout(() => {
@@ -82,7 +86,7 @@ async function main() {
       clearTimeout(timer);
       clearTimeout(forceTimer);
       if (child.pid) { killGroup(child.pid, 'SIGKILL'); active.delete(child.pid); }
-      await log.close();
+      try { await writes; } finally { await log.close(); }
     }
     if (entry.exitCode !== 0) {
       const error = new Error(`${command} ${timedOut ? 'timed out' : 'failed'} (${entry.exitCode}); see ${entry.log}`);
@@ -132,21 +136,22 @@ async function main() {
     const sourceArchive = path.join(scratch, 'source.tar');
     await run('git', ['archive', '--format=tar', `--output=${sourceArchive}`, metadata.sha]);
     await run('tar', ['-xf', sourceArchive, '-C', extension]);
+    await fs.rm(path.join(extension, 'dist/vscode-smoke-result.json'), { force: true });
     const dirs = {};
-    for (const name of ['home', 'workspace', 'profile', 'extensions', 'config', 'cache', 'data', 'state', 'runtime', 'tmp']) {
+    for (const name of ['home', 'workspace', 'profile', 'extensions', 'config', 'cache', 'data', 'state']) {
       dirs[name] = path.join(scratch, name);
       await fs.mkdir(dirs[name], { mode: 0o700 });
     }
     await fs.mkdir(path.join(dirs.profile, 'User'));
     await fs.writeFile(path.join(dirs.profile, 'User/settings.json'), JSON.stringify({
-      'security.workspace.trust.enabled': false, 'telemetry.telemetryLevel': 'off',
+      'telemetry.telemetryLevel': 'off',
       'update.mode': 'none', 'extensions.autoUpdate': false, 'extensions.autoCheckUpdates': false,
     }));
     // Allowlist the child's environment: no inherited app/session/credential forwarding.
     const env = {
       PATH: `${xvfbBin}:/usr/bin:/bin`, LANG: 'C.UTF-8', HOME: dirs.home,
       XDG_CONFIG_HOME: dirs.config, XDG_CACHE_HOME: dirs.cache, XDG_DATA_HOME: dirs.data,
-      XDG_STATE_HOME: dirs.state, XDG_RUNTIME_DIR: dirs.runtime, TMPDIR: dirs.tmp,
+      XDG_STATE_HOME: dirs.state, XDG_RUNTIME_DIR: runtime, TMPDIR: runtime,
     };
     metadata.status = 'running';
     await run(path.join(xvfbBin, 'xvfb-run'), [
@@ -155,8 +160,8 @@ async function main() {
       'dbus-run-session', '--', path.join(codeRoot, 'code'),
       '--user-data-dir', dirs.profile, '--extensions-dir', dirs.extensions,
       '--extensionDevelopmentPath', extension, '--extensionTestsPath', path.join(extension, 'test/vscode-smoke.js'),
-      '--skip-welcome', '--skip-release-notes', dirs.workspace,
-    ], { env, log: 'vscode.log', timeout: timeoutSeconds });
+      '--new-window', '--skip-welcome', '--skip-release-notes',
+    ], { cwd: dirs.workspace, env, log: 'vscode.log', timeout: timeoutSeconds });
     metadata.status = 'validating';
     const result = JSON.parse(await fs.readFile(path.join(extension, 'dist/vscode-smoke-result.json'), 'utf8'));
     if (result.success !== true || result.activated !== true || result.connected !== false || result.vscode !== version) {
@@ -177,6 +182,7 @@ async function main() {
       if (error.code !== 'ENOENT') metadata.logCopyError = error.message;
     }
     await fs.rm(scratch, { recursive: true, force: true });
+    await fs.rm(runtime, { recursive: true, force: true });
     metadata.finished = new Date().toISOString();
     await fs.writeFile(path.join(reportDir, 'report.json'), JSON.stringify(metadata, null, 2));
     process.exitCode = metadata.exitCode;
