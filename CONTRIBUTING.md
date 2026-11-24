@@ -26,7 +26,7 @@ python3 scripts/package.py
 
 Keep unit/simulated proposed-browser-API coverage distinct from actual native-host verification. Read [session validation and gates](docs/session-http.md) and [native-browser validation boundaries](docs/native-browser.md#validation) before running a host check; use a separate review workspace. A passing mock is not proof of real login, managed-policy compatibility, or rendered UI behavior.
 
-The package builder uses an explicit source allowlist. Rebuild after changing packaged files, check archive integrity, and verify byte-for-byte source parity. Never include pairing credentials from historical work, browser data, cookies, private solutions, account payloads, runtime logs, or personal test reports in commits or release packages. Old release artifacts belong to Git history rather than the current release tree; retain only the intended current deliverables.
+The package builder uses an explicit source allowlist. Rebuild after changing packaged files, check archive integrity, and compare each packaged file with its source. In the packaged README, expand repository-relative screenshot and VSIX download links to their raw GitHub URLs before comparing bytes. Never include pairing credentials from historical work, browser data, cookies, private solutions, account payloads, runtime logs, or personal test reports in commits or release packages. Old release artifacts belong to Git history rather than the current release tree; retain only the intended current deliverables.
 
 ## Safety requirements
 

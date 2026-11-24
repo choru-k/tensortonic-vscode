@@ -6,6 +6,7 @@ solutions, and research downloads. Never bundles the working tree wholesale.
 """
 import argparse
 import json
+import re
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -85,6 +86,15 @@ def files_to_package():
     return result
 
 
+def readme_for_vsix(path, package):
+    # GitHub resolves relative links against the repository. Screenshots and
+    # release downloads live there even when the README is opened from VS Code.
+    repo = re.sub(r"\.git$", "", package["repository"]["url"])
+    raw = repo.replace("https://github.com/", "https://raw.githubusercontent.com/", 1) + "/main/"
+    links = r'(\]\(|src=")(docs/screenshots/[\w.-]+\.png|releases/[\w.-]+\.vsix)(?:\?raw=true)?(?=[)"])'
+    return re.sub(links, lambda match: match[1] + raw + match[2], path.read_text(encoding="utf-8"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
@@ -100,7 +110,11 @@ def main():
         archive.writestr("extension.vsixmanifest", manifest_bytes)
         archive.writestr("[Content_Types].xml", types_bytes)
         for path in files:
-            archive.write(path, "extension/" + path.relative_to(ROOT).as_posix())
+            entry = "extension/" + path.relative_to(ROOT).as_posix()
+            if entry == "extension/README.md":
+                archive.writestr(entry, readme_for_vsix(path, package))
+            else:
+                archive.write(path, entry)
     print(str(output.resolve()))
     print("Packaged " + str(len(files)) + " extension files")
 
