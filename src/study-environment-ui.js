@@ -4,6 +4,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { STUDY_FOLDER_KEY } = require('./study-workspace');
 const { StudyEnvironment } = require('./study-environment');
+const { EXTENSION_ID, StudyPythonManager } = require('./study-python-manager');
 const { recognizeStudyFolder, configuredDirectory } = require('./study-folder-detector');
 
 function waitCancelable(value, signal) {
@@ -49,8 +50,9 @@ class StudyEnvironmentUI {
     watch(vscode.workspace, 'onDidGrantWorkspaceTrust', scopeChanged);
     watch(vscode.workspace, 'onDidChangeConfiguration', event => {
       if (!event || typeof event.affectsConfiguration !== 'function' || event.affectsConfiguration('tensortonic.solutionDirectory')) scopeChanged();
-      else if (event.affectsConfiguration('python') || event.affectsConfiguration('tensortonic')) this.changed();
+      else if (event.affectsConfiguration('python') || event.affectsConfiguration('python-envs') || event.affectsConfiguration('tensortonic')) this.changed();
     });
+    watch(vscode.window, 'onDidChangeActiveTextEditor', () => { if (this.namedPython) this.changed(); });
     watch(vscode.extensions, 'onDidChange', () => { this.watchPython(undefined); this.changed(); });
   }
 
@@ -58,6 +60,7 @@ class StudyEnvironmentUI {
     this.disposed = true; this.revision++;
     this.recognized = undefined; this.recognitionGeneration++;
     if (this.controller) this.controller.abort();
+    this.namedPython?.dispose();
     this.watchPython(undefined);
     for (const subscription of this.subscriptions) if (subscription && typeof subscription.dispose === 'function') subscription.dispose();
     this.subscriptions = []; this.listeners.clear();
@@ -100,6 +103,34 @@ class StudyEnvironmentUI {
       !this.unverified.has(this.readyKey(folder));
   }
 
+  async selectionApi(python, folder, signal) {
+    const v = this.vscode;
+    const extension = v.extensions.getExtension(EXTENSION_ID);
+    const enabled = v.workspace.getConfiguration?.('python', folder)?.get('useEnvironmentsExtension') !== false;
+    if (!extension || !enabled) {
+      this.namedPython?.dispose();
+      this.namedPython = undefined;
+      if (signal) {
+        if (!python.isActive) await waitCancelable(python.activate(), signal);
+        if (!this.isCurrent(folder) || signal.aborted) return undefined;
+        if (python.exports?.ready) await waitCancelable(python.exports.ready, signal);
+      }
+      return this.isCurrent(folder) ? python.exports?.environments : undefined;
+    }
+    if (!extension.isActive) {
+      if (!signal || signal.aborted) return undefined;
+      await waitCancelable(extension.activate(), signal);
+    }
+    const api = extension.exports;
+    if (signal?.aborted || !this.isCurrent(folder) || !api?.registerEnvironmentManager || !api.createPythonEnvironmentItem ||
+        !api.getEnvironment || !api.setEnvironment) return undefined;
+    if (this.namedPython?.api !== api) {
+      this.namedPython?.dispose();
+      this.namedPython = new StudyPythonManager(this, api);
+    }
+    return this.namedPython;
+  }
+
   matches(active, inspected) {
     return !!active && typeof active.path === 'string' && path.isAbsolute(active.path) &&
       [inspected.interpreterPath, inspected.environmentPath].filter(Boolean).some(candidate => path.resolve(active.path) === path.resolve(candidate));
@@ -130,14 +161,17 @@ class StudyEnvironmentUI {
       if (!python) return unavailable('python-extension-missing');
       // Activation can start Python discovery. Only an explicit Use/Setup action
       // may activate it; a footer refresh reads an already active public API.
-      if (!python.isActive) return unavailable('python-inactive', true);
-      const api = python.exports && python.exports.environments;
-      if (!api || typeof api.getActiveEnvironmentPath !== 'function') return unavailable('selection-api-unavailable');
+      if (!python.isActive && !this.vscode.extensions.getExtension(EXTENSION_ID)?.isActive) return unavailable('python-inactive', true);
+      const api = await this.selectionApi(python, folder);
+      if (!api || typeof api.getActiveEnvironmentPath !== 'function') {
+        const modern = this.vscode.extensions.getExtension(EXTENSION_ID);
+        return modern && !modern.isActive ? unavailable('python-inactive', true) : unavailable('selection-api-unavailable');
+      }
       this.watchPython(api);
       const active = await api.getActiveEnvironmentPath(folder);
       if (!current()) return hidden('stale');
       if (!active || typeof active.path !== 'string' || !active.path) return unavailable('selection-unknown', typeof api.updateActiveEnvironmentPath === 'function');
-      if (this.matches(active, inspected)) return { state: 'ready', label: 'Study environment ready', command: undefined, health: 'recorded' };
+      if (this.matches(active, inspected) && active.named !== false) return { state: 'ready', label: 'Study environment ready', command: undefined, health: 'recorded' };
       if (typeof api.updateActiveEnvironmentPath !== 'function') return unavailable('selection-api-unavailable');
       return { state: 'use', label: 'Use study environment', command: 'tensortonic.useStudyEnvironment', health: 'recorded' };
     } catch (_) { return current() ? unavailable('selection-unavailable') : hidden('stale'); }
@@ -265,27 +299,23 @@ class StudyEnvironmentUI {
       if (rememberedPath && inspected.interpreterPath !== rememberedPath) return { status: 'selection-unverified' };
       const python = this.vscode.extensions.getExtension('ms-python.python');
       if (!python) return { status: 'python-extension-missing' };
-      if (!python.isActive) await waitCancelable(python.activate(), controller.signal);
+      const api = await waitCancelable(this.selectionApi(python, folder, controller.signal), controller.signal);
       if (!current()) return { status: 'cancelled' };
-      const exported = python.exports;
-      if (exported && exported.ready && typeof exported.ready.then === 'function') await waitCancelable(exported.ready, controller.signal);
-      if (!current()) return { status: 'cancelled' };
-      const api = exported && exported.environments;
       if (!api || typeof api.getActiveEnvironmentPath !== 'function') return { status: 'selection-unavailable' };
       this.watchPython(api);
       const active = await waitCancelable(api.getActiveEnvironmentPath(folder), controller.signal);
       if (!current()) return { status: 'cancelled' };
-      if (!this.matches(active, inspected)) {
+      if (!this.matches(active, inspected) || active.named === false) {
         // A study window may restore a previously consented selection
         // only when Python has no current choice. A different choice is the
         // user's workspace preference; Use remains the explicit override.
-        if (preserveSelection && active && typeof active.path === 'string' && active.path) return { status: 'custom-interpreter' };
+        if (preserveSelection && active?.path && !this.matches(active, inspected)) return { status: 'custom-interpreter' };
         if (typeof api.updateActiveEnvironmentPath !== 'function') return { status: 'selection-unavailable' };
         await waitCancelable(api.updateActiveEnvironmentPath(inspected.interpreterPath, folder), controller.signal);
         if (!current()) return { status: 'cancelled' };
         const selected = await waitCancelable(api.getActiveEnvironmentPath(folder), controller.signal);
         if (!current()) return { status: 'cancelled' };
-        if (!this.matches(selected, inspected)) return { status: 'selection-unverified' };
+        if (!this.matches(selected, inspected) || selected.named === false) return { status: 'selection-unverified' };
       }
       if (!rememberedPath) await this.context.globalState.update(this.readyKey(folder), { interpreterPath: inspected.interpreterPath, selected: true });
       if (!current()) return { status: 'cancelled' };
@@ -359,11 +389,8 @@ class StudyEnvironmentUI {
           this.unverified.delete(this.readyKey(folder));
           if (controller.signal.aborted || !current()) return { status: 'cancelled' };
           progress.report({ message: 'Selecting the interpreter for this study folder…' });
-          if (!python.isActive) await waitCancelable(python.activate(), controller.signal);
-          const exported = python.exports;
-          if (exported && exported.ready && typeof exported.ready.then === 'function') await waitCancelable(exported.ready, controller.signal);
+          const api = await waitCancelable(this.selectionApi(python, folder, controller.signal), controller.signal);
           if (controller.signal.aborted || !current()) return { status: 'cancelled' };
-          const api = exported && exported.environments;
           this.watchPython(api);
           if (!api || typeof api.updateActiveEnvironmentPath !== 'function') {
             return { status: 'selection-unavailable', ...checked };
@@ -373,7 +400,7 @@ class StudyEnvironmentUI {
           let selected = false;
           if (typeof api.getActiveEnvironmentPath === 'function') {
             const active = await waitCancelable(api.getActiveEnvironmentPath(folder), controller.signal);
-            selected = !!active && typeof active.path === 'string' && [checked.interpreterPath, checked.environmentPath].filter(Boolean).some(candidate => path.resolve(active.path) === path.resolve(candidate));
+            selected = this.matches(active, checked) && active.named !== false;
           }
           if (controller.signal.aborted || !current()) return { status: 'cancelled' };
           await this.context.globalState.update(this.readyKey(folder), { interpreterPath: checked.interpreterPath, selected });

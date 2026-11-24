@@ -1,3 +1,26 @@
+# 0.12.17 full workspace toolbar and named study interpreter
+
+On macOS, Chromium rendered captured public toolbar markup with a synthetic
+signed-in account variant and six interactive problem tabs. At 660 and 1200
+CSS pixels wide, Focus reduced the toolbar height from 57 to 0 pixels and
+moved the tabs and statement up by 57 pixels. Original view restored all
+positions. The counter and avatar could update while Focus stayed applied.
+A notice reopened the toolbar and the Theory tab remained usable.
+
+The Node suite passed 944 tests on macOS. Bridge tests covered manual and
+automatic application, a wrapped toolbar beside an empty portal, a separate
+visible region and individual-control fallback. Python tests covered native
+selection, previous selection migration, cancellation, reload, nested Python
+projects, and the legacy Python extension.
+
+A separate smoke test created a real managed Python 3.12.11 environment with
+torch 2.15.0 and NumPy 2.5.5. The registered environment descriptor ran a CPU
+tensor calculation and activated the same venv in zsh. Microsoft's native
+status-bar presentation code displayed **TensorTonic** and the exact interpreter
+path when called with this descriptor in a test host. The signed-in MacBook
+window was unavailable for direct testing. Linux Electron E2E was unavailable
+because the configured SSH hostname did not resolve.
+
 # 0.12.16 changed workspace header
 
 The user's signed-in manual and automatic traces reached the header shape check

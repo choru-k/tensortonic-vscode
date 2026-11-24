@@ -88,6 +88,7 @@ proof of selection. Recorded readiness is not a fresh dependency audit.
 
 An existing selected interpreter alone does not prove that this extension's
 managed environment exists. Ordinary project environments remain unchanged.
+With Microsoft Python Environments enabled, the native interpreter indicator and picker show **TensorTonic** for the selected study environment. If the indicator shows Homebrew, select **Study environment → Use** in the study window to switch.
 Existing terminals also keep their current environment; open a new Python terminal
 when you need terminal activation. No activation command is injected into a busy
 terminal. See [Python setup and limits](docs/study-python.md).
@@ -96,15 +97,14 @@ terminal. See [Python setup and limits](docs/study-python.md).
 
 **Focus mode / Original view** is available in the study sidebar and recognized
 solution editor overflow menus. It starts off. On current problem pages, Focus hides the verified workspace header
-(including its problem list and previous/next controls) and the floating **Ask
+(including its logo, position counter, navigation and account actions) and the floating **Ask
 Toni** launcher. The Problem/Theory/Solution/Submissions/Notes/Code tabs stay
-available. If the header layout changes, **On · Controls only** hides Ask Toni
+available and move up by the full header height. If the toolbar cannot be identified, **On · Controls only** hides Ask Toni
 and each recognized list or previous/next control while keeping the header visible.
 The earlier navigation layout has its own verification rules.
 
 Changed, missing or ambiguous structures stay visible. Login/loading states and
-open menus do not qualify. A conservative observer reopens the capsule on any content, attribute or ancestor
-structure change, including unlabelled notices or replacement navigation. It never
+open menus do not qualify. Focus rechecks the current workspace toolbar when its counter or account controls update. A new notice or a replacement toolbar reopens it. The legacy capsule reopens on any observed change. Focus never
 automatically hides a changed capsule again. Original view
 empties only the extension's dedicated stylesheet. In this candidate, the Focus
 preference stays On across extension-opened Web problems: old styles are restored

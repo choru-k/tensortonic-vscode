@@ -580,7 +580,7 @@ class NativeBrowserBridge {
     const verifyHeader = modern ? verifyWorkspaceHeader : verifyNavbar;
     const install = sheet.contract.scope === 'controls'
       ? `(${installWorkspaceControlGuard.toString()})(document,${JSON.stringify(HEADER_CANDIDATE)},${JSON.stringify(sheet.contract.targets.map(({ id, candidate }) => ({ id, candidate })))},${JSON.stringify(NAVBAR_MARKER)},(${verifyWorkspaceControl.toString()}),(${verifyToniLauncher.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)`
-      : `(${installNavbarGuard.toString()})(document,${JSON.stringify(headerCandidate)},${JSON.stringify(NAVBAR_MARKER)},(${verifyHeader.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)`;
+      : `(${installNavbarGuard.toString()})(document,${JSON.stringify(headerCandidate)},${JSON.stringify(NAVBAR_MARKER)},(${verifyHeader.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined,${modern})`;
     const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return ${install}})()`;
     emitDiagnostic(onDiagnostic, 'guard-install', 'start');
     const guarded = await this._number(sheet.target, guardExpression, generation);

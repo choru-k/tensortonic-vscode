@@ -61,8 +61,7 @@ Setup and package installation are only started by an explicit action.
 5. A dedicated environment is created in extension storage under
    `python-envs/<study-folder-hash>`. The hash is a stable internal storage ID.
    New environments use Python's supported `--prompt` metadata so the interpreter
-   picker shows **TensorTonic** (with a short workspace name when useful) and the
-   Python version. This display label does not rename or move the environment.
+   picker can identify the venv independently of its storage directory. This display label does not rename or move the environment.
    Only **torch**, **numpy** and their required
    dependencies are installed from [PyPI](https://pypi.org/), using binary wheels.
    Downloads can be substantial; a tiny or CPU-only distribution is not promised.
@@ -73,7 +72,12 @@ Setup and package installation are only started by an explicit action.
 
 **Use study environment** does not install or repair anything. It rechecks the
 managed metadata and explicitly selects the existing interpreter through the scoped
-Python API. It may activate the Python extension, then verifies selection. If the
+Python API. With Microsoft Python Environments enabled, the extension registers
+the verified venv as **TensorTonic** and selects it for the study folder. The
+native indicator and picker use that name. The picker also shows the Python
+version. Microsoft can record the selected manager in the project's workspace
+settings. With the legacy Python extension, the interpreter uses its normal
+display label. Use reads the selection back from the active provider. If the
 API is unavailable, use the offered **Python: Select Interpreter → Enter interpreter
 path** guidance after setup; automatic selection is not assumed.
 
@@ -83,14 +87,14 @@ may be activated; if its scoped choice is empty, the prior selection is restored
 A different current interpreter is preserved; choose **Use study environment** to
 switch back explicitly. An existing verified environment without saved selection
 consent offers **Use study environment** instead of repeating setup. Ordinary
-activation and sidebar status updates do not perform this selection handoff.
+activation can restore a previously consented interpreter, including its native name. Sidebar refresh only reads the selection.
 
 Editor/Pylance selection and terminal activation are separate. Existing terminals
 retain their environment. Open a new Python terminal when terminal activation is
 needed; the extension does not inject activation into a busy terminal or change
 user/global `python.defaultInterpreterPath`.
 
-Older environments can retain the hash as their visible name until their owned
+With the legacy Python UI, older environments can retain the hash as their visible name until their owned
 `pyvenv.cfg` receives a `prompt` label and Python's environment manager is refreshed.
 Keep the interpreter path and other configuration intact; moving a virtual
 environment can break absolute launcher paths. A metadata-only label change does

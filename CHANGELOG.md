@@ -1,3 +1,8 @@
+# 0.12.17
+
+- Focus collapses the whole signed-in workspace toolbar, including the progress counter, logo and account actions. Verified counter and avatar updates keep the row collapsed. Original view restores its height.
+- Register the verified study interpreter as **TensorTonic** in Microsoft's Python Environments extension. Setup and Use select the actual interpreter. Ready checks the selection used for the active study Python file. A different selected interpreter shows **Use**.
+
 # 0.12.16
 
 - Keep Focus usable when a problem's workspace header changes. Manual and automatic Focus independently verify the list, previous/next and Ask Toni controls. The sidebar shows **On · Controls only** when the full header stays visible.

@@ -940,7 +940,18 @@ async function workspaceFixture(t) {
   const actions = element('DIV','div.flex.items-center.flex-shrink-0','',[discord,theme,account]);
   const right = element('DIV','div.flex.min-w-0.items-center.justify-end','',[actions]);
   const bar = element('DIV','div.flex.h-14.items-center.justify-between','',[left,center,right]);
+  const logoSelector = 'a[href="/problems"][aria-label="TensorTonic problems"] img[alt="TensorTonic"]';
+  bar.querySelectorAll = selector => {
+    if (selector === logoSelector) return [logo.firstElementChild];
+    const descendants = node => node.children.flatMap(child => [child, ...descendants(child)]);
+    return selector === '*' ? descendants(bar) : [];
+  };
+  bar.querySelector = selector => selector.startsWith('a[href="/starred"]') ? account : null;
+  theme.closest = account.closest = title.closest = () => true;
+  theme.lastElementChild.closest = () => true;
   const header = element('HEADER',HEADER_BASE,'',[bar]);
+  bar.parentElement = header;
+  header.querySelectorAll = selector => selector === 'div.flex.h-14.items-center.justify-between' ? [bar] : [];
   header.isConnected = true;
   header.parentNode = h.sandbox.document.documentElement;
   const toni = element('BUTTON',TONI_SELECTOR,'Ask Toni',[
@@ -966,6 +977,14 @@ test('current workspace header is selected, verified, hidden and restored on the
   const lease = await h.adapter.apply(await h.adapter.verify(h.page, contract), contract);
   const sheet = [...h.bridge.focusSheets.values()][0];
   assert.equal(h.styles.get(sheet.nativeId), modern.cssText);
+  // A different toolbar slot and a changed progress counter keep the row collapsed.
+  const position = element('SPAN', 'span.tabular-nums', '20 / 30');
+  bar.children.push(position);
+  h.revokeNavbar();
+  assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), true);
+  position.childNodes[0].textContent = '21 / 30';
+  h.revokeNavbar();
+  assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), true);
   await lease.restore();
   assert.equal(h.styles.get(sheet.nativeId), '');
   assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), false);
@@ -1009,7 +1028,7 @@ test('changed workspace header keeps its new content visible while manual and au
   assert.equal(await h.bridge.selectFocusContract(h.page), complete);
   diagnostics.length = 0;
   await h.bridge.inspectFocusContract(complete, { onDiagnostic: event => diagnostics.push(event) });
-  assert.ok(diagnostics.some(event => event.target === 'top-navbar' && event.code === 'header-layout'));
+  assert.ok(diagnostics.some(event => event.target === 'top-navbar' && event.code === 'header-text'));
   const controller = new FocusModeController({ verifiedContract: FOCUS_CONTRACT, adapter: h.adapter, selectContract: page => h.bridge.selectFocusContract(page) });
   const applied = await controller.setEnabled(true, { page: h.page });
   assert.equal(applied.status, 'applied');
@@ -1032,4 +1051,18 @@ test('changed workspace header keeps its new content visible while manual and au
   safe = false;
   await assert.rejects(h.bridge.selectFocusContract(h.page), { code:'INVALID_PROOF' });
   await assert.rejects(h.bridge.inspectFocusContract(workspaceControlContracts[0]), { code:'INVALID_PROOF' });
+});
+
+
+test('branded toolbar can be wrapped beside an inert portal without absorbing a second visible region', async t => {
+  const { h, modern, header, bar, element } = await workspaceFixture(t);
+  const wrapper = element('DIV', 'div', '', [bar]);
+  wrapper.parentElement = header;
+  bar.parentElement = wrapper;
+  const portal = element('DIV', 'div');
+  portal.matches = selector => selector.includes(':empty');
+  header.children = [wrapper, portal];
+  assert.equal(await h.bridge.selectFocusContract(h.page), modern);
+  header.children.push(element('ASIDE', 'aside', 'Account notice'));
+  assert.equal((await h.bridge.selectFocusContract(h.page)).scope, 'controls');
 });
