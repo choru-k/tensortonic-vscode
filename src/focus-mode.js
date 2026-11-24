@@ -36,7 +36,11 @@ class FocusModeController {
     this._lastNotification = undefined;
   }
 
-  get state() { return Object.freeze({ enabled: this.enabled, status: this.status, applied: this._leases.size > 0 }); }
+  get state() {
+    const state = { enabled: this.enabled, status: this.status, applied: this._leases.size > 0 };
+    if (this._activeLease && this._scope) state.scope = this._scope;
+    return Object.freeze(state);
+  }
   get busy() { return this._pendingOperations.size > 0; }
   _notify() {
     const value = Object.freeze({ ...this.state, busy: this.busy });
@@ -198,6 +202,7 @@ class FocusModeController {
         return this.state;
       }
       this._activeLease = lease;
+      this._scope = contract.scope;
       this.status = 'applied';
       return this.state;
     } catch (error) {

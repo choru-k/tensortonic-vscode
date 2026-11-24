@@ -5,8 +5,8 @@ const { verifyNavbar, installNavbarGuard, NAVBAR_BASE, NAVBAR_CANDIDATE, NAVBAR_
 
 const crypto = require('node:crypto');
 const { isAllowedRequest, validateBody, ORIGINS } = require('./request-policy');
-const { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT } = require('./focus-contract');
-const { HEADER_BASE, HEADER_CANDIDATE, verifyWorkspaceHeader, verifyToniLauncher } = require('./focus-workspace-header');
+const { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT, workspaceControlContracts } = require('./focus-contract');
+const { HEADER_BASE, HEADER_CANDIDATE, verifyWorkspaceHeader, verifyToniLauncher, WORKSPACE_CONTROLS, verifyWorkspaceControl, installWorkspaceControlGuard } = require('./focus-workspace-header');
 const MAX_RESPONSE = 8 * 1024 * 1024;
 const MAX_BODY = 1024 * 1024;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
@@ -333,10 +333,32 @@ class NativeBrowserBridge {
   }
   async selectFocusContract(page, { signal } = {}) {
     if (!this.focusContract || !sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The owned Focus page changed.', 'PAGE_CHANGED');
-    const expression = `document.querySelectorAll(${JSON.stringify(HEADER_BASE)}).length`;
-    const count = await this._number(this.target, expression, this.generation, signal);
-    if (count > 1) throw fault('The problem workspace header is ambiguous.', 'INVALID_PROOF');
-    return count === 1 ? WORKSPACE_FOCUS_CONTRACT : FOCUS_CONTRACT;
+    return this._workspaceContract(this.target, this.generation, signal);
+  }
+  async _workspaceContract(target, generation, signal) {
+    // Return only a fixed profile number. Neither account text nor link values
+    // leave the document. The chosen profile is freshly proven before writing.
+    const expression = `(()=>{
+      const headers=document.querySelectorAll(${JSON.stringify(HEADER_BASE)});
+      if(!headers.length)return 0;
+      if(headers.length!==1 || document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}).length ||
+         document.querySelectorAll(${JSON.stringify(HEADER_CANDIDATE)})[0]!==headers[0])return -1;
+      if((${verifyWorkspaceHeader.toString()})(headers[0]))return 1;
+      const verify=${verifyWorkspaceControl.toString()};
+      const controls=${JSON.stringify(WORKSPACE_CONTROLS)};
+      let mask=0;
+      for(const [i,control] of controls.entries()){
+        const nodes=document.querySelectorAll(control.candidate);
+        if(nodes.length===1 && verify(nodes[0],control.id))mask|=1<<i;
+      }
+      return 2+mask;
+    })()`;
+    const profile = await this._number(target, expression, generation, signal);
+    if (profile === 0) return FOCUS_CONTRACT;
+    if (profile === 1) return WORKSPACE_FOCUS_CONTRACT;
+    const controls = workspaceControlContracts[profile - 2];
+    if (!controls) throw fault('The problem workspace header is ambiguous or blocked.', 'INVALID_PROOF');
+    return controls;
   }
   async waitForFocusReady(page, { signal: externalSignal, onDiagnostic } = {}) {
     const controller = new AbortController(), signal = controller.signal;
@@ -372,7 +394,8 @@ class NativeBrowserBridge {
           try {
             // Preserve a safe native failure category instead of reclassifying
             // every rejected proof as a transport error in bounded().
-            const checked = await bounded(this.inspectFocusContract(loadingState === 5 ? WORKSPACE_FOCUS_CONTRACT : this.focusContract, { signal, onDiagnostic, readinessGate: FOCUS_READINESS_GATE }).then(value => ({ ok: true, value }), error => ({ ok: false, error })), remaining(), 'Focus readiness timed out.', signal);
+            const contract = loadingState === 5 ? await bounded(this._workspaceContract(target, generation, signal), remaining(), 'Focus readiness timed out.', signal) : this.focusContract;
+            const checked = await bounded(this.inspectFocusContract(contract, { signal, onDiagnostic, readinessGate: FOCUS_READINESS_GATE }).then(value => ({ ok: true, value }), error => ({ ok: false, error })), remaining(), 'Focus readiness timed out.', signal);
             if (!checked.ok) throw checked.error;
             proof = checked.value;
             emitDiagnostic(onDiagnostic, 'contract', proof?.incomplete === true ? 'wait' : 'ok', proof?.incomplete === true ? 'controls-incomplete' : undefined);
@@ -390,24 +413,35 @@ class NativeBrowserBridge {
     } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
   async inspectFocusContract(value, { signal, onDiagnostic, readinessGate } = {}) {
-    const contract = value?.id === WORKSPACE_FOCUS_CONTRACT.id ? WORKSPACE_FOCUS_CONTRACT : this.focusContract;
+    const contract = value?.id === WORKSPACE_FOCUS_CONTRACT.id ? WORKSPACE_FOCUS_CONTRACT :
+      workspaceControlContracts.find(profile => profile.id === value?.id) ?? this.focusContract;
     if (!this.focusContract || focusCore(value) !== focusCore(contract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
     const page = await this.getFocusPage({ signal, onDiagnostic }), target = this.target, generation = this.generation;
-    const modern = contract === WORKSPACE_FOCUS_CONTRACT;
+    const modern = contract === WORKSPACE_FOCUS_CONTRACT || contract.scope === 'controls';
     const candidate = modern ? HEADER_CANDIDATE : NAVBAR_CANDIDATE;
     const verifyHeader = modern ? verifyWorkspaceHeader : verifyNavbar;
-    const targets = contract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? candidate : item.selector, count: item.count, expectation: item.expectation }));
-    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const failures=[];const reject=(target,reason)=>{valid=false;failures.push({target,reason})};const anchorFailure=${focusAnchorFailure.toString()};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){reject(t.id,nodes.length===0?'missing':'count');continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyHeader.toString()})(e))reject(t.id,'shape');continue}if(x.kind==='toni-launcher'){if(!(${verifyToniLauncher.toString()})(e))reject(t.id,'shape');continue}if(x.tag==='a'){const reason=anchorFailure(e,x,location.origin);if(reason)reject(t.id,reason)}else if(x.tag==='button'){if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){reject(t.id,'shape');continue}if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)reject(t.id,'shape')}else reject(t.id,'shape')}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts,failures})})()`;
+    const targets = contract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? candidate : item.candidate ?? item.selector, count: item.count, expectation: item.expectation }));
+    const controlsOnly = contract.scope === 'controls';
+    const checkWorkspace = controlsOnly ? `
+      const safeHeaders = document.querySelectorAll(${JSON.stringify(HEADER_CANDIDATE)});
+      if (safeHeaders.length !== 1 || document.querySelectorAll(${JSON.stringify(HEADER_BASE)}).length !== 1 ||
+          document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}).length) return '';
+      const headerCheck = (${verifyWorkspaceHeader.toString()})(safeHeaders[0], code => code);
+    ` : '';
+    const headerField = controlsOnly ? ',headerCheck' : '';
+    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';${checkWorkspace}const counts={};let valid=true;const failures=[];const reject=(target,reason)=>{valid=false;failures.push({target,reason})};const anchorFailure=${focusAnchorFailure.toString()};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){reject(t.id,nodes.length===0?'missing':'count');continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyHeader.toString()})(e))reject(t.id,'shape');continue}if(x.kind==='workspace-control'){if(!(${verifyWorkspaceControl.toString()})(e,t.id))reject(t.id,'shape');continue}if(x.kind==='toni-launcher'){if(!(${verifyToniLauncher.toString()})(e))reject(t.id,'shape');continue}if(x.tag==='a'){const reason=anchorFailure(e,x,location.origin);if(reason)reject(t.id,reason)}else if(x.tag==='button'){if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){reject(t.id,'shape');continue}if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)reject(t.id,'shape')}else reject(t.id,'shape')}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts,failures${headerField}})})()`;
     const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
+    if (contract.scope === 'controls' && typeof metadata?.headerCheck === 'string')
+      emitDiagnostic(onDiagnostic, 'contract-target', 'skip', metadata.headerCheck, 'top-navbar');
     if (Array.isArray(metadata?.failures)) for (const failure of metadata.failures.slice(0, 8)) emitDiagnostic(onDiagnostic, 'contract-target', 'fail', failure?.reason, failure?.target);
     // Observed native diagnostic: all seven problem controls may be absent
     // after the body spinner clears while the signed-in navbar already passes.
     // This exact state permits another read only, never an application proof.
-    const controls = targets.filter(item => item.id !== 'top-navbar');
-    const incomplete = readinessGate === FOCUS_READINESS_GATE && metadata?.valid === false && Object.keys(metadata).sort().join(',') === 'counts,failures,url,valid' && metadata.url === page.url &&
-      metadata.counts && Object.keys(metadata.counts).length === targets.length && metadata.counts['top-navbar'] === 1 &&
+    const controls = targets.filter(item => contract.scope === 'controls' ? item.id === 'ask-toni' : item.id !== 'top-navbar');
+    const incomplete = readinessGate === FOCUS_READINESS_GATE && metadata?.valid === false && Object.keys(metadata).sort().join(',') === (contract.scope === 'controls' ? 'counts,failures,headerCheck,url,valid' : 'counts,failures,url,valid') && metadata.url === page.url &&
+      metadata.counts && Object.keys(metadata.counts).length === targets.length && (contract.scope === 'controls' || metadata.counts['top-navbar'] === 1) &&
       (modern || controls.length === 7) && controls.every(item => metadata.counts[item.id] === 0) &&
       Array.isArray(metadata.failures) && metadata.failures.length === controls.length &&
       controls.every(item => metadata.failures.filter(failure => failure?.target === item.id && failure.reason === 'missing' && Object.keys(failure).sort().join(',') === 'reason,target').length === 1);
@@ -544,7 +578,10 @@ class NativeBrowserBridge {
     const modern = sheet.contract === WORKSPACE_FOCUS_CONTRACT;
     const headerCandidate = modern ? HEADER_CANDIDATE : NAVBAR_CANDIDATE;
     const verifyHeader = modern ? verifyWorkspaceHeader : verifyNavbar;
-    const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return (${installNavbarGuard.toString()})(document,${JSON.stringify(headerCandidate)},${JSON.stringify(NAVBAR_MARKER)},(${verifyHeader.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)})()`;
+    const install = sheet.contract.scope === 'controls'
+      ? `(${installWorkspaceControlGuard.toString()})(document,${JSON.stringify(HEADER_CANDIDATE)},${JSON.stringify(sheet.contract.targets.map(({ id, candidate }) => ({ id, candidate })))},${JSON.stringify(NAVBAR_MARKER)},(${verifyWorkspaceControl.toString()}),(${verifyToniLauncher.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)`
+      : `(${installNavbarGuard.toString()})(document,${JSON.stringify(headerCandidate)},${JSON.stringify(NAVBAR_MARKER)},(${verifyHeader.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)`;
+    const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return ${install}})()`;
     emitDiagnostic(onDiagnostic, 'guard-install', 'start');
     const guarded = await this._number(sheet.target, guardExpression, generation);
     sheet.navbarGuard = guarded === 1 ? 'installed' : undefined;

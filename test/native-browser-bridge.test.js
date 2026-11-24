@@ -915,7 +915,7 @@ test('evaluated anchor diagnostics identify exact rejection and never retry shap
  }
 });
 
-test('current workspace header is selected, verified, hidden and restored on the owned problem', async t => {
+async function workspaceFixture(t) {
   const { WORKSPACE_FOCUS_CONTRACT: modern } = require('../src/focus-contract');
   const { HEADER_BASE, HEADER_CANDIDATE, HEADER_SELECTOR, TONI_SELECTOR } = require('../src/focus-workspace-header');
   const h = await focusHarness(t);
@@ -924,6 +924,9 @@ test('current workspace header is selected, verified, hidden and restored on the
     const node = h.navbar.element(tag, [selector], text, {}, children);
     node.lastElementChild = children.at(-1);
     node.querySelector = () => null;
+    node.hasAttribute = key => key in node.attrs;
+    node.isConnected = true;
+    node.ownerDocument = h.sandbox.document;
     return node;
   };
   const svg = name => element('svg', name);
@@ -944,6 +947,7 @@ test('current workspace header is selected, verified, hidden and restored on the
     svg('svg.lucide-grip-vertical'),svg('svg.lucide-bot'),element('SPAN','span','Ask Toni'),
   ]);
   const doc = h.sandbox.document;
+  doc.URL = h.page.url;
   doc.querySelectorAll = selector => {
     if (selector === HEADER_BASE || selector === HEADER_CANDIDATE) return [header];
     if (selector === HEADER_SELECTOR && doc.documentElement.hasAttribute(NAVBAR_MARKER)) return [header];
@@ -951,6 +955,11 @@ test('current workspace header is selected, verified, hidden and restored on the
     return [];
   };
   h.sandbox.getComputedStyle = () => ({ display: [...h.styles.values()].includes(modern.cssText) ? 'none' : 'block' });
+  return { h, modern, bar, left, element, toni, doc, header };
+}
+
+test('current workspace header is selected, verified, hidden and restored on the owned problem', async t => {
+  const { h, modern, doc, bar, element } = await workspaceFixture(t);
   const contract = await h.bridge.selectFocusContract(h.page);
   assert.equal(contract, modern);
   await h.bridge.waitForFocusReady(h.page);
@@ -962,4 +971,65 @@ test('current workspace header is selected, verified, hidden and restored on the
   assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), false);
   bar.children.push(element('DIV','div','New account notice'));
   await assert.rejects(h.bridge.inspectFocusContract(contract), { code: 'INVALID_PROOF' });
+});
+
+
+test('changed workspace header keeps its new content visible while manual and automatic Focus use verified controls', async t => {
+  const { h, modern, doc, bar, element, toni, header } = await workspaceFixture(t);
+  const { WORKSPACE_CONTROLS, HEADER_CANDIDATE, TONI_SELECTOR } = require('../src/focus-workspace-header');
+  const { workspaceControlContracts } = require('../src/focus-contract');
+  const { FocusModeController } = require('../src/focus-mode');
+  bar.children.push(element('DIV', 'div', 'New account action'));
+  const buttons = WORKSPACE_CONTROLS.map(({ id }, i) => {
+    const node = element(i ? 'A' : 'BUTTON', '', '', [element('svg', ['svg.lucide-panel-left','svg.lucide-chevron-left','svg.lucide-chevron-right'][i])]);
+    node.attrs.href = '/problems/' + id;
+    return node;
+  });
+  const candidates = new Map(WORKSPACE_CONTROLS.map(({ candidate }, i) => [candidate, [buttons[i]]]));
+  candidates.set(TONI_SELECTOR, [toni]);
+  const baseQuery = doc.querySelectorAll;
+  let safe = true;
+  doc.querySelectorAll = selector => {
+    if (selector === HEADER_CANDIDATE && !safe) return [];
+    for (const { candidate, selector: guarded } of workspaceControlContracts.at(-1).targets) {
+      if (selector === candidate || (guarded === selector && doc.documentElement.hasAttribute(NAVBAR_MARKER))) return candidates.get(candidate);
+    }
+    return baseQuery(selector);
+  };
+  const complete = workspaceControlContracts.at(-1);
+  h.sandbox.getComputedStyle = node => ({ display: doc.documentElement.hasAttribute(NAVBAR_MARKER) &&
+    [toni,...buttons].includes(node) && [...h.styles.values()].includes(complete.cssText) ? 'none' : 'block' });
+
+  const diagnostics = [];
+  await assert.rejects(h.bridge.inspectFocusContract(modern, { onDiagnostic: event => diagnostics.push(event) }), { code: 'INVALID_PROOF' });
+  assert.deepEqual(diagnostics.find(event => event.target), { stage:'contract-target', outcome:'fail', code:'shape', target:'top-navbar' });
+  candidates.set(TONI_SELECTOR, []);
+  h.onReadyPause = () => candidates.set(TONI_SELECTOR, [toni]);
+  assert.equal(await h.bridge.waitForFocusReady(h.page), h.page);
+  assert.equal(await h.bridge.selectFocusContract(h.page), complete);
+  diagnostics.length = 0;
+  await h.bridge.inspectFocusContract(complete, { onDiagnostic: event => diagnostics.push(event) });
+  assert.ok(diagnostics.some(event => event.target === 'top-navbar' && event.code === 'header-layout'));
+  const controller = new FocusModeController({ verifiedContract: FOCUS_CONTRACT, adapter: h.adapter, selectContract: page => h.bridge.selectFocusContract(page) });
+  const applied = await controller.setEnabled(true, { page: h.page });
+  assert.equal(applied.status, 'applied');
+  assert.equal(applied.scope, 'controls');
+  assert.equal(h.sandbox.getComputedStyle(toni).display, 'none');
+  assert.equal(h.sandbox.getComputedStyle(header).display, 'block');
+  h.revokeNavbar();
+  assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), true);
+  buttons[2].attrs.href = '/auth';
+  h.revokeNavbar();
+  assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), false);
+  assert.equal((await controller.setEnabled(false)).status, 'off');
+  assert.equal(h.sandbox.getComputedStyle(toni).display, 'block');
+
+  // A duplicate list button and a changed destination each drop just that target.
+  candidates.get(WORKSPACE_CONTROLS[0].candidate).push(buttons[0]);
+  assert.deepEqual((await h.bridge.selectFocusContract(h.page)).targets.map(t => t.id), ['workspace-prev', 'ask-toni']);
+  candidates.set(WORKSPACE_CONTROLS[1].candidate, []);
+  assert.deepEqual((await h.bridge.selectFocusContract(h.page)).targets.map(t => t.id), ['ask-toni']);
+  safe = false;
+  await assert.rejects(h.bridge.selectFocusContract(h.page), { code:'INVALID_PROOF' });
+  await assert.rejects(h.bridge.inspectFocusContract(workspaceControlContracts[0]), { code:'INVALID_PROOF' });
 });

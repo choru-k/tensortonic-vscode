@@ -98,7 +98,9 @@ terminal. See [Python setup and limits](docs/study-python.md).
 solution editor overflow menus. It starts off. On current problem pages, Focus hides the verified workspace header
 (including its problem list and previous/next controls) and the floating **Ask
 Toni** launcher. The Problem/Theory/Solution/Submissions/Notes/Code tabs stay
-available. The earlier navigation layout has its own verification rules.
+available. If the header layout changes, **On · Controls only** hides Ask Toni
+and each recognized list or previous/next control while keeping the header visible.
+The earlier navigation layout has its own verification rules.
 
 Changed, missing or ambiguous structures stay visible. Login/loading states and
 open menus do not qualify. A conservative observer reopens the capsule on any content, attribute or ancestor

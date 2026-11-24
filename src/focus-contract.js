@@ -1,6 +1,6 @@
 'use strict';
-const { NAVBAR_SELECTOR } = require('./focus-navbar');
-const { HEADER_SELECTOR, TONI_SELECTOR } = require('./focus-workspace-header');
+const { NAVBAR_SELECTOR, NAVBAR_MARKER } = require('./focus-navbar');
+const { HEADER_SELECTOR, TONI_SELECTOR, WORKSPACE_CONTROLS } = require('./focus-workspace-header');
 
 // These controls were observed on an owned canonical problem page at desktop
 // and narrow widths on 2026-11-03. Each must retain its exact structure and
@@ -44,4 +44,17 @@ const WORKSPACE_FOCUS_CONTRACT = Object.freeze({
   targets: Object.freeze(workspaceTargets),
   cssText: workspaceTargets.map(target => `${target.selector}{display:none!important;}`).join('\n'),
 });
-module.exports = { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT };
+
+// A workspace may add account actions or change its breadcrumb independently
+// of its problem controls. Each possible subset has a fixed reviewed stylesheet.
+const workspaceControlContracts = Object.freeze(Array.from({ length: 1 << WORKSPACE_CONTROLS.length }, (_, mask) => {
+  const controls = WORKSPACE_CONTROLS.filter((_, i) => mask & (1 << i));
+  const targets = [...controls, { id: 'ask-toni', candidate: TONI_SELECTOR }].map(({ id, candidate }) => Object.freeze({
+    id, candidate, selector: `html[${NAVBAR_MARKER}="guarded"] ${candidate}`, count: 1,
+    expectation: Object.freeze({ kind: id === 'ask-toni' ? 'toni-launcher' : 'workspace-control' }),
+  }));
+  return Object.freeze({ id: 'tt-problem-workspace-controls-' + mask, verified: true, surface: 'problem-content',
+    hidesSecurityUI: false, scope: 'controls', targets: Object.freeze(targets),
+    cssText: targets.map(t => `${t.selector}{display:none!important;}`).join('\n') });
+}));
+module.exports = { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT, workspaceControlContracts };

@@ -301,3 +301,10 @@ test('retained On intent without a current lease is not presented as Applied',()
  const row=focusRow({enabled:true,status:'off',applied:false,busy:false});
  assert.equal(row.description,'On · Not applied');assert.match(row.tooltip,/preference is still on/);assert.doesNotMatch(row.tooltip,/Focus mode is applied/);
 });
+
+
+test('verified individual buttons are presented as Controls only', () => {
+  const row = focusRow({ enabled: true, applied: true, status: 'applied', scope: 'controls' }, { open: true }, 'web');
+  assert.equal(row.description, 'On · Controls only');
+  assert.match(row.tooltip, /website header stays visible/);
+});

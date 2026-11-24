@@ -1,3 +1,8 @@
+# 0.12.16
+
+- Keep Focus usable when a problem's workspace header changes. Manual and automatic Focus independently verify the list, previous/next and Ask Toni controls. The sidebar shows **On · Controls only** when the full header stays visible.
+- TensorTonic Output identifies the header section responsible for partial application using a fixed category.
+
 # 0.12.15
 
 - Recognize the current problem workspace header and floating Ask Toni control. Focus verifies each supported layout independently, restores the original styles on Off, and reports unsuccessful manual attempts in TensorTonic Output.

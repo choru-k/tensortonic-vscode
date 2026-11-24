@@ -1174,7 +1174,7 @@ function activate(context) {
       trace.emit('controller', 'start');
       const result = await focusMode.setEnabled(true, { page, signal: controller.signal, onDiagnostic: trace.record });
       trace.emit('result', current() ? result.status : 'canceled');
-      if (current() && result.status !== 'applied') output.appendLine('Focus diagnostic: ' + trace.summary());
+      if (current() && (result.status !== 'applied' || result.scope === 'controls')) output.appendLine('Focus diagnostic: ' + trace.summary());
       return result;
     } finally {
       if (focusRecovery === operation) focusRecovery = undefined;
@@ -1205,8 +1205,10 @@ function activate(context) {
     }
     result = focusMode.state;
     if (focusRequested !== enabled || disposed) return Object.freeze({ ...result, enabled: focusRequested });
-    output.appendLine(result.status === 'applied'
-      ? 'Focus mode: verified controls and guarded top navigation capsule hidden. New Web problems will be checked independently.'
+    const appliedMessage = result.scope === 'controls'
+      ? 'Focus mode: verified controls hidden. The website header stays visible because its layout has changed.'
+      : 'Focus mode: verified controls and guarded top navigation capsule hidden. New Web problems will be checked independently.';
+    output.appendLine(result.status === 'applied' ? appliedMessage
       : result.status === 'off' && !focusRequested ? 'Focus mode: original website styles restored.'
       : result.status === 'restore-pending' ? 'Focus mode: stylesheet restoration is pending. Retry Original view or close the owned problem tab.'
       : 'Focus preference is on, but application to the current page is not confirmed. Website controls remain visible until verification succeeds.');

@@ -1,3 +1,21 @@
+# 0.12.16 changed workspace header
+
+The user's signed-in manual and automatic traces reached the header shape check
+and reported no other failing target. The traces identify the header as the
+failing component. Its precise signed-in DOM difference is unknown.
+
+In the macOS Chromium fixture, adding an account action caused the complete
+header check to fail. The controls-only profile hid the problem list, previous
+and next links and Ask Toni. The account action and problem tabs stayed
+visible. Editing the account text kept the four controls hidden. Switching
+Focus off restored all four. Changing a verified destination revoked the guard.
+The fixture used captured public markup with a synthetic account control.
+
+The macOS Node suite passed 937 tests. Bridge tests exercised both readiness
+and manual application, restoration, duplicate controls, changed destinations
+and a blocked header. The user's signed-in VS Code window and Linux Electron
+were unavailable for the release check.
+
 # 0.12.15 workspace header and study Python
 
 The current public Balanced DataLoader markup uses a workspace header. ReLU
