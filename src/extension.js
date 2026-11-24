@@ -201,7 +201,9 @@ function activate(context) {
   let focusRequested = false;
   let lastFocusPage;
   let focusRecovery;
-  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT, onChange: () => studyStatus?.refresh() });
+  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT,
+    selectContract: (page, signal) => focusDisplay().selectFocusContract?.(page, { signal }) ?? FOCUS_CONTRACT,
+    onChange: () => studyStatus?.refresh() });
   function presentationSnapshot() {
     let display = { open: state.webPageOpen === true, otherBrowserActive: false };
     try {
@@ -1172,7 +1174,7 @@ function activate(context) {
       trace.emit('controller', 'start');
       const result = await focusMode.setEnabled(true, { page, signal: controller.signal, onDiagnostic: trace.record });
       trace.emit('result', current() ? result.status : 'canceled');
-      if (automatic && current() && result.status !== 'applied') output.appendLine('Focus diagnostic: ' + trace.summary());
+      if (current() && (result.status !== 'applied' || result.scope === 'controls')) output.appendLine('Focus diagnostic: ' + trace.summary());
       return result;
     } finally {
       if (focusRecovery === operation) focusRecovery = undefined;
@@ -1203,8 +1205,10 @@ function activate(context) {
     }
     result = focusMode.state;
     if (focusRequested !== enabled || disposed) return Object.freeze({ ...result, enabled: focusRequested });
-    output.appendLine(result.status === 'applied'
-      ? 'Focus mode: verified controls and guarded top navigation capsule hidden. New Web problems will be checked independently.'
+    const appliedMessage = result.scope === 'controls'
+      ? 'Focus mode: verified controls hidden. The website header stays visible because its layout has changed.'
+      : 'Focus mode: verified controls and guarded top navigation capsule hidden. New Web problems will be checked independently.';
+    output.appendLine(result.status === 'applied' ? appliedMessage
       : result.status === 'off' && !focusRequested ? 'Focus mode: original website styles restored.'
       : result.status === 'restore-pending' ? 'Focus mode: stylesheet restoration is pending. Retry Original view or close the owned problem tab.'
       : 'Focus preference is on, but application to the current page is not confirmed. Website controls remain visible until verification succeeds.');
@@ -1336,16 +1340,22 @@ function activate(context) {
     }));
   }
 
-  // Startup may consume a recent explicit Start Studying request for this exact
-  // local folder. It never opens a window or redirects existing solution files.
-  const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().catch(() => {
-    output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
-    return false;
-  });
   // Restore encrypted state only: no startup browser, HTTP, login or migration.
   const sessionReady=Promise.resolve().then(()=>typeof bridge.restore==='function'?bridge.restore():false).catch(()=>{
     output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
   }).finally(updateConnection);
+  // Startup may consume a recent explicit Start Studying request for this exact
+  // local folder. It never opens a window or redirects existing solution files.
+  const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().then(async restored => {
+    if (!restored) {
+      await sessionReady;
+      await studyEnvironment.restoreSelection();
+    }
+    return restored;
+  }).catch(() => {
+    output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
+    return false;
+  });
   // Do not export a vault, SecretStorage object, raw transport or CDP capability.
   return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, focusDiagnostics: focusDiagnostics.snapshot, diagnoseStoredSession: options => bridge.diagnoseStoredSession(options), sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }

@@ -11,7 +11,7 @@ const SUPPORTED_MINORS = Object.freeze([14, 13, 12, 11]);
 const PROBE = 'import json,sys; print(json.dumps({"version":list(sys.version_info[:3]),"executable":sys.executable,"prefix":sys.prefix,"base_prefix":sys.base_prefix}))';
 const HEALTH = 'import json,sys,torch,numpy; print(json.dumps({"version":list(sys.version_info[:3]),"executable":sys.executable,"prefix":sys.prefix,"base_prefix":sys.base_prefix,"torch":torch.__version__,"numpy":numpy.__version__}))';
 
-function canceled() { const error = new Error('Study environment setup was canceled. No global Python environment was changed.'); error.name = 'AbortError'; return error; }
+function canceled() { const error = new Error('Study environment setup was canceled. Run Setup or Repair to retry.'); error.name = 'AbortError'; return error; }
 function checkSignal(signal) { if (signal && signal.aborted) throw canceled(); }
 function contained(parent, child) { const relative = path.relative(parent, child); return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative)); }
 function environmentPrompt(workspaceRoot) {
@@ -38,7 +38,9 @@ function defaultCandidates(platform = process.platform, source = process.env) {
     return roots.flatMap(root => SUPPORTED_MINORS.map(minor => path.join(root, `Python3${minor}`, 'python.exe')));
   }
   const roots = platform === 'darwin' ? ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'] : ['/usr/bin', '/usr/local/bin'];
-  return roots.flatMap(root => [...SUPPORTED_MINORS.map(minor => path.join(root, `python3.${minor}`)), path.join(root, 'python3')]);
+  const versioned = platform === 'darwin' ? ['/opt/homebrew/opt', '/usr/local/opt'].flatMap(root =>
+    SUPPORTED_MINORS.map(minor => path.join(root, `python@3.${minor}`, 'bin', `python3.${minor}`))) : [];
+  return [...roots.flatMap(root => [...SUPPORTED_MINORS.map(minor => path.join(root, `python3.${minor}`)), path.join(root, 'python3')]), ...versioned];
 }
 function runProcess(executable, args, options, driver = {}) {
   return new Promise((resolve, reject) => {
@@ -162,9 +164,9 @@ class StudyEnvironment {
       ...(ready ? { interpreterPath: this.interpreterPath } : {}) };
   }
 
-  async _invoke(executable, args, signal, timeout = 120000) {
+  async _invoke(executable, args, signal, timeout = 120000, env = this.env) {
     checkSignal(signal);
-    const result = await this.run(executable, args, { signal, timeout, cwd: this.managedRoot, env: this.env, shell: false });
+    const result = await this.run(executable, args, { signal, timeout, cwd: this.managedRoot, env, shell: false });
     checkSignal(signal);
     return result;
   }
@@ -176,7 +178,8 @@ class StudyEnvironment {
     let real;
     try { real = await this.fs.realpath(candidate); } catch (_) { return undefined; }
     if (contained(workspace, real) || contained(this.managedRoot, real)) return undefined;
-    const stat = await this.fs.stat(real);
+    let stat;
+    try { stat = await this.fs.stat(real); } catch (error) { if (error.code === 'ENOENT') return undefined; throw error; }
     return stat.isFile() ? real : undefined;
   }
   async _discover(workspace, signal, report) {
@@ -194,7 +197,52 @@ class StudyEnvironment {
         return { basePython: real, pythonVersion: info.version.join('.') };
       } catch (error) { if (error.name === 'AbortError' || error.code === 'UNSAFE_PROCESS_GROUP') throw error; }
     }
-    throw new Error('No supported installed Python 3.11–3.14 was found in standard system locations. Install a supported Python from python.org or your usual trusted package manager, then run Setup again. No Python was downloaded or globally modified.');
+    const error = new Error('No supported installed Python 3.11–3.14 was found in standard system locations. ' +
+      (this.platform === 'darwin' ? 'If you use Homebrew, run brew install python@3.13, then retry TensorTonic: Set up study Python environment in this same folder. Python 3.15 is not supported. ' :
+        'Install Python 3.11–3.14 from python.org or your trusted package manager in a standard system location, then retry TensorTonic: Set up study Python environment in this same folder. ') +
+      'No Python was downloaded or globally modified; existing environments were preserved.');
+    error.code = 'PYTHON_RUNTIME_MISSING';
+    throw error;
+  }
+  async homebrewForSetup() {
+    if (this.platform !== 'darwin') return undefined;
+    return this._homebrew((await this._roots()).workspace);
+  }
+  async _homebrew(workspace) {
+    if (this.platform !== 'darwin') return undefined;
+    for (const candidate of ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']) {
+      const real = await this._canonicalCandidate(candidate, workspace);
+      // Accept only the standard launcher or the standard Homebrew repository
+      // target of that launcher, never an arbitrary symlink/PATH executable.
+      const prefix = candidate.startsWith('/opt/homebrew/') ? '/opt/homebrew' : '/usr/local';
+      if (real === candidate || real === path.join(prefix, 'Homebrew/bin/brew')) return real;
+    }
+    return undefined;
+  }
+  async _runtime(workspace, signal, report, confirmPythonInstall) {
+    try { return await this._discover(workspace, signal, report); }
+    catch (error) {
+      if (error.code !== 'PYTHON_RUNTIME_MISSING' || typeof confirmPythonInstall !== 'function') throw error;
+      const brew = await this._homebrew(workspace);
+      if (!brew) throw error;
+      checkSignal(signal);
+      if (await confirmPythonInstall({ executable: brew, formula: 'python@3.13' }) !== true) throw canceled();
+      checkSignal(signal);
+      if (await this._homebrew(workspace) !== brew) throw new Error('The Homebrew executable changed during confirmation. Retry Setup after reviewing your Homebrew installation. Existing study environments were preserved.');
+      report('Installing Python 3.13 with your existing Homebrew, then continuing setup…');
+      try {
+        await this._invoke(brew, ['install', 'python@3.13'], signal, 20 * 60 * 1000, { ...this.env,
+          HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_ANALYTICS: '1', HOMEBREW_NO_INSTALL_CLEANUP: '1', HOMEBREW_NO_ENV_HINTS: '1' });
+      } catch (failure) {
+        if (failure.name === 'AbortError') throw failure;
+        throw new Error('Homebrew could not finish installing python@3.13. Review your Homebrew installation and retry Setup or Repair. Existing study environments were preserved; a partially installed Homebrew formula may remain.');
+      }
+      try { return await this._discover(workspace, signal, report); }
+      catch (failure) {
+        if (failure.code !== 'PYTHON_RUNTIME_MISSING') throw failure;
+        throw new Error('Homebrew finished, but an installed compatible Python could not be verified. Review python@3.13 in your Homebrew installation, then retry Setup or Repair in this folder. Existing study environments were preserved.');
+      }
+    }
   }
   async _validateInterpreter(marker, workspace) {
     const stat = await this._stat(this.interpreterPath);
@@ -202,7 +250,7 @@ class StudyEnvironment {
     const bin = await this._stat(path.dirname(this.interpreterPath));
     if (!bin || !bin.isDirectory() || bin.isSymbolicLink()) throw new Error('The managed interpreter directory was replaced. Refusing to execute it.');
     const base = await this._canonicalCandidate(marker.basePython, workspace);
-    if (!base || base !== marker.basePython) throw new Error(`The original system Python is unavailable or changed. This managed environment cannot be rebuilt automatically in place. Choose a different study folder for a fresh environment, or manually review/remove only this extension-owned environment (${this.environmentPath}) and run Setup again. Study files and other Python environments were not changed.`);
+    if (!base || base !== marker.basePython) throw new Error('The original system Python is unavailable or changed. Run TensorTonic: Repair study Python environment to find a compatible installed Python and preserve this environment before rebuilding.');
     const real = await this.fs.realpath(this.interpreterPath);
     if (this.platform !== 'win32') {
       if (real !== base) throw new Error('The managed interpreter does not point to its original system Python. Refusing to execute it.');
@@ -245,15 +293,15 @@ class StudyEnvironment {
     await this.fs.writeFile(file, JSON.stringify(marker, null, 2) + '\n', { mode: 0o600 });
   }
 
-  async ensure({ confirmed = false, signal, onProgress = () => {}, repair = false } = {}) {
+  async ensure({ confirmed = false, signal, onProgress = () => {}, repair = false, confirmPythonInstall } = {}) {
     if (confirmed !== true) throw new Error('Explicit setup confirmation is required before running Python or installing packages.');
     if (this.platform === 'win32') throw new Error('Automatic study environment setup currently supports macOS and Linux only. On Windows, create a dedicated virtual environment manually and select it with Python: Select Interpreter. No installer or Python process was started.');
     if (this.active) throw new Error('Study environment setup is already running for this workspace.');
-    const task = this._ensure({ signal, report: onProgress, repair });
+    const task = this._ensure({ signal, report: onProgress, repair, confirmPythonInstall });
     this.active = task;
     try { return await task; } finally { if (this.active === task) this.active = undefined; }
   }
-  async _ensure({ signal, report, repair }) {
+  async _ensure({ signal, report, repair, confirmPythonInstall }) {
     checkSignal(signal);
     const roots = await this._roots(true);
     const lockPath = path.join(this.managedRoot, this.id + '.setup-lock');
@@ -263,24 +311,50 @@ class StudyEnvironment {
     catch (error) { if (error.code === 'EEXIST') throw new Error('Another setup owns this study environment. Wait for it to finish. If an editor crashed, review its managed-storage setup lock before retrying; no process or lock was removed automatically.'); throw error; }
     try {
       await lock.writeFile(nonce);
-      return await this._ensureLocked({ signal, report, repair, roots });
+      return await this._ensureLocked({ signal, report, repair, roots, confirmPythonInstall });
     } finally {
       await lock.close();
       const stat = await this._stat(lockPath);
       if (stat && stat.isFile() && !stat.isSymbolicLink() && await this.fs.readFile(lockPath, 'utf8') === nonce) await this.fs.unlink(lockPath);
     }
   }
-  async _ensureLocked({ signal, report, repair, roots }) {
+  async _ensureLocked({ signal, report, repair, roots, confirmPythonInstall }) {
     checkSignal(signal);
     const inspected = await this.inspect();
     if (inspected.exists && !inspected.managed) throw new Error('The environment path already contains unmanaged data. It was not changed. Choose another study folder or review managed storage manually.');
     let marker = inspected.marker;
+    if (marker && await this._canonicalCandidate(marker.basePython, roots.workspace) !== marker.basePython) {
+      // Discover before moving anything: an unsupported/missing runtime or a
+      // canceled probe must leave the prior environment exactly where it was.
+      const runtime = await this._runtime(roots.workspace, signal, report, confirmPythonInstall);
+      checkSignal(signal);
+      const backupRoot = path.join(this.managedRoot, this.id + '.backup-' + crypto.randomUUID());
+      await this.fs.mkdir(backupRoot, { mode: 0o700 });
+      const previousEnvironment = path.join(backupRoot, 'environment');
+      await this.fs.rename(this.environmentPath, previousEnvironment);
+      let created = false;
+      try {
+        await this.fs.mkdir(this.environmentPath, { mode: 0o700 });
+        created = true;
+        marker = { schema: 1, id: this.id, workspaceRoot: this.workspaceRoot, ...runtime, state: 'creating', previousEnvironment };
+        await this._writeMarker(marker);
+      } catch (error) {
+        // Keep even a partially written replacement. Restore the original only
+        // when the stable path is free; never overwrite intervening user data.
+        if (created) await this.fs.rename(this.environmentPath, path.join(backupRoot, 'partial-replacement'));
+        if (!await this._stat(this.environmentPath)) await this.fs.rename(previousEnvironment, this.environmentPath);
+        throw error;
+      }
+      report(`Previous study environment preserved at ${previousEnvironment}. Rebuilding with Python ${runtime.pythonVersion}…`);
+    }
+    checkSignal(signal);
     if (marker && !repair && await this._health(marker, roots.workspace, signal)) {
+      if (marker.state !== 'ready') { marker.state = 'ready'; await this._writeMarker(marker); }
       report('The existing dedicated environment is ready.');
-      return { interpreterPath: this.interpreterPath, environmentPath: this.environmentPath, reused: true, pythonVersion: marker.pythonVersion, packages: PACKAGES.slice() };
+      return { interpreterPath: this.interpreterPath, environmentPath: this.environmentPath, reused: true, pythonVersion: marker.pythonVersion, packages: PACKAGES.slice(), ...(marker.previousEnvironment ? { previousEnvironment: marker.previousEnvironment } : {}) };
     }
     if (!marker) {
-      const runtime = await this._discover(roots.workspace, signal, report);
+      const runtime = await this._runtime(roots.workspace, signal, report, confirmPythonInstall);
       checkSignal(signal);
       // Exclusive directory creation refuses another window's setup or any
       // unmanaged contents. No recursive deletion or replacement is performed.
@@ -293,7 +367,7 @@ class StudyEnvironment {
     const validPrefix = exists && await this._prefixValid(signal);
     if (!exists || !validPrefix) {
       const base = await this._canonicalCandidate(marker.basePython, roots.workspace);
-      if (!base || base !== marker.basePython) throw new Error(`The selected system Python is no longer available. This partial environment cannot be rebuilt automatically with another runtime. Choose a different study folder, or manually review/remove only this extension-owned environment (${this.environmentPath}) before Setup. No study files were changed.`);
+      if (!base || base !== marker.basePython) throw new Error('The selected system Python is no longer available. Retry Setup or Repair to discover a compatible installed runtime; the previous environment will be preserved.');
       report('Creating the dedicated virtual environment outside your study files…');
       await this._invoke(base, ['-I', '-m', 'venv', '--prompt', this.prompt, ...(this.platform === 'win32' ? [] : ['--symlinks']), this.environmentPath], signal);
       if (this.platform === 'win32') marker.interpreterSha256 = crypto.createHash('sha256').update(await this.fs.readFile(this.interpreterPath)).digest('hex');
@@ -318,7 +392,7 @@ class StudyEnvironment {
     report('Verifying the dedicated Python interpreter and package imports…');
     if (!await this._health(marker, roots.workspace, signal)) throw new Error('The dedicated environment did not pass its torch/numpy import check. No interpreter was selected. Use Setup or Repair to retry.');
     marker.state = 'ready'; await this._writeMarker(marker);
-    return { interpreterPath: this.interpreterPath, environmentPath: this.environmentPath, reused: false, pythonVersion: marker.pythonVersion, packages: PACKAGES.slice() };
+    return { interpreterPath: this.interpreterPath, environmentPath: this.environmentPath, reused: false, pythonVersion: marker.pythonVersion, packages: PACKAGES.slice(), ...(marker.previousEnvironment ? { previousEnvironment: marker.previousEnvironment } : {}) };
   }
 }
 module.exports = { StudyEnvironment, runProcess, cleanEnvironment, defaultCandidates, environmentPrompt, SUPPORTED_MINORS, PACKAGES };

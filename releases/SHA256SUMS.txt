@@ -9,3 +9,6 @@ cb20d23237ccd48b1eda9ee17220bc9cd9a86bb1db9eb53d214fa9cbc373354e  tensortonic-vs
 060fdf050a331113e4c693f2ad730bb2c6f592634184ca0be9be96a52889f7ca  tensortonic-vscode-0.12.12.vsix
 f2df1eccc53386ad01325c13879876f9232f8e5da2a76396fb8f39f04247d4f1  tensortonic-vscode-0.12.13.vsix
 9da917f66c42f947970b8150ff9568bbf43d2f313bafdc241e10ee1b9efb97f9  tensortonic-vscode-0.12.14.vsix
+d70216f4ed18a9bbc9e6bd323e777314800a3044b79d42a361dc1b24a391f5f5  tensortonic-vscode-0.12.15.vsix
+0651eaad682de92be8fca2cd6235d5b67192da77c727a5096da240f10a7fb85a  tensortonic-vscode-0.12.16.vsix
+7f9a9aa2e2a44ccb3a1c73bc6eda809349c6f21b5e254ee49e934094ead20585  tensortonic-vscode-0.12.17.vsix

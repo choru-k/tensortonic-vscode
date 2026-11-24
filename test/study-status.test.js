@@ -232,7 +232,7 @@ test('Focus hover explains scope, reset behavior, and curated reset reasons', ()
     assert.equal(row.description, 'Off');
     assert.match(row.tooltip, expected);
     assert.match(row.tooltip, /preference stays on across verified extension-opened Web problems until Off/);
-    assert.match(row.tooltip, /only the verified website Prev\/Next links, desktop\/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule/);
+    assert.match(row.tooltip, /verified workspace header and floating Ask Toni button/);
   }
 });
 
@@ -300,4 +300,11 @@ test('raw paths, URLs, tokens, and control text from DTO labels or reasons are n
 test('retained On intent without a current lease is not presented as Applied',()=>{
  const row=focusRow({enabled:true,status:'off',applied:false,busy:false});
  assert.equal(row.description,'On · Not applied');assert.match(row.tooltip,/preference is still on/);assert.doesNotMatch(row.tooltip,/Focus mode is applied/);
+});
+
+
+test('verified individual buttons are presented as Controls only', () => {
+  const row = focusRow({ enabled: true, applied: true, status: 'applied', scope: 'controls' }, { open: true }, 'web');
+  assert.equal(row.description, 'On · Controls only');
+  assert.match(row.tooltip, /website header stays visible/);
 });

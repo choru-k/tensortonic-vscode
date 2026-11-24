@@ -95,10 +95,10 @@ pages can remain On / Unavailable and require explicit user action after loading
 Native confirmation of this candidate is still pending.
 
 
-## Local Focus diagnostics (0.12.9 candidate)
+## Local Focus diagnostics
 
-The underlying automatic application failure remains unresolved. After an approved
-native trial, inspect the single `Focus diagnostic:` line in TensorTonic Output
+For an unsuccessful current manual or automatic attempt, inspect the
+`Focus diagnostic:` line in TensorTonic Output
 and compare the read-only `focusDiagnostics()` extension-export snapshots for the
 latest automatic and manual On attempts. The export contains no browser or session
 capability. It returns copied/frozen bounded metadata only.

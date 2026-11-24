@@ -61,8 +61,9 @@ function verifyNavbar(e) {
 module.exports = { NAVBAR_BASE, NAVBAR_GUARD, NAVBAR_CANDIDATE, NAVBAR_MARKER, NAVBAR_SELECTOR, verifyNavbar };
 
 // The marker gates CSS on the document root, never on a replaceable/clonable
-// navbar node. Any observed change irrevocably opens the capsule again.
-function installNavbarGuard(doc, candidateSelector, marker, verify, Observer) {
+// navbar node. The legacy capsule opens on any change. The workspace toolbar
+// can keep its marker across verified updates to the same element.
+function installNavbarGuard(doc, candidateSelector, marker, verify, Observer, recheckToolbar = false) {
   const root = doc.documentElement;
   if (!root || root.hasAttribute(marker) || typeof Observer !== 'function') return 0;
   const nodes = doc.querySelectorAll(candidateSelector);
@@ -75,7 +76,15 @@ function installNavbarGuard(doc, candidateSelector, marker, verify, Observer) {
     if (currentRoot !== root && currentRoot?.getAttribute(marker) === 'guarded') currentRoot.removeAttribute(marker);
   };
   try {
-    observer = new Observer(revoke);
+    observer = new Observer(() => {
+      if (recheckToolbar && root === doc.documentElement && root.getAttribute(marker) === 'guarded') {
+        try {
+          const current = doc.querySelectorAll(candidateSelector);
+          if (current.length === 1 && current[0] === nav && nav.isConnected && verify(nav)) return;
+        } catch { /* Revoke when the current toolbar cannot be verified. */ }
+      }
+      revoke();
+    });
     observer.observe(nav, { subtree: true, childList: true, characterData: true, attributes: true });
     for (let parent = nav.parentNode; parent; parent = parent.parentNode) observer.observe(parent, { childList: true, attributes: true });
     if (!nav.isConnected || !verify(nav)) { revoke(); return 0; }

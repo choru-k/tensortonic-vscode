@@ -35,7 +35,7 @@ function harness(options = {}) {
     Uri: { parse: text => uri(text.replace('file://', '')) },
     workspace: { isTrusted: true, workspaceFolders: [{ uri: folder }], onDidChangeWorkspaceFolders: h.events.workspace.event,
       onDidGrantWorkspaceTrust: () => ({ dispose() {} }), onDidChangeConfiguration: h.events.configuration.event },
-    extensions: { getExtension: () => h.python, onDidChange: h.events.extensions.event },
+    extensions: { getExtension: id => id === 'ms-python.python' ? h.python : h.modern, onDidChange: h.events.extensions.event },
     commands: { async executeCommand(...args) { h.calls.push(['command', ...args]); } },
     window: {
       async showInformationMessage(...args) { h.prompts.push(args); if (h.onPrompt) return h.onPrompt(args); return h.choices.shift(); },
@@ -52,6 +52,7 @@ function harness(options = {}) {
     get: key => state.get(key), async update(key, value) { h.calls.push(['save', key, value]); state.set(key, value); },
   } };
   h.environment = {
+    async homebrewForSetup() { return h.brew; },
     async inspect() { h.calls.push(['inspect']); return h.onInspect ? h.onInspect() : h.inspected; },
     async ensure(options) {
       h.calls.push(['ensure', options]);
@@ -107,6 +108,35 @@ test('setup failure never selects interpreter or marks ready and can be retried'
   await assert.rejects(h.ui.setup(), /download/); assert.ok(!h.calls.some(x => x[0] === 'select' || x[0] === 'save'));
   h.onEnsure = undefined; h.choices = ['Set up study environment']; assert.equal((await h.ui.setup()).status, 'ready');
 });
+test('a single setup confirmation can include Homebrew only for the displayed formula and executable', async () => {
+  const h = harness();
+  h.brew = '/opt/homebrew/bin/brew';
+  h.choices = ['Set up (install Python if needed)'];
+  h.onEnsure = async options => {
+    assert.equal(await options.confirmPythonInstall({ executable: '/other/brew', formula: 'python@3.13' }), false);
+    assert.equal(await options.confirmPythonInstall({ executable: h.brew, formula: 'other' }), false);
+    assert.equal(await options.confirmPythonInstall({ executable: h.brew, formula: 'python@3.13' }), true);
+    return managedReady(h);
+  };
+  assert.equal((await h.ui.setup()).status, 'ready');
+  assert.equal(h.prompts.filter(args => args[1]?.modal).length, 1);
+  assert.match(h.prompts[0][1].detail, /brew install python@3.13/);
+  const local = harness();
+  local.brew = h.brew;
+  assert.equal((await local.ui.setup()).status, 'ready');
+  assert.equal(local.calls.find(call => call[0] === 'ensure')[1].confirmPythonInstall, undefined);
+});
+test('a changed workspace cannot use the Homebrew consent from the previous folder', async () => {
+  const h = harness(), shown = deferred(), answer = deferred();
+  h.brew = '/opt/homebrew/bin/brew';
+  h.onPrompt = () => { shown.resolve(); return answer.promise; };
+  const pending = h.ui.setup();
+  await shown.promise;
+  h.events.workspace.fire();
+  answer.resolve('Set up (install Python if needed)');
+  assert.equal((await pending).status, 'cancelled');
+  assert.ok(!h.calls.some(call => call[0] === 'ensure'));
+});
 test('cancel before work and disposal during work prevent selection', async () => {
   const h = harness(); h.cancelled = true; assert.equal((await h.ui.setup()).status, 'cancelled');
   assert.ok(!h.calls.some(x => x[0] === 'select'));
@@ -126,12 +156,93 @@ test('missing selection API reports actual limitation instead of writing default
   assert.ok(h.calls.some(x => x[0] === 'command' && x[1] === 'python.setInterpreter'));
   assert.ok(!h.calls.some(x => x[0] === 'save'));
 });
-test('saved setup is skipped only when managed path and active interpreter still match', async () => {
-  const h = harness(); const interpreterPath = '/managed/python';
-  h.inspected = { exists: true, managed: true, interpreterPath }; h.active = interpreterPath;
+test('reopening a previously configured folder restores an absent selection silently without setup', async () => {
+  const h = harness();
+  const stored = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath: stored.interpreterPath, selected: true });
+  h.active = undefined;
+  assert.equal((await h.ui.restoreSelection()).status, 'ready');
+  assert.equal(h.active, stored.interpreterPath);
+  assert.deepEqual(h.prompts, []);
+  assert.ok(!h.calls.some(([name]) => ['ensure', 'save'].includes(name)));
+  h.active = '/user/other/python';
+  assert.equal((await h.ui.restoreSelection()).status, 'custom-interpreter');
+  assert.equal(h.active, '/user/other/python');
+  h.state.clear();
+  h.calls = [];
+  await h.ui.restoreSelection();
+  assert.deepEqual(h.calls, []);
+});
+test('a repair click while reopening a study folder runs after selection restoration', async () => {
+  const h = harness();
+  const saved = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath: saved.interpreterPath, selected: true });
+  h.active = saved.interpreterPath;
+  const entered = deferred(), release = deferred();
+  h.onInspect = async () => { entered.resolve(); await release.promise; return saved; };
+  const reopening = h.ui.restoreSelection();
+  await entered.promise;
+  h.choices = ['Repair study environment'];
+  const repair = h.ui.repair();
+  release.resolve();
+  await reopening;
+  assert.equal((await repair).status,'ready');
+  assert.equal(h.calls.filter(([name]) => name === 'ensure').length, 1);
+});
+test('explicit Start reuses verified saved setup and preserves a different custom interpreter without reinstalling', async () => {
+  const h = harness(); const { interpreterPath } = managedReady(h); h.active = interpreterPath;
   h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath, selected: true });
   assert.equal((await h.ui.offer()).status, 'already-configured'); assert.equal(h.prompts.length, 0);
-  h.active = '/different/python'; h.choices = [undefined]; assert.equal((await h.ui.offer()).status, 'cancelled'); assert.equal(h.prompts.length, 1);
+  h.active = '/different/python'; assert.equal((await h.ui.offer()).status, 'custom-interpreter');
+  assert.equal(h.active, '/different/python'); assert.equal(h.prompts.length, 0);
+  assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'select'));
+});
+test('explicit Start activates Python and restores previously consented managed selection only when no choice exists', async () => {
+  const h = harness(); const { interpreterPath } = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath, selected: true });
+  h.python.isActive = false; h.active = undefined;
+  assert.equal((await h.ui.offer()).status, 'already-configured');
+  assert.equal(h.active, interpreterPath);
+  assert.equal(h.calls.filter(call => call[0] === 'activate').length, 1);
+  assert.equal(h.calls.filter(call => call[0] === 'select').length, 1);
+  assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'progress'));
+  assert.equal(h.prompts.length, 0);
+});
+test('explicit Start offers Use for an existing verified environment without prior selection consent', async () => {
+  for (const choice of [undefined, 'Use study environment']) {
+    const h = harness(); const { interpreterPath } = managedReady(h); h.choices = [choice];
+    const result = await h.ui.offer();
+    assert.equal(result.status, choice ? 'ready' : 'cancelled');
+    assert.match(h.prompts[0][1].detail, /does not install or repair/);
+    assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'progress'));
+    assert.equal(h.active, choice ? interpreterPath : '/system/python');
+  }
+});
+test('Start cannot trust remembered selection when inspected readiness is missing or setup previously failed', async () => {
+  for (const invalid of [h => { h.inspected.ready = false; }, h => h.ui.unverified.add(h.ui.readyKey(uri('/study')))]) {
+    const h = harness(); const { interpreterPath } = managedReady(h); h.active = interpreterPath;
+    h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath, selected: true }); invalid(h); h.choices = [undefined];
+    assert.equal((await h.ui.offer()).status, 'cancelled');
+    assert.match(h.prompts[0][0], /Set up a dedicated/);
+    assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'select'));
+  }
+});
+test('Start restores no selection after the workspace changes during Python activation', async () => {
+  const h = harness(); const { interpreterPath } = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath, selected: true });
+  h.python.isActive = false; h.active = undefined;
+  h.onActivate = () => { h.vscode.workspace.workspaceFolders = [{ uri: uri('/other') }]; h.events.workspace.fire(); return h.python.exports; };
+  assert.equal((await h.ui.offer()).status, 'cancelled');
+  assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'select' || call[0] === 'save'));
+});
+test('Start reports unavailable or unverified Python selection without falling back to installation', async () => {
+  for (const broken of [h => { delete h.python.exports.environments.getActiveEnvironmentPath; }, h => { h.onSelect = () => {}; }]) {
+    const h = harness(); const { interpreterPath } = managedReady(h);
+    h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath, selected: true }); h.active = undefined; broken(h);
+    assert.match((await h.ui.offer()).status, /^selection-(unavailable|unverified)$/);
+    assert.equal(h.prompts.length, 0);
+    assert.ok(!h.calls.some(call => call[0] === 'ensure' || call[0] === 'save'));
+  }
 });
 test('repair requires its own explicit choice and forwards repair mode only after acceptance', async () => {
   const h = harness(); h.choices = ['Repair study environment']; assert.equal((await h.ui.repair()).status, 'ready');
@@ -483,4 +594,146 @@ test('unavailable or unsafe userdata local storage remains unavailable without g
     assert.deepEqual(await h.ui.status(), { state: 'unavailable', label: 'Study environment unavailable', command: undefined, reason: 'inspection-failed' });
     assert.equal(h.factoryOptions, undefined); assert.deepEqual(h.calls, []);
   }
+});
+
+function modernHarness() {
+  const h = harness(), folder = h.vscode.workspace.workspaceFolders[0].uri;
+  const inspected = managedReady(h);
+  inspected.pythonVersion = '3.13.1';
+  const updates = [], storage = new Map(), event = emitter(), providers = new Map();
+  h.context.workspaceState = { get: key => storage.get(key), update: async (key, value) => storage.set(key, value) };
+  h.vscode.Uri.file = uri;
+  const managerId = 'choru-local.tensortonic-vscode:study';
+  const homebrew = { displayName: 'Python 3.15.2 (homebrew)', environmentPath: uri('/opt/homebrew/bin/python3'),
+    envId: { managerId: 'ms-python.python:system', id: 'base' } };
+  let selected = homebrew;
+  const api = {
+    registerEnvironmentManager(provider, options) {
+      assert.equal(options.extensionId + ':' + provider.name, managerId);
+      assert.equal(providers.size, 0);
+      providers.set(managerId, provider);
+      return { dispose: () => providers.delete(managerId) };
+    },
+    createPythonEnvironmentItem(info, provider) {
+      assert.equal(providers.get(managerId), provider);
+      return { ...info, envId: { managerId, id: 'item' } };
+    },
+    getEnvironment: async scope => h.readNative ? h.readNative(scope) : selected,
+    async setEnvironment(scope, item) {
+      assert.equal(scope.fsPath, folder.fsPath);
+      await providers.get(managerId).set(scope, item);
+      updates.push(item);
+      selected = await providers.get(managerId).get(scope);
+      event.fire({ uri: scope, new: selected });
+    },
+    onDidChangeEnvironment: event.event,
+  };
+  h.modern = { isActive: true, exports: api };
+  h.active = inspected.interpreterPath;
+  h.state.set(h.ui.readyKey(folder), { selected: true, interpreterPath: h.active });
+  return { h, folder, homebrew, providers, updates, inspected, managerId, setNative: item => { selected = item; } };
+}
+
+test('Homebrew in the native selector requires Use even when the previous Python API says Ready', async () => {
+  const { h, folder, homebrew, providers, updates, inspected, managerId } = modernHarness();
+  assert.equal((await h.ui.status()).state, 'use');
+  assert.equal((await h.ui.restoreSelection()).status, 'custom-interpreter');
+  assert.equal(updates.length, 0);
+  assert.equal((await h.ui.use()).status, 'ready');
+  assert.equal(updates.length, 1);
+  const env = updates[0];
+  assert.equal(env.displayName, 'TensorTonic');
+  assert.equal(env.shortDisplayName, 'TensorTonic');
+  assert.equal(env.version, '3.13.1');
+  assert.equal(env.sysPrefix, inspected.environmentPath);
+  assert.equal(env.execInfo.run.executable, inspected.interpreterPath);
+  assert.equal((await h.ui.status()).state, 'ready');
+  const mgr = providers.get(managerId);
+  assert.equal((await mgr.resolve(uri(inspected.interpreterPath))).envId, env.envId);
+  assert.equal(await mgr.resolve(homebrew.environmentPath), undefined);
+  assert.deepEqual(await mgr.getEnvironments('global'), []);
+  assert.deepEqual(await mgr.getEnvironments(uri('/unrelated')), []);
+  await assert.rejects(mgr.set(undefined, env));
+  await assert.rejects(mgr.set(uri('/unrelated'), env));
+  await assert.rejects(mgr.set(folder, homebrew));
+  assert.equal((await mgr.get(uri('/study/problem.py'))).displayName, 'TensorTonic');
+  await mgr.set(folder, undefined);
+  assert.equal(await mgr.get(folder), undefined);
+  assert.equal(h.calls.some(call => call[0] === 'ensure' || call[0] === 'select'), false);
+  h.ui.dispose();
+  assert.equal(providers.size, 0);
+});
+
+test('previously selected study interpreter gains its native name on reload and persists in its workspace', async () => {
+  const { h, folder, updates, inspected, setNative, providers, managerId } = modernHarness();
+  setNative({ environmentPath: uri(inspected.interpreterPath), envId: { managerId:'ms-python.python:venv' } });
+  assert.equal((await h.ui.restoreSelection()).status, 'ready');
+  assert.equal(updates[0].displayName, 'TensorTonic');
+  h.ui.dispose();
+  h.ui = new StudyEnvironmentUI(h.vscode, h.context, { factory: () => h.environment });
+  assert.equal((await h.ui.restoreSelection()).status, 'ready');
+  assert.equal(updates.length, 1);
+  assert.equal((await providers.get(managerId).get(folder)).environmentPath.fsPath, inspected.interpreterPath);
+  h.inspected = { ...inspected, ready: false };
+  assert.equal(await providers.get(managerId).get(folder), undefined);
+  h.ui.dispose();
+});
+
+test('Ready follows the active study file selection when a nested Python project selects another environment', async () => {
+  const { h, homebrew, updates } = modernHarness();
+  await h.ui.use();
+  const nested = uri('/study/plan/problem.py');
+  h.vscode.window.activeTextEditor = { document: { languageId:'python', uri:nested } };
+  h.readNative = resource => resource === nested ? homebrew : updates[0];
+  assert.equal((await h.ui.status()).state, 'use');
+  assert.equal((await h.ui.use()).status, 'selection-unverified');
+  h.vscode.window.activeTextEditor = undefined;
+  assert.equal((await h.ui.status()).state, 'ready');
+  h.ui.dispose();
+});
+
+test('fresh Setup selects the native TensorTonic environment after package checks', async () => {
+  const { h, inspected, updates } = modernHarness();
+  h.inspected = { exists: false };
+  h.onEnsure = async () => {
+    h.inspected = inspected;
+    return { interpreterPath: inspected.interpreterPath, environmentPath: inspected.environmentPath, pythonVersion: inspected.pythonVersion };
+  };
+  assert.equal((await h.ui.setup()).status, 'ready');
+  assert.equal(updates[0].displayName, 'TensorTonic');
+  assert.equal(updates[0].execInfo.run.executable, inspected.interpreterPath);
+  h.ui.dispose();
+});
+
+test('disabling Python Environments retains Python extension selection and unregisters the native manager', async () => {
+  const { h, providers, updates } = modernHarness();
+  await h.ui.status();
+  assert.equal(providers.size, 1);
+  h.vscode.workspace.getConfiguration = section => ({ get: (key, fallback) => section === 'python' && key === 'useEnvironmentsExtension' ? false : fallback });
+  h.active = '/opt/homebrew/bin/python3';
+  assert.equal((await h.ui.status()).state, 'use');
+  assert.equal(providers.size, 0);
+  assert.equal((await h.ui.use()).status, 'ready');
+  assert.equal(updates.length, 0);
+  h.ui.dispose();
+});
+
+
+test('canceling native selection before the item is verified never dispatches a switch', async () => {
+  const { h, inspected, updates } = modernHarness();
+  const started = deferred(), inspection = deferred();
+  let reads = 0;
+  h.onInspect = () => {
+    if (++reads !== 2) return inspected;
+    started.resolve();
+    return inspection.promise;
+  };
+  const inFlight = h.ui.use();
+  await started.promise;
+  h.ui.invalidateSession();
+  assert.equal((await inFlight).status, 'cancelled');
+  inspection.resolve(inspected);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(updates.length, 0);
+  h.ui.dispose();
 });

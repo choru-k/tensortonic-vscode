@@ -51,8 +51,11 @@ difficulty labels are unchanged.
 
 **Focus mode / Original view** is available in the study sidebar overflow and
 recognized solution editor overflow. It starts off and affects only the exact
-extension-owned canonical problem tab. Before a dedicated stylesheet can hide
-anything, the contract verifies these eight targets:
+extension-owned canonical problem tab. On the current workspace layout, Focus checks the signed-in problem header and
+the draggable Ask Toni launcher. The header includes the problem list, Previous
+and Next actions, position counter, breadcrumb and account actions. Focus
+collapses that full row and moves the problem tabs and content into its space.
+Ordinary counter or account updates keep the same verified toolbar collapsed. On the earlier layout the extension checks eight individual targets.
 
 - The responsive Prev/Next problem-navigation links: two mobile and two desktop.
 - The desktop and narrow problem-header **Browse problems** launchers. Each must

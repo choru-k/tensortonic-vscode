@@ -1,6 +1,6 @@
 'use strict';
 
-const FOCUS_SCOPE = 'Focus preference stays on across verified extension-opened Web problems until Off. Extension reload or a session change resets it. A verified same-tab, same-URL browser reload can reapply Focus after cleanup and fresh verification. Other navigation clears application without automatically hiding the changed page. It changes only the verified website Prev/Next links, desktop/narrow Browse problems launchers, floating Ask Toni button and guarded top navigation capsule on the extension-owned Web problem page. The capsule reappears conservatively if its content or surrounding structure changes.';
+const FOCUS_SCOPE = 'Focus preference stays on across verified extension-opened Web problems until Off. Extension reload or a session change resets it. A verified same-tab, same-URL browser reload can reapply Focus after cleanup and fresh verification. Other navigation clears application without automatically hiding the changed page. On current problem pages it hides the verified workspace header and floating Ask Toni button. Controls only keeps the header visible and hides individually verified controls. Earlier layouts use the verified Prev/Next links, Browse problems launchers and top navigation capsule. The problem tabs stay available. The capsule reappears conservatively if its content or surrounding structure changes.';
 const FOCUS_RESET_REASONS = new Map([
   ['reload-default', 'Focus mode starts off after an extension reload.'],
   ['page-changed', 'Focus application was cleared after the owned Web page changed, reloaded, or closed.'],
@@ -97,9 +97,11 @@ function focusPresentation(snapshot) {
     details.push('The owned Web page does not match the current problem. Current application is not confirmed.');
   } else if (confirmed) {
     description = display.otherBrowserActive === true ? 'On · Other tab active'
-      : snapshot.problemView === 'markdown' ? 'On · Web tab only' : 'On · Applied';
+      : snapshot.problemView === 'markdown' ? 'On · Web tab only' : focus.scope === 'controls' ? 'On · Controls only' : 'On · Applied';
     icon = 'check';
-    details.push('Focus mode is applied to the extension-owned Web problem page.');
+    details.push(focus.scope === 'controls'
+      ? 'Focus hides Ask Toni and any verified problem navigation buttons. The website header stays visible because its layout has changed.'
+      : 'Focus mode is applied to the extension-owned Web problem page.');
   } else if (focus.status === 'off') {
     description = 'On · Not applied';
     icon = 'info';

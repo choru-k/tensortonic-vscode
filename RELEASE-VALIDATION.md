@@ -1,3 +1,61 @@
+# 0.12.17 full workspace toolbar and named study interpreter
+
+On macOS, Chromium rendered captured public toolbar markup with a synthetic
+signed-in account variant and six interactive problem tabs. At 660 and 1200
+CSS pixels wide, Focus reduced the toolbar height from 57 to 0 pixels and
+moved the tabs and statement up by 57 pixels. Original view restored all
+positions. The counter and avatar could update while Focus stayed applied.
+A notice reopened the toolbar and the Theory tab remained usable.
+
+The Node suite passed 944 tests on macOS. Bridge tests covered manual and
+automatic application, a wrapped toolbar beside an empty portal, a separate
+visible region and individual-control fallback. Python tests covered native
+selection, previous selection migration, cancellation, reload, nested Python
+projects, and the legacy Python extension.
+
+A separate smoke test created a real managed Python 3.12.11 environment with
+torch 2.15.0 and NumPy 2.5.5. The registered environment descriptor ran a CPU
+tensor calculation and activated the same venv in zsh. Microsoft's native
+status-bar presentation code displayed **TensorTonic** and the exact interpreter
+path when called with this descriptor in a test host. The signed-in MacBook
+window was unavailable for direct testing. Linux Electron E2E was unavailable
+because the configured SSH hostname did not resolve.
+
+# 0.12.16 changed workspace header
+
+The user's signed-in manual and automatic traces reached the header shape check
+and reported no other failing target. The traces identify the header as the
+failing component. Its precise signed-in DOM difference is unknown.
+
+In the macOS Chromium fixture, adding an account action caused the complete
+header check to fail. The controls-only profile hid the problem list, previous
+and next links and Ask Toni. The account action and problem tabs stayed
+visible. Editing the account text kept the four controls hidden. Switching
+Focus off restored all four. Changing a verified destination revoked the guard.
+The fixture used captured public markup with a synthetic account control.
+
+The macOS Node suite passed 937 tests. Bridge tests exercised both readiness
+and manual application, restoration, duplicate controls, changed destinations
+and a blocked header. The user's signed-in VS Code window and Linux Electron
+were unavailable for the release check.
+
+# 0.12.15 workspace header and study Python
+
+The current public Balanced DataLoader markup uses a workspace header. ReLU
+also exposes the current floating Ask Toni button. Mac Chromium rendering of
+these public controls with a synthetic closed account menu verified that Focus
+hides the header and launcher, leaves the problem tab row visible, and restores
+the controls on Off. Adding a notice reopened the guarded header.
+
+The Mac recovery smoke used a disposable study folder, a stale owned environment
+and an installed Python 3.12.11. It preserved the old directory and solution,
+rebuilt the environment at its stable path, imported torch 2.15.0 and NumPy
+2.5.5, and reused the verified interpreter on the next check. Tests with injected
+Homebrew and VS Code APIs covered installation consent, cancellation, automatic
+continuation, reloading and keeping a different user-selected interpreter.
+The full Node suite passed 935 tests on macOS. The MacBook signed-in VS Code
+window, a real Homebrew installation and Linux Electron E2E were not exercised.
+
 # 0.12.14 anchor diagnostic candidate
 
 Based on published 0.12.13 commit `9c2d742e7878620aad4bf5751475a66aa78a4258`;
