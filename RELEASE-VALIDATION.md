@@ -1,3 +1,20 @@
+# 0.12.15 workspace header and study Python
+
+The current public Balanced DataLoader markup uses a workspace header. ReLU
+also exposes the current floating Ask Toni button. Mac Chromium rendering of
+these public controls with a synthetic closed account menu verified that Focus
+hides the header and launcher, leaves the problem tab row visible, and restores
+the controls on Off. Adding a notice reopened the guarded header.
+
+The Mac recovery smoke used a disposable study folder, a stale owned environment
+and an installed Python 3.12.11. It preserved the old directory and solution,
+rebuilt the environment at its stable path, imported torch 2.15.0 and NumPy
+2.5.5, and reused the verified interpreter on the next check. Tests with injected
+Homebrew and VS Code APIs covered installation consent, cancellation, automatic
+continuation, reloading and keeping a different user-selected interpreter.
+The full Node suite passed 935 tests on macOS. The MacBook signed-in VS Code
+window, a real Homebrew installation and Linux Electron E2E were not exercised.
+
 # 0.12.14 anchor diagnostic candidate
 
 Based on published 0.12.13 commit `9c2d742e7878620aad4bf5751475a66aa78a4258`;

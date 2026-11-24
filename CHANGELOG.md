@@ -1,3 +1,10 @@
+# 0.12.15
+
+- Recognize the current problem workspace header and floating Ask Toni control. Focus verifies each supported layout independently, restores the original styles on Off, and reports unsuccessful manual attempts in TensorTonic Output.
+- Recover an owned study environment in the same workspace after its original Python disappears. Repair preserves the previous environment and selects the verified replacement.
+- Discover versioned Homebrew Python installations. When a compatible runtime is missing, macOS setup can install Python 3.13 through an existing Homebrew in the same setup confirmation and continue automatically.
+- Opening a previously configured study folder or choosing Start studying reuses a verified environment without reinstalling packages and respects a different selected interpreter.
+
 # 0.12.14 (cloud diagnostic candidate)
 
 - Distinguish rejected Prev/Next anchor tag, text, title, and URL categories using fixed enum-only diagnostics. Never record link values, content, problem IDs, authentication data or raw errors.

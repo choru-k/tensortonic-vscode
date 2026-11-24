@@ -2,8 +2,7 @@
 
 TensorTonic study tools for VS Code: browse Python problems, edit native solution
 files, run or submit explicitly, and keep the original interactive problem page
-beside your code. Version **0.12.2** gives new study environments a recognizable TensorTonic
-interpreter label while preserving stable environment paths.
+beside your code.
 
 This project is not affiliated with TensorTonic. Normal website account and
 subscription requirements apply. Browser integration uses an unstable VS Code API
@@ -78,10 +77,11 @@ The sidebar offers **Choose study workspace**, **Create study environment**,
 be recognized from validated TensorTonic solution metadata without creating a new
 registration or executing workspace code.
 
-Create and Repair require explicit confirmation before running Python or
-installing packages. They use an installed supported Python and a dedicated
-environment in extension storage, with fixed torch/numpy dependencies. Use selects
-an existing verified managed interpreter for this study folder only. Status reads
+Choose **Repair study environment** if an OS or Homebrew update removed the
+original Python. The extension finds a compatible installed runtime, preserves
+the previous managed environment, and rebuilds at the same path. If macOS has
+Homebrew, choose **Repair (install Python if needed)** to include Python 3.13
+in the same confirmation. Reopening that folder reuses its verified environment. Status reads
 local metadata and the Python extension's selected-interpreter API; it does not
 run imports, activate Python, install packages, or treat terminal `VIRTUAL_ENV` as
 proof of selection. Recorded readiness is not a fresh dependency audit.
@@ -95,12 +95,10 @@ terminal. See [Python setup and limits](docs/study-python.md).
 ## Optional focus mode
 
 **Focus mode / Original view** is available in the study sidebar and recognized
-solution editor overflow menus. It starts off. On the exact extension-owned problem
-page, a reviewed contract checks eight targets: four responsive Prev/Next links,
-desktop and narrow **Browse problems** launchers, the floating **Ask Toni** button,
-and the closed signed-in top navigation capsule (hamburger, logo, announcements,
-Discord, theme and avatar). The separate Problem/Theory/Solution/Submissions/Notes/
-Code tabs remain visible. Exact structure, labels, counts and semantics are checked.
+solution editor overflow menus. It starts off. On current problem pages, Focus hides the verified workspace header
+(including its problem list and previous/next controls) and the floating **Ask
+Toni** launcher. The Problem/Theory/Solution/Submissions/Notes/Code tabs stay
+available. The earlier navigation layout has its own verification rules.
 
 Changed, missing or ambiguous structures stay visible. Login/loading states and
 open menus do not qualify. A conservative observer reopens the capsule on any content, attribute or ancestor
