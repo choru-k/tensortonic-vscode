@@ -221,7 +221,25 @@ class StudyEnvironmentUI {
     return this.operation(() => this.runOnce(options));
   }
 
+  restoreSelection() {
+    const scope = this.scope();
+    if (!scope || this.running) return;
+    const saved = this.context.globalState.get(this.readyKey(scope.folder));
+    if (saved?.selected !== true || typeof saved.interpreterPath !== 'string' || !path.isAbsolute(saved.interpreterPath)) return;
+    const task = this.operation(() => this.useOnce({ preserveSelection: true, rememberedPath: saved.interpreterPath }));
+    this.restoringSelection = task;
+    const finished = () => { if (this.restoringSelection === task) this.restoringSelection = undefined; };
+    task.then(finished, finished);
+    return task;
+  }
+
   operation(callback) {
+    if (this.running && this.running === this.restoringSelection) {
+      // A click during startup still runs its requested action in the same workspace.
+      const scope = this.scope();
+      const next = () => this.sameScope(scope) ? this.operation(callback) : { status: 'cancelled' };
+      return this.running.then(next, next);
+    }
     if (this.running) return this.running;
     const task = callback();
     this.running = task;
@@ -231,7 +249,7 @@ class StudyEnvironmentUI {
     return task;
   }
 
-  async useOnce({ preserveSelection = false } = {}) {
+  async useOnce({ preserveSelection = false, rememberedPath } = {}) {
     const snapshot = this.scope();
     const folder = await this.resolveStudyFolder();
     if (snapshot && !this.sameScope(snapshot)) return { status: 'cancelled' };
@@ -244,6 +262,7 @@ class StudyEnvironmentUI {
       const inspected = await waitCancelable(this.environment(folder).inspect(), controller.signal);
       if (!current()) return { status: 'cancelled' };
       if (!this.verified(inspected, folder)) return { status: inspected && inspected.exists === false ? 'missing-environment' : 'repair-required' };
+      if (rememberedPath && inspected.interpreterPath !== rememberedPath) return { status: 'selection-unverified' };
       const python = this.vscode.extensions.getExtension('ms-python.python');
       if (!python) return { status: 'python-extension-missing' };
       if (!python.isActive) await waitCancelable(python.activate(), controller.signal);
@@ -257,7 +276,7 @@ class StudyEnvironmentUI {
       const active = await waitCancelable(api.getActiveEnvironmentPath(folder), controller.signal);
       if (!current()) return { status: 'cancelled' };
       if (!this.matches(active, inspected)) {
-        // A fresh explicit Start may restore a previously consented selection
+        // A study window may restore a previously consented selection
         // only when Python has no current choice. A different choice is the
         // user's workspace preference; Use remains the explicit override.
         if (preserveSelection && active && typeof active.path === 'string' && active.path) return { status: 'custom-interpreter' };
@@ -268,7 +287,7 @@ class StudyEnvironmentUI {
         if (!current()) return { status: 'cancelled' };
         if (!this.matches(selected, inspected)) return { status: 'selection-unverified' };
       }
-      await this.context.globalState.update(this.readyKey(folder), { interpreterPath: inspected.interpreterPath, selected: true });
+      if (!rememberedPath) await this.context.globalState.update(this.readyKey(folder), { interpreterPath: inspected.interpreterPath, selected: true });
       if (!current()) return { status: 'cancelled' };
       return { status: 'ready', interpreterPath: inspected.interpreterPath };
     } catch (error) {
@@ -312,11 +331,17 @@ class StudyEnvironmentUI {
       return this.useOnce();
     }
     const title = repair ? 'Repair the TensorTonic study Python environment?' : 'Set up a dedicated TensorTonic study Python environment?';
+    const setupAction = repair ? 'Repair study environment' : 'Set up study environment';
+    const brew = await environment.homebrewForSetup();
+    if (!current()) return { status: 'cancelled' };
+    const brewAction = repair ? 'Repair (install Python if needed)' : 'Set up (install Python if needed)';
+    const actions = brew ? [brewAction, setupAction] : [setupAction];
+    const brewDetail = brew ? ` If you choose “${brewAction}” and no compatible runtime is installed, run ${brew} install python@3.13 and continue automatically. Homebrew downloads Python and its dependencies. A canceled install can leave partial downloads.` : '';
     const choice = await v.window.showInformationMessage(title, {
       modal: true,
-      detail: `Use an installed compatible Python to create or validate a private environment in VS Code extension storage for ${folder.fsPath}. If its original Python disappeared, preserve the previous managed environment as a backup and rebuild at the same path with a compatible installed runtime. Download and install only PyTorch (torch), NumPy, and their required dependencies from PyPI if needed. This can take time and significant disk/network space. Select that interpreter only for this study folder. Existing .venv folders, global Python, and unrelated workspace settings are not changed. Python installation is offered separately only if needed and requires another confirmation. You can cancel; run Setup/Repair again to retry.`,
-    }, repair ? 'Repair study environment' : 'Set up study environment');
-    if (choice !== (repair ? 'Repair study environment' : 'Set up study environment') || !current()) return { status: 'cancelled' };
+      detail: `Use Python 3.11–3.14 to set up PyTorch and NumPy from PyPI for ${folder.fsPath}. This can take time and disk space. Repair keeps a backup if the original Python has disappeared. Reopening this study folder reuses the verified interpreter. Existing .venv folders and other workspaces keep their interpreters.${brewDetail}`,
+    }, ...actions);
+    if (!actions.includes(choice) || !current()) return { status: 'cancelled' };
 
     const controller = new AbortController();
     this.controller = controller;
@@ -328,15 +353,9 @@ class StudyEnvironmentUI {
           if (token.isCancellationRequested) controller.abort();
           this.unverified.add(this.readyKey(folder));
           const checked = await environment.ensure({ confirmed: true, repair, signal: controller.signal, onProgress: message => progress.report({ message }),
-            confirmPythonInstall: async ({ executable, formula }) => {
-              if (controller.signal.aborted || !current()) return false;
-              const action = 'Install Python 3.13 and continue';
-              const choice = await waitCancelable(v.window.showInformationMessage('Install Python 3.13 with Homebrew and continue setup?', {
-                modal: true,
-                detail: `No compatible installed Python was found. Run ${executable} install ${formula} using your existing Homebrew, then continue study setup automatically. This downloads Python 3.13 and any Homebrew dependencies into the Homebrew prefix and uses disk/network space. No sudo or Homebrew bootstrap is used. Existing study environments are preserved if you decline or installation fails. Cancellation stops this operation; a partially installed Homebrew formula may remain.`,
-              }, action), controller.signal);
-              return choice === action && !controller.signal.aborted && current();
-            } });
+            confirmPythonInstall: brew && choice === brewAction
+              ? ({ executable, formula }) => !controller.signal.aborted && current() && executable === brew && formula === 'python@3.13'
+              : undefined });
           this.unverified.delete(this.readyKey(folder));
           if (controller.signal.aborted || !current()) return { status: 'cancelled' };
           progress.report({ message: 'Selecting the interpreter for this study folder…' });

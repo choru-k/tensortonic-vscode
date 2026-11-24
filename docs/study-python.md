@@ -30,6 +30,10 @@ Recorded readiness describes the last verified setup, not a fresh dependency aud
 A selected system or project interpreter alone does not establish that this
 extension's separate managed environment exists.
 
+Reopening a previously configured study folder reuses the verified interpreter.
+A missing selection is restored. A different selected interpreter is respected.
+Setup and package installation are only started by an explicit action.
+
 ## Create or repair
 
 1. Install Microsoft's **Python** extension normally if it is missing. TensorTonic
@@ -47,9 +51,10 @@ extension's separate managed environment exists.
    available binary wheels and successful import checks are still required. If
    no supported runtime is found, install one from [python.org](https://www.python.org/downloads/)
    or your trusted package manager. On macOS, if an existing Homebrew installation
-   is found at its standard location, already-confirmed setup offers **Install
-   Python 3.13 and continue**. This additional opt-in runs only that Homebrew's
-   `install python@3.13` command and then automatically resumes setup. Declining
+   is found at its standard location, Setup and Repair offer **install Python if needed** in their confirmation.
+   Selecting that action authorizes the displayed Homebrew executable to run
+   `install python@3.13` only if discovery finds no compatible runtime. Setup
+   then continues in the same folder. The other action uses installed Python only. Declining
    makes no environment changes. The extension does not bootstrap Homebrew, use
    `sudo`, or download Python without that explicit confirmation. Without Homebrew,
    the error explains how to install a supported runtime and retry in this folder.

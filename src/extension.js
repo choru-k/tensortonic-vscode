@@ -1338,16 +1338,22 @@ function activate(context) {
     }));
   }
 
-  // Startup may consume a recent explicit Start Studying request for this exact
-  // local folder. It never opens a window or redirects existing solution files.
-  const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().catch(() => {
-    output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
-    return false;
-  });
   // Restore encrypted state only: no startup browser, HTTP, login or migration.
   const sessionReady=Promise.resolve().then(()=>typeof bridge.restore==='function'?bridge.restore():false).catch(()=>{
     output.appendLine('The saved session could not be restored. Use Connect session to retry; no plaintext fallback was used.');return false;
   }).finally(updateConnection);
+  // Startup may consume a recent explicit Start Studying request for this exact
+  // local folder. It never opens a window or redirects existing solution files.
+  const studyWorkspaceReady = studyWorkspace.restorePendingStudyView().then(async restored => {
+    if (!restored) {
+      await sessionReady;
+      await studyEnvironment.restoreSelection();
+    }
+    return restored;
+  }).catch(() => {
+    output.appendLine('The study sidebar could not be restored. Use Show study plan sidebar to open it.');
+    return false;
+  });
   // Do not export a vault, SecretStorage object, raw transport or CDP capability.
   return { sessionStatus:()=>Object.freeze({connected:bridge.connected,cleanupPending:!!bridge.cleanupPending,ownedResources:!!bridge.hasOwnedResources,readOnly:bridge.supportsGrading!==true}), presentationStatus: presentationSnapshot, focusDiagnostics: focusDiagnostics.snapshot, diagnoseStoredSession: options => bridge.diagnoseStoredSession(options), sessionReady, refresh, openProblem, smokeTest, currentContext, discussWithAgent, studyWorkspaceReady, commands: COMMANDS.slice() };
 }

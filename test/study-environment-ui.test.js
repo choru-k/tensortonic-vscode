@@ -52,6 +52,7 @@ function harness(options = {}) {
     get: key => state.get(key), async update(key, value) { h.calls.push(['save', key, value]); state.set(key, value); },
   } };
   h.environment = {
+    async homebrewForSetup() { return h.brew; },
     async inspect() { h.calls.push(['inspect']); return h.onInspect ? h.onInspect() : h.inspected; },
     async ensure(options) {
       h.calls.push(['ensure', options]);
@@ -107,37 +108,34 @@ test('setup failure never selects interpreter or marks ready and can be retried'
   await assert.rejects(h.ui.setup(), /download/); assert.ok(!h.calls.some(x => x[0] === 'select' || x[0] === 'save'));
   h.onEnsure = undefined; h.choices = ['Set up study environment']; assert.equal((await h.ui.setup()).status, 'ready');
 });
-test('confirmed setup offers one focused Homebrew action that continues automatically only on acceptance', async () => {
-  for (const choice of [undefined, 'Install Python 3.13 and continue']) {
-    const h = harness(); h.choices = ['Set up study environment', choice];
-    h.onEnsure = async options => {
-      const consent = await options.confirmPythonInstall({ executable: '/opt/homebrew/bin/brew', formula: 'python@3.13' });
-      if (!consent) { const error = new Error('Declined'); error.name = 'AbortError'; throw error; }
-      return { interpreterPath: managedReady(h).interpreterPath, environmentPath: h.inspected.environmentPath };
-    };
-    assert.equal((await h.ui.setup()).status, choice ? 'ready' : 'cancelled');
-    assert.match(h.prompts[1][1].detail, /\/opt\/homebrew\/bin\/brew install python@3.13/);
-    assert.match(h.prompts[1][1].detail, /continue study setup automatically/);
-    assert.equal(h.calls.filter(call => call[0] === 'ensure').length, 1);
-    assert.equal(h.calls.filter(call => call[0] === 'select').length, choice ? 1 : 0);
-  }
+test('a single setup confirmation can include Homebrew only for the displayed formula and executable', async () => {
+  const h = harness();
+  h.brew = '/opt/homebrew/bin/brew';
+  h.choices = ['Set up (install Python if needed)'];
+  h.onEnsure = async options => {
+    assert.equal(await options.confirmPythonInstall({ executable: '/other/brew', formula: 'python@3.13' }), false);
+    assert.equal(await options.confirmPythonInstall({ executable: h.brew, formula: 'other' }), false);
+    assert.equal(await options.confirmPythonInstall({ executable: h.brew, formula: 'python@3.13' }), true);
+    return managedReady(h);
+  };
+  assert.equal((await h.ui.setup()).status, 'ready');
+  assert.equal(h.prompts.filter(args => args[1]?.modal).length, 1);
+  assert.match(h.prompts[0][1].detail, /brew install python@3.13/);
+  const local = harness();
+  local.brew = h.brew;
+  assert.equal((await local.ui.setup()).status, 'ready');
+  assert.equal(local.calls.find(call => call[0] === 'ensure')[1].confirmPythonInstall, undefined);
 });
-test('canceling setup or changing workspace during Homebrew consent prevents installation approval', async () => {
-  for (const change of [h => h.cancel(), h => h.events.workspace.fire()]) {
-    const h = harness(); let began;
-    const prompt = new Promise(resolve => { began = resolve; });
-    h.onPrompt = args => {
-      if (!args[0].startsWith('Install Python 3.13')) return 'Set up study environment';
-      began(); return new Promise(() => {});
-    };
-    h.onEnsure = async options => {
-      await options.confirmPythonInstall({ executable: '/opt/homebrew/bin/brew', formula: 'python@3.13' });
-      assert.fail('Canceled consent must not authorize Homebrew');
-    };
-    const pending = h.ui.setup(); await prompt; change(h);
-    assert.equal((await pending).status, 'cancelled');
-    assert.ok(!h.calls.some(call => call[0] === 'select' || call[0] === 'save'));
-  }
+test('a changed workspace cannot use the Homebrew consent from the previous folder', async () => {
+  const h = harness(), shown = deferred(), answer = deferred();
+  h.brew = '/opt/homebrew/bin/brew';
+  h.onPrompt = () => { shown.resolve(); return answer.promise; };
+  const pending = h.ui.setup();
+  await shown.promise;
+  h.events.workspace.fire();
+  answer.resolve('Set up (install Python if needed)');
+  assert.equal((await pending).status, 'cancelled');
+  assert.ok(!h.calls.some(call => call[0] === 'ensure'));
 });
 test('cancel before work and disposal during work prevent selection', async () => {
   const h = harness(); h.cancelled = true; assert.equal((await h.ui.setup()).status, 'cancelled');
@@ -157,6 +155,39 @@ test('missing selection API reports actual limitation instead of writing default
   assert.equal((await h.ui.setup()).status, 'selection-unavailable');
   assert.ok(h.calls.some(x => x[0] === 'command' && x[1] === 'python.setInterpreter'));
   assert.ok(!h.calls.some(x => x[0] === 'save'));
+});
+test('reopening a previously configured folder restores an absent selection silently without setup', async () => {
+  const h = harness();
+  const stored = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath: stored.interpreterPath, selected: true });
+  h.active = undefined;
+  assert.equal((await h.ui.restoreSelection()).status, 'ready');
+  assert.equal(h.active, stored.interpreterPath);
+  assert.deepEqual(h.prompts, []);
+  assert.ok(!h.calls.some(([name]) => ['ensure', 'save'].includes(name)));
+  h.active = '/user/other/python';
+  assert.equal((await h.ui.restoreSelection()).status, 'custom-interpreter');
+  assert.equal(h.active, '/user/other/python');
+  h.state.clear();
+  h.calls = [];
+  await h.ui.restoreSelection();
+  assert.deepEqual(h.calls, []);
+});
+test('a repair click while reopening a study folder runs after selection restoration', async () => {
+  const h = harness();
+  const saved = managedReady(h);
+  h.state.set(h.ui.readyKey(uri('/study')), { interpreterPath: saved.interpreterPath, selected: true });
+  h.active = saved.interpreterPath;
+  const entered = deferred(), release = deferred();
+  h.onInspect = async () => { entered.resolve(); await release.promise; return saved; };
+  const reopening = h.ui.restoreSelection();
+  await entered.promise;
+  h.choices = ['Repair study environment'];
+  const repair = h.ui.repair();
+  release.resolve();
+  await reopening;
+  assert.equal((await repair).status,'ready');
+  assert.equal(h.calls.filter(([name]) => name === 'ensure').length, 1);
 });
 test('explicit Start reuses verified saved setup and preserves a different custom interpreter without reinstalling', async () => {
   const h = harness(); const { interpreterPath } = managedReady(h); h.active = interpreterPath;

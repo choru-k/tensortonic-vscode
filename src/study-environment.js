@@ -204,6 +204,10 @@ class StudyEnvironment {
     error.code = 'PYTHON_RUNTIME_MISSING';
     throw error;
   }
+  async homebrewForSetup() {
+    if (this.platform !== 'darwin') return undefined;
+    return this._homebrew((await this._roots()).workspace);
+  }
   async _homebrew(workspace) {
     if (this.platform !== 'darwin') return undefined;
     for (const candidate of ['/opt/homebrew/bin/brew', '/usr/local/bin/brew']) {
