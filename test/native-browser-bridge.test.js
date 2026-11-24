@@ -914,3 +914,52 @@ test('evaluated anchor diagnostics identify exact rejection and never retry shap
   assert.equal(h.calls.some(c=>c.method==='CSS.createStyleSheet'),false);
  }
 });
+
+test('current workspace header is selected, verified, hidden and restored on the owned problem', async t => {
+  const { WORKSPACE_FOCUS_CONTRACT: modern } = require('../src/focus-contract');
+  const { HEADER_BASE, HEADER_CANDIDATE, HEADER_SELECTOR, TONI_SELECTOR } = require('../src/focus-workspace-header');
+  const h = await focusHarness(t);
+  readinessFixture(h);
+  const element = (tag, selector, text = '', children = []) => {
+    const node = h.navbar.element(tag, [selector], text, {}, children);
+    node.lastElementChild = children.at(-1);
+    node.querySelector = () => null;
+    return node;
+  };
+  const svg = name => element('svg', name);
+  const logo = element('A','a[href="/problems"][aria-label="TensorTonic problems"]','',[element('IMG','img[alt="TensorTonic"]')]);
+  const title = element('SPAN','span.truncate.font-medium', 'Balanced DataLoader');
+  const left = element('DIV','div.flex.flex-shrink-0.items-center','',[logo]);
+  const center = element('DIV','div.hidden.min-w-0.items-center','',[title]);
+  const discord = element('A','a[href="https://discord.gg/n7ruMwyJMA"][title="Join our Discord"]','',[svg('svg')]);
+  const theme = element('BUTTON','button','Toggle theme',[svg('svg.lucide-moon,svg.lucide-sun'),element('SPAN','span.sr-only','Toggle theme')]);
+  const account = element('BUTTON','button.rounded-full.border[aria-haspopup="menu"][aria-expanded="false"][data-state="closed"]');
+  const actions = element('DIV','div.flex.items-center.flex-shrink-0','',[discord,theme,account]);
+  const right = element('DIV','div.flex.min-w-0.items-center.justify-end','',[actions]);
+  const bar = element('DIV','div.flex.h-14.items-center.justify-between','',[left,center,right]);
+  const header = element('HEADER',HEADER_BASE,'',[bar]);
+  header.isConnected = true;
+  header.parentNode = h.sandbox.document.documentElement;
+  const toni = element('BUTTON',TONI_SELECTOR,'Ask Toni',[
+    svg('svg.lucide-grip-vertical'),svg('svg.lucide-bot'),element('SPAN','span','Ask Toni'),
+  ]);
+  const doc = h.sandbox.document;
+  doc.querySelectorAll = selector => {
+    if (selector === HEADER_BASE || selector === HEADER_CANDIDATE) return [header];
+    if (selector === HEADER_SELECTOR && doc.documentElement.hasAttribute(NAVBAR_MARKER)) return [header];
+    if (selector === TONI_SELECTOR) return [toni];
+    return [];
+  };
+  h.sandbox.getComputedStyle = () => ({ display: [...h.styles.values()].includes(modern.cssText) ? 'none' : 'block' });
+  const contract = await h.bridge.selectFocusContract(h.page);
+  assert.equal(contract, modern);
+  await h.bridge.waitForFocusReady(h.page);
+  const lease = await h.adapter.apply(await h.adapter.verify(h.page, contract), contract);
+  const sheet = [...h.bridge.focusSheets.values()][0];
+  assert.equal(h.styles.get(sheet.nativeId), modern.cssText);
+  await lease.restore();
+  assert.equal(h.styles.get(sheet.nativeId), '');
+  assert.equal(doc.documentElement.hasAttribute(NAVBAR_MARKER), false);
+  bar.children.push(element('DIV','div','New account notice'));
+  await assert.rejects(h.bridge.inspectFocusContract(contract), { code: 'INVALID_PROOF' });
+});

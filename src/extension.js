@@ -201,7 +201,9 @@ function activate(context) {
   let focusRequested = false;
   let lastFocusPage;
   let focusRecovery;
-  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT, onChange: () => studyStatus?.refresh() });
+  const focusMode = new FocusModeController({ adapter: new FocusBrowserAdapter(focusPort), verifiedContract: FOCUS_CONTRACT,
+    selectContract: (page, signal) => focusDisplay().selectFocusContract?.(page, { signal }) ?? FOCUS_CONTRACT,
+    onChange: () => studyStatus?.refresh() });
   function presentationSnapshot() {
     let display = { open: state.webPageOpen === true, otherBrowserActive: false };
     try {
@@ -1172,7 +1174,7 @@ function activate(context) {
       trace.emit('controller', 'start');
       const result = await focusMode.setEnabled(true, { page, signal: controller.signal, onDiagnostic: trace.record });
       trace.emit('result', current() ? result.status : 'canceled');
-      if (automatic && current() && result.status !== 'applied') output.appendLine('Focus diagnostic: ' + trace.summary());
+      if (current() && result.status !== 'applied') output.appendLine('Focus diagnostic: ' + trace.summary());
       return result;
     } finally {
       if (focusRecovery === operation) focusRecovery = undefined;

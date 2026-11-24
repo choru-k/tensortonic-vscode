@@ -5,7 +5,8 @@ const { verifyNavbar, installNavbarGuard, NAVBAR_BASE, NAVBAR_CANDIDATE, NAVBAR_
 
 const crypto = require('node:crypto');
 const { isAllowedRequest, validateBody, ORIGINS } = require('./request-policy');
-const { FOCUS_CONTRACT } = require('./focus-contract');
+const { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT } = require('./focus-contract');
+const { HEADER_BASE, HEADER_CANDIDATE, verifyWorkspaceHeader, verifyToniLauncher } = require('./focus-workspace-header');
 const MAX_RESPONSE = 8 * 1024 * 1024;
 const MAX_BODY = 1024 * 1024;
 const SLUG = '[a-zA-Z0-9][a-zA-Z0-9-]{0,199}';
@@ -20,6 +21,24 @@ const FOCUS_URL = new RegExp(`^https://www\\.tensortonic\\.com/problems/${SLUG}(
 const focusCore = value => JSON.stringify({ id: value?.id, verified: value?.verified, surface: value?.surface, hidesSecurityUI: value?.hidesSecurityUI, targets: Array.isArray(value?.targets) ? value.targets.map(target => ({ id: target?.id, selector: target?.selector, count: target?.count })) : undefined, cssText: value?.cssText });
 const focusFull = value => JSON.stringify({ core: focusCore(value), expectations: Array.isArray(value?.targets) ? value.targets.map(target => target?.expectation || target?.expect) : undefined });
 const sameFocusPage = (left, right) => !!left && !!right && left.owned === true && right.owned === true && ['id', 'url', 'documentId', 'frameId'].every(key => left[key] === right[key]);
+// Runs in the owned document before any stylesheet is created.
+function focusLoadingState(legacyBase, legacySafe, headerBase, headerSafe) {
+  const legacy = document.querySelectorAll(legacyBase);
+  const headers = document.querySelectorAll(headerBase);
+  if (legacy.length + headers.length > 1) return -1;
+  const modern = headers.length === 1;
+  const bar = modern ? headers[0] : legacy[0];
+  if (bar && document.querySelectorAll(modern ? headerSafe : legacySafe)[0] !== bar) return -1;
+  if (document.readyState === 'loading' || document.readyState === 'interactive') return 2;
+  if (document.readyState !== 'complete' || !bar) return -1;
+  const spinner = modern
+    ? 'main.flex-1.overflow-hidden.relative > div.flex.h-full.items-center.justify-center > svg[role="status"][aria-label="Loading"]'
+    : 'div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > main.flex-1.overflow-hidden.relative > div.flex.items-center.justify-center.min-h-screen.bg-background > svg[role="status"][aria-label="Loading"][viewBox="10 30 180 140"]';
+  if ([...document.querySelectorAll(spinner)].some(node => node.getClientRects().length)) return 3;
+  const placeholders = bar.querySelectorAll('div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]');
+  if ([...placeholders].some(node => !node.children.length && !(node.textContent || '').trim())) return 4;
+  return modern ? 5 : 1;
+}
 function fault(message, code) { const error = new Error(message); if (code) error.code = code; return error; }
 function problemUrl(value) {
   let url; try { url = new URL(value); } catch (_) { return undefined; }
@@ -312,6 +331,13 @@ class NativeBrowserBridge {
       throw error;
     } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
+  async selectFocusContract(page, { signal } = {}) {
+    if (!this.focusContract || !sameFocusPage(page, await this.getFocusPage({ signal }))) throw fault('The owned Focus page changed.', 'PAGE_CHANGED');
+    const expression = `document.querySelectorAll(${JSON.stringify(HEADER_BASE)}).length`;
+    const count = await this._number(this.target, expression, this.generation, signal);
+    if (count > 1) throw fault('The problem workspace header is ambiguous.', 'INVALID_PROOF');
+    return count === 1 ? WORKSPACE_FOCUS_CONTRACT : FOCUS_CONTRACT;
+  }
   async waitForFocusReady(page, { signal: externalSignal, onDiagnostic } = {}) {
     const controller = new AbortController(), signal = controller.signal;
     const abort = () => controller.abort();
@@ -328,7 +354,8 @@ class NativeBrowserBridge {
       // Read-only loading classification. Only browser document loading and the
       // reviewed public Navbar SSR placeholders may delay verification. Unknown
       // structures, security UI and failed full proofs are never retried.
-      const expression = `(()=>{const base=document.querySelectorAll(${JSON.stringify(NAVBAR_BASE)}),safe=document.querySelectorAll(${JSON.stringify(NAVBAR_CANDIDATE)});if(base.length>1||(base.length===1&&(safe.length!==1||safe[0]!==base[0])))return -1;if(document.readyState==='loading'||document.readyState==='interactive')return 2;if(document.readyState!=='complete'||base.length!==1)return -1;const loading=document.querySelectorAll('div.h-dvh.flex.flex-col.overflow-hidden.relative.bg-background > main.flex-1.overflow-hidden.relative > div.flex.items-center.justify-center.min-h-screen.bg-background > svg[role="status"][aria-label="Loading"][viewBox="10 30 180 140"]');if([...loading].some(e=>e.getClientRects().length))return 3;const n=base[0];const placeholders=[...n.querySelectorAll('div.w-8.h-8.rounded-full.bg-muted.animate-pulse,button.h-8.w-8[class~="md:h-9"][class~="md:w-9"][disabled]')];return placeholders.some(e=>!e.children.length&&!(e.textContent||'').trim())?4:1})()`;
+      const barSelectors = [NAVBAR_BASE, NAVBAR_CANDIDATE, HEADER_BASE, HEADER_CANDIDATE];
+      const expression = `(${focusLoadingState.toString()})(...${JSON.stringify(barSelectors)})`;
       let verified = false;
       for (let attempt = 0; attempt < 25 && this.now() < deadline; attempt++) {
         const remaining = () => Math.max(1, deadline - this.now());
@@ -336,8 +363,8 @@ class NativeBrowserBridge {
         emitDiagnostic(onDiagnostic, 'loading', 'start');
         const loadingState = await bounded(this._number(target, expression, generation, signal), remaining(), 'Focus readiness timed out.', signal);
         await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
-        const state = [2, 3, 4].includes(loadingState) ? 0 : loadingState;
-        emitDiagnostic(onDiagnostic, 'loading', state === 0 ? 'wait' : state === 1 ? 'ok' : 'fail', ({2:'document',3:'body',4:'account-theme',1:'ready'})[loadingState] || 'blocked');
+        const state = [2, 3, 4].includes(loadingState) ? 0 : loadingState === 5 ? 1 : loadingState;
+        emitDiagnostic(onDiagnostic, 'loading', state === 0 ? 'wait' : state === 1 ? 'ok' : 'fail', ({2:'document',3:'body',4:'account-theme',1:'ready',5:'ready'})[loadingState] || 'blocked');
         if (state !== 0 && state !== 1) throw fault('The loading page structure is not recognized.', 'INVALID_PROOF');
         if (state === 1) {
           emitDiagnostic(onDiagnostic, 'contract', 'start');
@@ -345,7 +372,7 @@ class NativeBrowserBridge {
           try {
             // Preserve a safe native failure category instead of reclassifying
             // every rejected proof as a transport error in bounded().
-            const checked = await bounded(this.inspectFocusContract(this.focusContract, { signal, onDiagnostic, readinessGate: FOCUS_READINESS_GATE }).then(value => ({ ok: true, value }), error => ({ ok: false, error })), remaining(), 'Focus readiness timed out.', signal);
+            const checked = await bounded(this.inspectFocusContract(loadingState === 5 ? WORKSPACE_FOCUS_CONTRACT : this.focusContract, { signal, onDiagnostic, readinessGate: FOCUS_READINESS_GATE }).then(value => ({ ok: true, value }), error => ({ ok: false, error })), remaining(), 'Focus readiness timed out.', signal);
             if (!checked.ok) throw checked.error;
             proof = checked.value;
             emitDiagnostic(onDiagnostic, 'contract', proof?.incomplete === true ? 'wait' : 'ok', proof?.incomplete === true ? 'controls-incomplete' : undefined);
@@ -353,8 +380,8 @@ class NativeBrowserBridge {
           await bounded(check(), remaining(), 'Focus readiness timed out.', signal);
           if (proof?.incomplete === true) verified = false;
           else {
-            if (verified) return page;
-            verified = true;
+            if (verified === proof.contractId) return page;
+            verified = proof.contractId;
           }
         } else verified = false;
         await bounded(this.pause(200), remaining(), 'Focus readiness timed out.', signal);
@@ -363,10 +390,14 @@ class NativeBrowserBridge {
     } finally { controller.abort(); externalSignal?.removeEventListener('abort', abort); }
   }
   async inspectFocusContract(value, { signal, onDiagnostic, readinessGate } = {}) {
-    if (!this.focusContract || focusCore(value) !== focusCore(this.focusContract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
+    const contract = value?.id === WORKSPACE_FOCUS_CONTRACT.id ? WORKSPACE_FOCUS_CONTRACT : this.focusContract;
+    if (!this.focusContract || focusCore(value) !== focusCore(contract)) throw fault('The reviewed focus contract is not pinned.', 'INVALID_CONTRACT');
     const page = await this.getFocusPage({ signal, onDiagnostic }), target = this.target, generation = this.generation;
-    const targets = this.focusContract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? NAVBAR_CANDIDATE : item.selector, count: item.count, expectation: item.expectation }));
-    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const failures=[];const reject=(target,reason)=>{valid=false;failures.push({target,reason})};const anchorFailure=${focusAnchorFailure.toString()};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){reject(t.id,nodes.length===0?'missing':'count');continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyNavbar.toString()})(e))reject(t.id,'shape');continue}if(x.tag==='a'){const reason=anchorFailure(e,x,location.origin);if(reason)reject(t.id,reason)}else if(x.tag==='button'){if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){reject(t.id,'shape');continue}if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)reject(t.id,'shape')}else reject(t.id,'shape')}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts,failures})})()`;
+    const modern = contract === WORKSPACE_FOCUS_CONTRACT;
+    const candidate = modern ? HEADER_CANDIDATE : NAVBAR_CANDIDATE;
+    const verifyHeader = modern ? verifyWorkspaceHeader : verifyNavbar;
+    const targets = contract.targets.map(item => ({ id: item.id, selector: item.id === 'top-navbar' ? candidate : item.selector, count: item.count, expectation: item.expectation }));
+    const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return '';const counts={};let valid=true;const failures=[];const reject=(target,reason)=>{valid=false;failures.push({target,reason})};const anchorFailure=${focusAnchorFailure.toString()};for(const t of ${JSON.stringify(targets)}){let nodes;try{nodes=document.querySelectorAll(t.selector)}catch{return ''}counts[t.id]=nodes.length;if(nodes.length!==t.count){reject(t.id,nodes.length===0?'missing':'count');continue}for(const e of nodes){const x=t.expectation;if(x.kind==='top-navbar'){if(!(${verifyHeader.toString()})(e))reject(t.id,'shape');continue}if(x.kind==='toni-launcher'){if(!(${verifyToniLauncher.toString()})(e))reject(t.id,'shape');continue}if(x.tag==='a'){const reason=anchorFailure(e,x,location.origin);if(reason)reject(t.id,reason)}else if(x.tag==='button'){if(e.tagName.toLowerCase()!==x.tag||(e.textContent||'').replace(/\\s+/g,'')!==x.text||(e.getAttribute('title')||'')!==x.title){reject(t.id,'shape');continue}if(!['lucide-panel-left','lucide-sparkles'].includes(x.icon)||x.href!==null||![null,'button'].includes(x.type)||x.inForm!==false||e.getAttribute('href')!==null||e.getAttribute('type')!==x.type||(e.getAttribute('aria-label')||'')!==x.ariaLabel||e.closest('form')!==null||e.form!==null||e.querySelectorAll('svg.'+x.icon).length!==1||e.querySelectorAll('svg').length!==1)reject(t.id,'shape')}else reject(t.id,'shape')}}return JSON.stringify({url:location.origin+location.pathname+location.search,valid,counts,failures})})()`;
     const raw = await this._evaluate(target, expression, generation, signal);
     if (typeof raw !== 'string' || raw.length > 4096) throw fault('Invalid focus selector metadata.', 'INVALID_RESPONSE');
     let metadata; try { metadata = JSON.parse(raw); } catch (_) { throw fault('Focus selectors could not be verified.', 'INVALID_PROOF'); }
@@ -377,7 +408,7 @@ class NativeBrowserBridge {
     const controls = targets.filter(item => item.id !== 'top-navbar');
     const incomplete = readinessGate === FOCUS_READINESS_GATE && metadata?.valid === false && Object.keys(metadata).sort().join(',') === 'counts,failures,url,valid' && metadata.url === page.url &&
       metadata.counts && Object.keys(metadata.counts).length === targets.length && metadata.counts['top-navbar'] === 1 &&
-      controls.length === 7 && controls.every(item => metadata.counts[item.id] === 0) &&
+      (modern || controls.length === 7) && controls.every(item => metadata.counts[item.id] === 0) &&
       Array.isArray(metadata.failures) && metadata.failures.length === controls.length &&
       controls.every(item => metadata.failures.filter(failure => failure?.target === item.id && failure.reason === 'missing' && Object.keys(failure).sort().join(',') === 'reason,target').length === 1);
     if (incomplete) {
@@ -387,8 +418,8 @@ class NativeBrowserBridge {
     }
     if (!metadata || metadata.valid !== true || metadata.url !== page.url || !metadata.counts || Object.keys(metadata.counts).length !== targets.length || targets.some(item => metadata.counts[item.id] !== item.count)) throw fault('The reviewed problem controls changed. They remain visible.', 'INVALID_PROOF');
     if (!sameFocusPage(page, await this.getFocusPage({ signal, onDiagnostic }))) throw fault('The owned document changed during verification.', 'PAGE_CHANGED');
-    this.focusProof = { page, target, fingerprint: focusCore(this.focusContract) };
-    return Object.freeze({ ...page, contractId: this.focusContract.id, counts: Object.freeze({ ...metadata.counts }) });
+    this.focusProof = { page, target, contract, fingerprint: focusCore(contract) };
+    return Object.freeze({ ...page, contractId: contract.id, counts: Object.freeze({ ...metadata.counts }) });
   }
   _focusProtocol(resource, method, params, sessionId, gate, signal) {
     if (signal?.aborted) throw fault('Focus operation canceled before dispatch.', 'CANCELED');
@@ -401,7 +432,7 @@ class NativeBrowserBridge {
     } else if (method === 'CSS.setStyleSheetText' || method === 'CSS.getStyleSheetText') {
       const sheet = this.focusSheets.get(params.styleSheetId);
       if (!sheet || sheet.resource !== resource || sheet.target.sessionId !== sessionId || sheet.gone || keys !== (method === 'CSS.setStyleSheetText' ? 'styleSheetId,text' : 'styleSheetId') ||
-          (method === 'CSS.setStyleSheetText' && params.text !== '' && params.text !== this.focusContract?.cssText)) throw fault('Stylesheet is outside the owned focus lease.', 'UNSUPPORTED');
+          (method === 'CSS.setStyleSheetText' && params.text !== '' && params.text !== sheet.contract.cssText)) throw fault('Stylesheet is outside the owned focus lease.', 'UNSUPPORTED');
     } else throw fault('Unsupported focus protocol operation.', 'UNSUPPORTED');
     const wireParams = (method === 'CSS.setStyleSheetText' || method === 'CSS.getStyleSheetText')
       ? { ...params, styleSheetId: this.focusSheets.get(params.styleSheetId).nativeId } : params;
@@ -444,7 +475,7 @@ class NativeBrowserBridge {
       const nativeId = result?.styleSheetId;
       if (typeof nativeId !== 'string' || !nativeId || nativeId.length > 1024 || /\s/.test(nativeId) || [...this.focusSheets.values()].some(sheet => sheet.resource === resource && sheet.target.sessionId === target.sessionId && sheet.nativeId === nativeId)) throw fault('Invalid owned stylesheet identity.', 'INVALID_RESPONSE');
       const id = `tt-focus-${crypto.randomUUID()}`;
-      const sheet = { id, nativeId, page, target, resource, fingerprint: proof.fingerprint, dirty: false, used: false };
+      const sheet = { id, nativeId, page, target, resource, contract: proof.contract, fingerprint: proof.fingerprint, dirty: false, used: false };
       this.focusSheets.set(id, sheet);
       if (resource.tabClosed) sheet.gone = 'page-closed';
       return Object.freeze({ styleSheetId: id });
@@ -499,8 +530,8 @@ class NativeBrowserBridge {
     const sheet = this._focusSheet(id, page);
     if (text === '') { await this._emptyFocusSheet(sheet); return; }
     if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
-    if (sheet.gone || sheet.used || !this.focusContract || text !== this.focusContract.cssText || sheet.fingerprint !== focusCore(this.focusContract)) throw fault('Nonempty focus styles require the exact reviewed proof.', 'INVALID_PROOF');
-    await this.inspectFocusContract(this.focusContract, { onDiagnostic });
+    if (sheet.gone || sheet.used || !this.focusContract || text !== sheet.contract.cssText || sheet.fingerprint !== focusCore(sheet.contract)) throw fault('Nonempty focus styles require the exact reviewed proof.', 'INVALID_PROOF');
+    await this.inspectFocusContract(sheet.contract, { onDiagnostic });
     if (!sameFocusPage(page, this.focusProof.page)) throw fault('The owned document changed.', 'PAGE_CHANGED');
     const generation = this.generation;
     this._check(generation, sheet.target, signal);
@@ -510,7 +541,10 @@ class NativeBrowserBridge {
     // An uncertain evaluation never permits another apply; closing the owned
     // document is the safe recovery when its result cannot be established.
     sheet.navbarGuard = 'uncertain';
-    const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return (${installNavbarGuard.toString()})(document,${JSON.stringify(NAVBAR_CANDIDATE)},${JSON.stringify(NAVBAR_MARKER)},(${verifyNavbar.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)})()`;
+    const modern = sheet.contract === WORKSPACE_FOCUS_CONTRACT;
+    const headerCandidate = modern ? HEADER_CANDIDATE : NAVBAR_CANDIDATE;
+    const verifyHeader = modern ? verifyWorkspaceHeader : verifyNavbar;
+    const guardExpression = `(()=>{if(window!==window.top||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return (${installNavbarGuard.toString()})(document,${JSON.stringify(headerCandidate)},${JSON.stringify(NAVBAR_MARKER)},(${verifyHeader.toString()}),typeof MutationObserver==='function'?MutationObserver:undefined)})()`;
     emitDiagnostic(onDiagnostic, 'guard-install', 'start');
     const guarded = await this._number(sheet.target, guardExpression, generation);
     sheet.navbarGuard = guarded === 1 ? 'installed' : undefined;
@@ -528,7 +562,7 @@ class NativeBrowserBridge {
       await bounded(pending, this.evaluationTimeout, 'Owned focus stylesheet mutation is unconfirmed.');
       if (signal?.aborted) throw fault('Focus operation canceled.', 'CANCELED');
       if (!sameFocusPage(page, await this.getFocusPage())) throw fault('The styled document changed.', 'PAGE_CHANGED');
-      const targets = this.focusContract.targets.map(target => ({ selector: target.selector, count: target.count }));
+      const targets = sheet.contract.targets.map(target => ({ selector: target.selector, count: target.count }));
       const expression = `(()=>{if(window!==window.top||location.origin!=='https://www.tensortonic.com'||location.origin+location.pathname+location.search!==${JSON.stringify(page.url)}||location.hash)return 0;return ${JSON.stringify(targets)}.every(target=>{const nodes=document.querySelectorAll(target.selector);return nodes.length===target.count&&[...nodes].every(element=>getComputedStyle(element).display==='none')})?1:0})()`;
       emitDiagnostic(onDiagnostic, 'visibility', 'start');
       const visibleProof = await this._number(sheet.target, expression, generation, signal);

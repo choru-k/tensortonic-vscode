@@ -1,5 +1,6 @@
 'use strict';
 const { NAVBAR_SELECTOR } = require('./focus-navbar');
+const { HEADER_SELECTOR, TONI_SELECTOR } = require('./focus-workspace-header');
 
 // These controls were observed on an owned canonical problem page at desktop
 // and narrow widths on 2026-11-03. Each must retain its exact structure and
@@ -33,4 +34,14 @@ const FOCUS_CONTRACT = Object.freeze({
   cssText: targets.map(target => `${target.selector}{display:none!important;}`).join('\n'),
 });
 
-module.exports = { FOCUS_CONTRACT };
+const workspaceTargets = [
+  { id: 'top-navbar', selector: HEADER_SELECTOR, kind: 'top-navbar', tag: 'header' },
+  { id: 'ask-toni', selector: TONI_SELECTOR, kind: 'toni-launcher', tag: 'button' },
+].map(({ id, selector, kind, tag }) => Object.freeze({ id, selector, count: 1, expectation: Object.freeze({ kind, tag }) }));
+const WORKSPACE_FOCUS_CONTRACT = Object.freeze({
+  id: 'tt-problem-workspace-2026-11-24', verified: true,
+  surface: 'problem-content', hidesSecurityUI: false,
+  targets: Object.freeze(workspaceTargets),
+  cssText: workspaceTargets.map(target => `${target.selector}{display:none!important;}`).join('\n'),
+});
+module.exports = { FOCUS_CONTRACT, WORKSPACE_FOCUS_CONTRACT };

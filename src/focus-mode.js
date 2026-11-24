@@ -14,8 +14,9 @@ function nonempty(value) { return typeof value === 'string' && value.length > 0;
 // The adapter owns the reviewed DOM/CSS contract. This controller grants only
 // an exact owned-document proof and retains every returned cleanup lease.
 class FocusModeController {
-  constructor({ adapter, verifiedContract, operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT, onChange = () => {} } = {}) {
+  constructor({ adapter, verifiedContract, selectContract, operationTimeoutMs = DEFAULT_OPERATION_TIMEOUT, onChange = () => {} } = {}) {
     this.adapter = adapter;
+    this.selectContract = selectContract;
     this.contract = verifiedContract ? Object.freeze({ ...verifiedContract }) : undefined;
     this.operationTimeoutMs = Number.isFinite(operationTimeoutMs) && operationTimeoutMs > 0 ? Math.min(operationTimeoutMs, DEFAULT_OPERATION_TIMEOUT) : DEFAULT_OPERATION_TIMEOUT;
     this.enabled = false;
@@ -134,12 +135,12 @@ class FocusModeController {
     this._refreshCleanupStatus();
   }
 
-  async _apply(proof, operation) {
+  async _apply(proof, contract, operation) {
     const attempt = { detached: false };
     this._pendingApplies.add(attempt);
     const pending = Promise.resolve().then(() => {
       if (operation.controller.signal.aborted || !this._current(operation)) throw fault('CANCELED');
-      return this.adapter.apply(proof, this.contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
+      return this.adapter.apply(proof, contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
     }).then(lease => {
       this._pendingApplies.delete(attempt);
       if (!this._remember(lease)) throw fault('MISSING_OWNED_LEASE');
@@ -177,18 +178,21 @@ class FocusModeController {
         this.status = 'unavailable';
         return this.state;
       }
-      const snapshot = Object.freeze({ id: page.id, url: page.url, documentId: page.documentId, frameId: page.frameId });
+      const snapshot = Object.freeze({ owned: true, id: page.id, url: page.url, documentId: page.documentId, frameId: page.frameId });
+      const contract = this.selectContract
+        ? await this._wait(Promise.resolve().then(() => this.selectContract(snapshot, operation.controller.signal)), operation)
+        : this.contract;
       const verification = Promise.resolve().then(() => {
         if (operation.controller.signal.aborted || !this._current(operation)) throw fault('CANCELED');
-        return this.adapter.verify(snapshot, this.contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
+        return this.adapter.verify(snapshot, contract, { signal: operation.controller.signal, onDiagnostic: operation.onDiagnostic });
       });
       const proof = await this._wait(verification, operation);
       if (!this._current(operation)) return this.state;
-      if (!proof || proof.id !== snapshot.id || proof.url !== snapshot.url || proof.documentId !== snapshot.documentId || proof.frameId !== snapshot.frameId || proof.contractId !== this.contract.id || proof.owned !== true) {
+      if (!proof || proof.id !== snapshot.id || proof.url !== snapshot.url || proof.documentId !== snapshot.documentId || proof.frameId !== snapshot.frameId || proof.contractId !== contract.id || proof.owned !== true) {
         this.status = 'unavailable';
         return this.state;
       }
-      const lease = await this._apply(proof, operation);
+      const lease = await this._apply(proof, contract, operation);
       if (!this._current(operation) || operation.controller.signal.aborted) {
         try { await this._restoreLease(lease, operation); } catch (_) { /* Retained. */ }
         return this.state;
