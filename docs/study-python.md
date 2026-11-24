@@ -40,10 +40,19 @@ extension's separate managed environment exists.
    A fresh explicit Start may offer this same consent; ordinary activation does not
    start setup.
 4. Setup uses an installed Python **3.11–3.14** in a standard supported location.
-   Compatible Homebrew Python installations are eligible. Runtime compatibility,
+   Compatible Homebrew Python installations are eligible, including versioned
+   kegs such as `/opt/homebrew/opt/python@3.13/bin/python3.13` and the equivalent
+   `/usr/local/opt` path even when `python3` points to an unsupported Python 3.15.
+   Runtime compatibility,
    available binary wheels and successful import checks are still required. If
    no supported runtime is found, install one from [python.org](https://www.python.org/downloads/)
-   or your trusted package manager. The extension never downloads a Python version.
+   or your trusted package manager. On macOS, if an existing Homebrew installation
+   is found at its standard location, already-confirmed setup offers **Install
+   Python 3.13 and continue**. This additional opt-in runs only that Homebrew's
+   `install python@3.13` command and then automatically resumes setup. Declining
+   makes no environment changes. The extension does not bootstrap Homebrew, use
+   `sudo`, or download Python without that explicit confirmation. Without Homebrew,
+   the error explains how to install a supported runtime and retry in this folder.
 5. A dedicated environment is created in extension storage under
    `python-envs/<study-folder-hash>`. The hash is a stable internal storage ID.
    New environments use Python's supported `--prompt` metadata so the interpreter
@@ -62,6 +71,14 @@ managed metadata and explicitly selects the existing interpreter through the sco
 Python API. It may activate the Python extension, then verifies selection. If the
 API is unavailable, use the offered **Python: Select Interpreter → Enter interpreter
 path** guidance after setup; automatic selection is not assumed.
+
+On a fresh explicit **Start studying**, a verified environment previously selected
+with consent is reused without setup or package installation. Python's extension
+may be activated; if its scoped choice is empty, the prior selection is restored.
+A different current interpreter is preserved; choose **Use study environment** to
+switch back explicitly. An existing verified environment without saved selection
+consent offers **Use study environment** instead of repeating setup. Ordinary
+activation and sidebar status updates do not perform this selection handoff.
 
 Editor/Pylance selection and terminal activation are separate. Existing terminals
 retain their environment. Open a new Python terminal when terminal activation is
@@ -82,9 +99,23 @@ problem-provided package names or workspace-controlled Python executable. Caller
 pip indexes, Python path injection and loader settings are not inherited.
 
 **Repair study Python environment** explicitly validates/reinstalls the same fixed
-packages. Unknown ownership is never overwritten or recursively deleted. A changed
-interpreter, missing original runtime or unavailable wheel can require manual
-review. A leftover setup lock is reported for review rather than removed blindly.
+packages. If the original system Python disappeared, Setup or Repair first finds a
+compatible installed replacement (or offers the confirmed Homebrew action above).
+Only after discovery succeeds, under the setup lock, the old owned environment is
+retained at `python-envs/<study-folder-hash>.backup-<unique-id>/environment` and a
+replacement is created at the original stable path. The backup location is shown
+in progress and recorded as `previousEnvironment` in the new ownership marker.
+Study files and prior contents are kept; a backup is for recovery/manual review,
+not promised to run from its moved path. No backup is deleted automatically.
+
+Declining, failed discovery, or failed Homebrew installation leaves the old
+environment in place. Homebrew uses sanitized process settings, disables automatic
+updates and install cleanup, and runs without a shell from extension storage.
+Cancellation waits for the owned subprocess cleanup; Homebrew may retain a partial
+formula installation. Retry discovers any now-compatible runtime before offering
+installation again. A failed or canceled replacement setup retains both its backup
+and retryable partial environment. Unknown ownership or a replaced interpreter is
+refused, and a leftover setup lock is reported for review rather than removed blindly.
 
 Automatic setup supports **macOS and Linux** in trusted local desktop study folders.
 On Windows, select a manually managed interpreter; automatic setup does not start.
@@ -94,7 +125,8 @@ managed setup scope. This feature is not a general Python/package manager.
 ## Verification limits
 
 Automated tests use isolated filesystem fixtures, mocked Python APIs and synthetic
-process results. They do not install torch/numpy or establish that package wheels,
+process results, including Homebrew consent, failures, cancellation and continued
+setup. They do not install Python or torch/numpy or establish that package wheels,
 Pylance and interpreter selection work on every host. Status inspection deliberately
 does not diagnose packages removed or changed outside the setup flow.
 

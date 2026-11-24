@@ -231,7 +231,7 @@ class StudyEnvironmentUI {
     return task;
   }
 
-  async useOnce() {
+  async useOnce({ preserveSelection = false } = {}) {
     const snapshot = this.scope();
     const folder = await this.resolveStudyFolder();
     if (snapshot && !this.sameScope(snapshot)) return { status: 'cancelled' };
@@ -257,6 +257,10 @@ class StudyEnvironmentUI {
       const active = await waitCancelable(api.getActiveEnvironmentPath(folder), controller.signal);
       if (!current()) return { status: 'cancelled' };
       if (!this.matches(active, inspected)) {
+        // A fresh explicit Start may restore a previously consented selection
+        // only when Python has no current choice. A different choice is the
+        // user's workspace preference; Use remains the explicit override.
+        if (preserveSelection && active && typeof active.path === 'string' && active.path) return { status: 'custom-interpreter' };
         if (typeof api.updateActiveEnvironmentPath !== 'function') return { status: 'selection-unavailable' };
         await waitCancelable(api.updateActiveEnvironmentPath(inspected.interpreterPath, folder), controller.signal);
         if (!current()) return { status: 'cancelled' };
@@ -290,24 +294,27 @@ class StudyEnvironmentUI {
     if (!current()) return { status: 'cancelled' };
     const ready = this.context.globalState.get(this.readyKey(folder));
     const python = v.extensions.getExtension('ms-python.python');
-    if (firstStart && ready && ready.selected === true && inspected.managed && inspected.exists &&
-        ready.interpreterPath === inspected.interpreterPath && python && python.isActive &&
-        python.exports && python.exports.environments && typeof python.exports.environments.getActiveEnvironmentPath === 'function') {
-      const active = await python.exports.environments.getActiveEnvironmentPath(folder);
-      if (!current()) return { status: 'cancelled' };
-      if (active && typeof active.path === 'string' && [ready.interpreterPath, inspected.environmentPath].filter(Boolean).some(candidate => path.resolve(active.path) === path.resolve(candidate))) {
-        return { status: 'already-configured', interpreterPath: ready.interpreterPath };
-      }
-    }
     if (!python) {
       const choice = await v.window.showInformationMessage('TensorTonic Python setup needs Microsoft’s Python extension to select the study interpreter. Install it normally, then run TensorTonic: Set up study Python environment.', 'Find Python extension');
       if (choice === 'Find Python extension') await v.commands.executeCommand('workbench.extensions.search', '@id:ms-python.python');
       return { status: 'python-extension-missing' };
     }
+    if (firstStart && this.verified(inspected, folder)) {
+      if (ready && ready.selected === true && ready.interpreterPath === inspected.interpreterPath) {
+        const result = await this.useOnce({ preserveSelection: true });
+        return result.status === 'ready' ? { ...result, status: 'already-configured' } : result;
+      }
+      const choice = await v.window.showInformationMessage('Use the existing TensorTonic study Python environment?', {
+        modal: true,
+        detail: `Select ${inspected.interpreterPath} for this study folder. Setup was already verified; this action does not install or repair packages.`,
+      }, 'Use study environment');
+      if (choice !== 'Use study environment' || !current()) return { status: 'cancelled' };
+      return this.useOnce();
+    }
     const title = repair ? 'Repair the TensorTonic study Python environment?' : 'Set up a dedicated TensorTonic study Python environment?';
     const choice = await v.window.showInformationMessage(title, {
       modal: true,
-      detail: `Use an installed compatible Python to create or validate a private environment in VS Code extension storage for ${folder.fsPath}. Download and install only PyTorch (torch), NumPy, and their required dependencies from PyPI if needed. This can take time and significant disk/network space. Select that interpreter only for this study folder. Existing .venv folders, global Python, and unrelated workspace settings are not changed. No Python version is downloaded. You can cancel; run Setup/Repair again to retry.`,
+      detail: `Use an installed compatible Python to create or validate a private environment in VS Code extension storage for ${folder.fsPath}. If its original Python disappeared, preserve the previous managed environment as a backup and rebuild at the same path with a compatible installed runtime. Download and install only PyTorch (torch), NumPy, and their required dependencies from PyPI if needed. This can take time and significant disk/network space. Select that interpreter only for this study folder. Existing .venv folders, global Python, and unrelated workspace settings are not changed. Python installation is offered separately only if needed and requires another confirmation. You can cancel; run Setup/Repair again to retry.`,
     }, repair ? 'Repair study environment' : 'Set up study environment');
     if (choice !== (repair ? 'Repair study environment' : 'Set up study environment') || !current()) return { status: 'cancelled' };
 
@@ -320,7 +327,16 @@ class StudyEnvironmentUI {
         try {
           if (token.isCancellationRequested) controller.abort();
           this.unverified.add(this.readyKey(folder));
-          const checked = await environment.ensure({ confirmed: true, repair, signal: controller.signal, onProgress: message => progress.report({ message }) });
+          const checked = await environment.ensure({ confirmed: true, repair, signal: controller.signal, onProgress: message => progress.report({ message }),
+            confirmPythonInstall: async ({ executable, formula }) => {
+              if (controller.signal.aborted || !current()) return false;
+              const action = 'Install Python 3.13 and continue';
+              const choice = await waitCancelable(v.window.showInformationMessage('Install Python 3.13 with Homebrew and continue setup?', {
+                modal: true,
+                detail: `No compatible installed Python was found. Run ${executable} install ${formula} using your existing Homebrew, then continue study setup automatically. This downloads Python 3.13 and any Homebrew dependencies into the Homebrew prefix and uses disk/network space. No sudo or Homebrew bootstrap is used. Existing study environments are preserved if you decline or installation fails. Cancellation stops this operation; a partially installed Homebrew formula may remain.`,
+              }, action), controller.signal);
+              return choice === action && !controller.signal.aborted && current();
+            } });
           this.unverified.delete(this.readyKey(folder));
           if (controller.signal.aborted || !current()) return { status: 'cancelled' };
           progress.report({ message: 'Selecting the interpreter for this study folder…' });
